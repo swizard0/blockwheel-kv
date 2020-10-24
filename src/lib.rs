@@ -16,7 +16,9 @@ use ero::{
     supervisor::SupervisorPid,
 };
 
-use ero_blockwheel as blockwheel;
+use ero_blockwheel_fs as blockwheel;
+
+pub mod kv;
 
 mod proto;
 mod context;
@@ -73,6 +75,16 @@ impl GenServer {
     }
 }
 
+
+#[derive(Debug)]
+pub enum InsertError {
+    GenServer(ero::NoProcError),
+    NoSpaceLeft,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Inserted;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
 }
@@ -91,6 +103,28 @@ impl Pid {
             }
         }
     }
+
+    pub async fn insert(&mut self) -> Result<Inserted, InsertError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(proto::Request::Insert(proto::RequestInsert {
+                    context: reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Ok(Inserted)) =>
+                    return Ok(Inserted),
+                Ok(Err(kv_context::RequestInsertError::NoSpaceLeft)) =>
+                    return Err(InsertError::NoSpaceLeft),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
 }
 
 mod kv_context {
@@ -104,11 +138,19 @@ mod kv_context {
     use super::{
         context,
         Info,
+        Inserted,
     };
 
     pub struct Context;
 
     impl context::Context for Context {
         type Info = oneshot::Sender<Info>;
+        type Insert = oneshot::Sender<Result<Inserted, RequestInsertError>>;
     }
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub enum RequestInsertError {
+        NoSpaceLeft,
+    }
+
 }
