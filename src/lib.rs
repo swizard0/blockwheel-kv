@@ -22,16 +22,19 @@ pub mod kv;
 
 mod proto;
 mod context;
+mod memcache;
 
 #[derive(Clone, Debug)]
 pub struct Params {
     pub kv_task_restart_sec: usize,
+    pub memcache_task_restart_sec: usize,
 }
 
 impl Default for Params {
     fn default() -> Params {
         Params {
             kv_task_restart_sec: 4,
+            memcache_task_restart_sec: 1,
         }
     }
 }
@@ -65,11 +68,19 @@ impl GenServer {
 
     pub async fn run(
         self,
-        parent_supervisor: SupervisorPid,
+        mut parent_supervisor: SupervisorPid,
         blockwheel_pid: blockwheel::Pid,
         params: Params,
     )
     {
+        let memcache_gen_server = memcache::GenServer::new();
+        let memcache_pid = memcache_gen_server.pid();
+        let memcache_params = memcache::Params {
+            task_restart_sec: params.memcache_task_restart_sec,
+        };
+        parent_supervisor.spawn_link_permanent(
+            memcache_gen_server.run(memcache_params),
+        );
 
         unimplemented!()
     }
@@ -104,11 +115,12 @@ impl Pid {
         }
     }
 
-    pub async fn insert(&mut self) -> Result<Inserted, InsertError> {
+    pub async fn insert(&mut self, key_value: kv::KeyValue) -> Result<Inserted, InsertError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
                 .send(proto::Request::Insert(proto::RequestInsert {
+                    key_value: key_value.clone(),
                     context: reply_tx,
                 }))
                 .await

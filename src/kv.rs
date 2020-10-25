@@ -33,7 +33,7 @@ impl Key {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct KeyHeader {
     len: usize,
     hash: u64,
@@ -46,18 +46,18 @@ pub struct KeyValue {
     key_value_bytes: Bytes,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct ValueHeader {
     offset: usize,
     len: usize,
 }
 
 impl KeyValue {
-    fn key_data(&self) -> &[u8] {
+    pub fn key_data(&self) -> &[u8] {
         &self.key_value_bytes[.. self.key_header.len]
     }
 
-    fn value_data(&self) -> &[u8] {
+    pub fn value_data(&self) -> &[u8] {
         &self.key_value_bytes[self.value_header.offset ..]
     }
 }

@@ -1,4 +1,5 @@
 use super::{
+    kv::KeyValue,
     context::Context,
 };
 
@@ -15,5 +16,6 @@ pub struct RequestInfo<C> {
 
 #[derive(Debug)]
 pub struct RequestInsert<C> {
+    pub key_value: KeyValue,
     pub context: C,
 }
