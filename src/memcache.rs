@@ -3,7 +3,9 @@ use std::{
     collections::{
         BTreeMap,
     },
+    ops::Deref,
     time::Duration,
+    borrow::Borrow,
 };
 
 use futures::{
@@ -25,6 +27,8 @@ use ero::{
 use super::{
     kv,
     proto,
+    storage,
+    manager,
     kv_context,
     Inserted,
 };
@@ -32,12 +36,14 @@ use super::{
 #[derive(Clone, Debug)]
 pub struct Params {
     pub task_restart_sec: usize,
+    pub tree_block_size: usize,
 }
 
 impl Default for Params {
     fn default() -> Params {
         Params {
             task_restart_sec: 4,
+            tree_block_size: 32,
         }
     }
 }
@@ -69,6 +75,7 @@ impl GenServer {
 
     pub async fn run(
         self,
+        manager_pid: manager::Pid,
         params: Params,
     )
     {
@@ -81,6 +88,7 @@ impl GenServer {
             },
             State {
                 fused_request_rx: self.fused_request_rx,
+                manager_pid,
                 params,
             },
             |mut state| busyloop(state),
@@ -95,16 +103,21 @@ type Request = proto::Request<kv_context::Context>;
 
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    manager_pid: manager::Pid,
     params: Params,
 }
 
 #[derive(Debug)]
 enum Error {
-
+    Storage(storage::Error),
 }
 
+pub type Cache = BTreeMap<Key, ()>;
+
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    let mut memcache = BTreeMap::new();
+    let mut memcache = Cache::new();
+    let mut work_block = Vec::new();
+    let mut current_block_size = 0;
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
@@ -112,11 +125,16 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 unimplemented!(),
 
             proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
-                // reply first to check canceling scenario
+                work_block.clear();
+                storage::serialize_key_value(&key_value, storage::JumpRef::None, &mut work_block)
+                    .map_err(Error::Storage)
+                    .map_err(ErrorSeverity::Fatal)?;
+                current_block_size += work_block.len();
+                memcache.insert(Key::new(key_value.clone()), ());
                 if let Err(_send_error) = reply_tx.send(Ok(Inserted)) {
                     log::warn!("client canceled insert request");
-                } else {
-                    memcache.insert(Key::new(key_value.clone()), key_value);
+                    current_block_size -= work_block.len();
+                    memcache.remove(key_value.key_data());
                 }
             },
         }
@@ -125,13 +143,29 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 }
 
 #[derive(Clone, Debug)]
-struct Key {
+pub struct Key {
     kv: kv::KeyValue,
 }
 
 impl Key {
     fn new(kv: kv::KeyValue) -> Key {
         Key { kv, }
+    }
+}
+
+impl AsRef<kv::KeyValue> for Key {
+    #[inline]
+    fn as_ref(&self) -> &kv::KeyValue {
+        &self.kv
+    }
+}
+
+impl Deref for Key {
+    type Target = kv::KeyValue;
+
+    #[inline]
+    fn deref(&self) -> &kv::KeyValue {
+        self.as_ref()
     }
 }
 
@@ -152,5 +186,11 @@ impl PartialOrd for Key {
 impl Ord for Key {
     fn cmp(&self, other: &Key) -> cmp::Ordering {
         self.kv.key_data().cmp(other.kv.key_data())
+    }
+}
+
+impl Borrow<[u8]> for Key {
+    fn borrow(&self) -> &[u8] {
+        self.kv.key_data()
     }
 }

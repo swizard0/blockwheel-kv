@@ -42,14 +42,7 @@ struct KeyHeader {
 #[derive(Clone, PartialEq, Debug)]
 pub struct KeyValue {
     key_header: KeyHeader,
-    value_header: ValueHeader,
     key_value_bytes: Bytes,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-struct ValueHeader {
-    offset: usize,
-    len: usize,
 }
 
 impl KeyValue {
@@ -58,7 +51,7 @@ impl KeyValue {
     }
 
     pub fn value_data(&self) -> &[u8] {
-        &self.key_value_bytes[self.value_header.offset ..]
+        &self.key_value_bytes[self.key_header.len ..]
     }
 }
 
@@ -119,11 +112,7 @@ impl BuilderKeyValue {
             len: key_len,
             hash: key_hash(&key_value_bytes[.. key_len]),
         };
-        let value_header = ValueHeader {
-            len: key_value_bytes.len() - key_len,
-            offset: key_len,
-        };
-        KeyValue { key_header, value_header, key_value_bytes, }
+        KeyValue { key_header, key_value_bytes, }
     }
 }
 

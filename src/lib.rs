@@ -16,25 +16,33 @@ use ero::{
     supervisor::SupervisorPid,
 };
 
+use alloc_pool::bytes::BytesPool;
+
 use ero_blockwheel_fs as blockwheel;
 
 pub mod kv;
 
 mod proto;
 mod context;
+mod storage;
+mod manager;
 mod memcache;
 
 #[derive(Clone, Debug)]
 pub struct Params {
+    pub tree_block_size: usize,
     pub kv_task_restart_sec: usize,
     pub memcache_task_restart_sec: usize,
+    pub manager_task_restart_sec: usize,
 }
 
 impl Default for Params {
     fn default() -> Params {
         Params {
+            tree_block_size: 32,
             kv_task_restart_sec: 4,
             memcache_task_restart_sec: 1,
+            manager_task_restart_sec: 1,
         }
     }
 }
@@ -69,6 +77,7 @@ impl GenServer {
     pub async fn run(
         self,
         mut parent_supervisor: SupervisorPid,
+        blocks_pool: BytesPool,
         blockwheel_pid: blockwheel::Pid,
         params: Params,
     )
@@ -76,10 +85,25 @@ impl GenServer {
         let memcache_gen_server = memcache::GenServer::new();
         let memcache_pid = memcache_gen_server.pid();
         let memcache_params = memcache::Params {
+            tree_block_size: params.tree_block_size,
             task_restart_sec: params.memcache_task_restart_sec,
         };
+
+        let manager_gen_server = manager::GenServer::new();
+        let manager_pid = manager_gen_server.pid();
+        let manager_params = manager::Params {
+            task_restart_sec: params.manager_task_restart_sec,
+        };
+
         parent_supervisor.spawn_link_permanent(
-            memcache_gen_server.run(memcache_params),
+            memcache_gen_server.run(manager_pid.clone(), memcache_params),
+        );
+        parent_supervisor.spawn_link_permanent(
+            manager_gen_server.run(
+                blocks_pool.clone(),
+                blockwheel_pid.clone(),
+                manager_params,
+            ),
         );
 
         unimplemented!()
