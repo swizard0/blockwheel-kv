@@ -81,7 +81,7 @@ impl GenServer {
 
     pub async fn run(
         self,
-        mut parent_supervisor: SupervisorPid,
+        parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
         blockwheel_pid: blockwheel::Pid,
         params: Params,
@@ -131,7 +131,7 @@ impl GenServer {
                     ),
                 );
 
-                busyloop(child_supervisor_pid, state).await
+                busyloop(child_supervisor_pid, butcher_pid, manager_pid, state).await
             },
         ).await;
         if let Err(error) = terminate_result {
@@ -203,9 +203,26 @@ struct State {
 enum Error {
 }
 
-async fn busyloop(child_supervisor_pid: SupervisorPid, state: State) -> Result<(), ErrorSeverity<State, Error>> {
+async fn busyloop(
+    child_supervisor_pid: SupervisorPid,
+    butcher_pid: butcher::Pid,
+    manager_pid: manager::Pid,
+    mut state: State,
+)
+    -> Result<(), ErrorSeverity<State, Error>>
+{
+    while let Some(request) = state.fused_request_rx.next().await {
+        match request {
+            proto::Request::Info(proto::RequestInfo { context, }) =>
+                unimplemented!(),
 
-    unimplemented!()
+            proto::Request::Insert(proto::RequestInsert { key_value, context, }) => {
+
+                unimplemented!()
+            },
+        }
+    }
+    Ok(())
 }
 
 mod kv_context {
