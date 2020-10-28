@@ -24,7 +24,7 @@ use alloc_pool::bytes::BytesPool;
 use ero_blockwheel_fs as blockwheel;
 
 use super::{
-    memcache,
+    butcher,
 };
 
 #[derive(Clone, Debug)]
@@ -84,19 +84,12 @@ impl GenServer {
                 blocks_pool,
                 params,
             },
-            |mut state| busyloop(state),
+            |state| busyloop(state),
         ).await;
         if let Err(error) = terminate_result {
             log::error!("fatal error: {:?}", error);
         }
     }
-}
-
-enum Request {
-    MemcacheFlush {
-        cache: Arc<memcache::Cache>,
-        current_block_size: usize,
-    },
 }
 
 struct State {
@@ -105,14 +98,32 @@ struct State {
     params: Params,
 }
 
+enum Request {
+    ButcherFlush {
+        cache: Arc<butcher::Cache>,
+        current_block_size: usize,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Flushed;
+
 #[derive(Debug)]
 enum Error {
+}
+
+impl Pid {
+    pub async fn flush_cache(&mut self, cache: Arc<butcher::Cache>, current_block_size: usize) -> Result<Flushed, ero::NoProcError> {
+        self.request_tx.send(Request::ButcherFlush { cache: cache.clone(), current_block_size, }).await
+            .map_err(|_send_error| ero::NoProcError)?;
+        Ok(Flushed)
+    }
 }
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            Request::MemcacheFlush { cache, current_block_size, } =>
+            Request::ButcherFlush { cache, current_block_size, } =>
                 unimplemented!(),
         }
     }

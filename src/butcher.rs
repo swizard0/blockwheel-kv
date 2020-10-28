@@ -1,11 +1,11 @@
 use std::{
     cmp,
-    collections::{
-        BTreeMap,
-    },
+    mem,
+    sync::Arc,
     ops::Deref,
     time::Duration,
     borrow::Borrow,
+    collections::BTreeMap,
 };
 
 use futures::{
@@ -91,7 +91,7 @@ impl GenServer {
                 manager_pid,
                 params,
             },
-            |mut state| busyloop(state),
+            |state| busyloop(state),
         ).await;
         if let Err(error) = terminate_result {
             log::error!("fatal error: {:?}", error);
@@ -135,6 +135,14 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     log::warn!("client canceled insert request");
                     current_block_size -= work_block.len();
                     memcache.remove(key_value.key_data());
+                } else if memcache.len() >= state.params.tree_block_size {
+                    // flush tree block
+                    let cache = Arc::new(mem::replace(&mut memcache, Cache::new()));
+                    if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache, current_block_size).await {
+                        log::warn!("manager has gone during flush, terminating");
+                        break;
+                    }
+                    current_block_size = 0;
                 }
             },
         }

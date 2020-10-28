@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::time::Duration;
+
 use futures::{
     stream,
     channel::{
@@ -12,6 +14,7 @@ use futures::{
 
 use ero::{
     restart,
+    ErrorSeverity,
     RestartStrategy,
     supervisor::SupervisorPid,
 };
@@ -26,13 +29,14 @@ mod proto;
 mod context;
 mod storage;
 mod manager;
-mod memcache;
+mod butcher;
 
 #[derive(Clone, Debug)]
 pub struct Params {
     pub tree_block_size: usize,
+    pub main_task_restart_sec: usize,
     pub kv_task_restart_sec: usize,
-    pub memcache_task_restart_sec: usize,
+    pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
 }
 
@@ -40,8 +44,9 @@ impl Default for Params {
     fn default() -> Params {
         Params {
             tree_block_size: 32,
-            kv_task_restart_sec: 4,
-            memcache_task_restart_sec: 1,
+            main_task_restart_sec: 4,
+            kv_task_restart_sec: 2,
+            butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
         }
     }
@@ -82,34 +87,58 @@ impl GenServer {
         params: Params,
     )
     {
-        let memcache_gen_server = memcache::GenServer::new();
-        let memcache_pid = memcache_gen_server.pid();
-        let memcache_params = memcache::Params {
-            tree_block_size: params.tree_block_size,
-            task_restart_sec: params.memcache_task_restart_sec,
-        };
+        let terminate_result = restart::restartable(
+            ero::Params {
+                name: "ero-blockwheel-kv main task",
+                restart_strategy: RestartStrategy::Delay {
+                    restart_after: Duration::from_secs(params.main_task_restart_sec as u64),
+                },
+            },
+            State {
+                parent_supervisor,
+                blocks_pool,
+                blockwheel_pid,
+                fused_request_rx: self.fused_request_rx,
+                params,
+            },
+            |mut state| async move {
+                let butcher_gen_server = butcher::GenServer::new();
+                let butcher_pid = butcher_gen_server.pid();
+                let butcher_params = butcher::Params {
+                    tree_block_size: state.params.tree_block_size,
+                    task_restart_sec: state.params.butcher_task_restart_sec,
+                };
 
-        let manager_gen_server = manager::GenServer::new();
-        let manager_pid = manager_gen_server.pid();
-        let manager_params = manager::Params {
-            task_restart_sec: params.manager_task_restart_sec,
-        };
+                let manager_gen_server = manager::GenServer::new();
+                let manager_pid = manager_gen_server.pid();
+                let manager_params = manager::Params {
+                    task_restart_sec: state.params.manager_task_restart_sec,
+                };
 
-        parent_supervisor.spawn_link_permanent(
-            memcache_gen_server.run(manager_pid.clone(), memcache_params),
-        );
-        parent_supervisor.spawn_link_permanent(
-            manager_gen_server.run(
-                blocks_pool.clone(),
-                blockwheel_pid.clone(),
-                manager_params,
-            ),
-        );
+                let child_supervisor_gen_server = state.parent_supervisor.child_supevisor();
+                let mut child_supervisor_pid = child_supervisor_gen_server.pid();
+                state.parent_supervisor.spawn_link_temporary(
+                    child_supervisor_gen_server.run(),
+                );
+                child_supervisor_pid.spawn_link_permanent(
+                    butcher_gen_server.run(manager_pid.clone(), butcher_params),
+                );
+                child_supervisor_pid.spawn_link_permanent(
+                    manager_gen_server.run(
+                        state.blocks_pool.clone(),
+                        state.blockwheel_pid.clone(),
+                        manager_params,
+                    ),
+                );
 
-        unimplemented!()
+                busyloop(child_supervisor_pid, state).await
+            },
+        ).await;
+        if let Err(error) = terminate_result {
+            log::error!("fatal error: {:?}", error);
+        }
     }
 }
-
 
 #[derive(Debug)]
 pub enum InsertError {
@@ -160,7 +189,23 @@ impl Pid {
             }
         }
     }
+}
 
+struct State {
+    parent_supervisor: SupervisorPid,
+    blocks_pool: BytesPool,
+    blockwheel_pid: blockwheel::Pid,
+    fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    params: Params,
+}
+
+#[derive(Debug)]
+enum Error {
+}
+
+async fn busyloop(child_supervisor_pid: SupervisorPid, state: State) -> Result<(), ErrorSeverity<State, Error>> {
+
+    unimplemented!()
 }
 
 mod kv_context {
