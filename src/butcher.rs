@@ -101,16 +101,17 @@ impl GenServer {
     }
 }
 
-#[derive(Debug)]
-pub enum Request {
-    Info(proto::RequestInfo<<kv_context::Context as context::Context>::Info>),
-    Insert(proto::RequestInsert<<kv_context::Context as context::Context>::Insert>),
-}
+type Request = proto::Request<kv_context::Context>;
 
 #[derive(Debug)]
 pub enum InsertError {
     GenServer(ero::NoProcError),
     NoSpaceLeft,
+}
+
+#[derive(Debug)]
+pub enum LookupError {
+    GenServer(ero::NoProcError),
 }
 
 impl Pid {
@@ -149,6 +150,28 @@ impl Pid {
             }
         }
     }
+
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(proto::Request::Lookup(proto::RequestLookup {
+                    key: key.clone(),
+                    context: reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Ok(result)) =>
+                    return Ok(result),
+                Ok(Err(..)) =>
+                    unreachable!(),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 struct State {
@@ -171,10 +194,10 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            Request::Info(..) =>
+            proto::Request::Info(..) =>
                 unimplemented!(),
 
-            Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
+            proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
                 work_block.clear();
                 storage::serialize_key_value(&key_value, storage::JumpRef::None, &mut work_block)
                     .map_err(Error::Storage)
@@ -195,6 +218,14 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     current_block_size = 0;
                 }
             },
+
+            proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
+                let result = memcache.get_key_value(key.data())
+                    .map(|(key, ())| key.as_ref().clone());
+                if let Err(_send_error) = reply_tx.send(Ok(result)) {
+                    log::warn!("client canceled lookup request");
+                }
+            }
         }
     }
     Ok(())

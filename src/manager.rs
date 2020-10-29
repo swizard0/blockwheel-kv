@@ -4,13 +4,24 @@ use std::{
 };
 
 use futures::{
-    stream,
+    select,
+    stream::{
+        self,
+        FuturesUnordered,
+    },
     channel::{
         mpsc,
         oneshot,
     },
     StreamExt,
     SinkExt,
+};
+
+use o1::{
+    set::{
+        Set,
+        Ref,
+    },
 };
 
 use ero::{
@@ -72,6 +83,7 @@ impl GenServer {
     pub async fn run(
         self,
         blocks_pool: BytesPool,
+        butcher_pid: butcher::Pid,
         blockwheel_pid: blockwheel::Pid,
         params: Params,
     )
@@ -86,6 +98,8 @@ impl GenServer {
             State {
                 fused_request_rx: self.fused_request_rx,
                 blocks_pool,
+                butcher_pid,
+                blockwheel_pid,
                 params,
             },
             |state| busyloop(state),
@@ -99,6 +113,8 @@ impl GenServer {
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     blocks_pool: BytesPool,
+    butcher_pid: butcher::Pid,
+    blockwheel_pid: blockwheel::Pid,
     params: Params,
 }
 
@@ -152,15 +168,71 @@ impl Pid {
 enum Error {
 }
 
+struct LookupRequest {
+    reply_tx: <kv_context::Context as context::Context>::Lookup,
+    pending: usize,
+}
+
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    while let Some(request) = state.fused_request_rx.next().await {
-        match request {
-            Request::ButcherFlush { cache, current_block_size, } =>
+    let mut lookup_requests = Set::new();
+    let mut lookup_tasks = FuturesUnordered::new();
+
+    loop {
+        enum Event<R, L> {
+            Request(Option<R>),
+            LookupTask(L),
+        }
+
+        let event = if lookup_tasks.is_empty() {
+            Event::Request(state.fused_request_rx.next().await)
+        } else {
+            select! {
+                result = state.fused_request_rx.next() =>
+                    Event::Request(result),
+                result = lookup_tasks.next() => match result {
+                    None =>
+                        unreachable!(),
+                    Some(lookup_task) =>
+                        Event::LookupTask(lookup_task),
+                },
+            }
+        };
+
+        match event {
+            Event::Request(None) => {
+                log::info!("requests sink channel depleted: terminating");
+                return Ok(());
+            },
+
+            Event::Request(Some(Request::ButcherFlush { cache, current_block_size, })) =>
                 unimplemented!(),
 
-            Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) =>
-                unimplemented!(),
+            Event::Request(Some(Request::Lookup(proto::RequestLookup { key, context: reply_tx, }))) => {
+                let request_ref = lookup_requests.insert(LookupRequest {
+                    reply_tx,
+                    pending: 1,
+                });
+                let mut butcher_pid = state.butcher_pid.clone();
+                let key = key.clone();
+                lookup_tasks.push(async move {
+                    let result = butcher_pid.lookup(key).await
+                        .map_err(|error| match error {
+                            butcher::LookupError::GenServer(ero::NoProcError) =>
+                                LookupError::GenServer(ero::NoProcError),
+                        });
+                    (request_ref, result)
+                });
+
+                unimplemented!()
+            },
+
+            Event::LookupTask((request_ref, result)) =>
+                if let Some(lookup_request) = lookup_requests.get_mut(request_ref) {
+
+                    unreachable!()
+                } else {
+                    log::error!("something went wrong: lookup task ready for nonexisting task ref = {:?}, ignoring", request_ref);
+                },
         }
     }
-    Ok(())
 }

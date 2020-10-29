@@ -126,6 +126,7 @@ impl GenServer {
                 child_supervisor_pid.spawn_link_permanent(
                     manager_gen_server.run(
                         state.blocks_pool.clone(),
+                        butcher_pid.clone(),
                         state.blockwheel_pid.clone(),
                         manager_params,
                     ),

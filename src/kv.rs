@@ -28,7 +28,7 @@ pub struct Key {
 }
 
 impl Key {
-    fn data(&self) -> &[u8] {
+    pub fn data(&self) -> &[u8] {
         &self.key_bytes
     }
 }
