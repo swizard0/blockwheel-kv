@@ -205,8 +205,8 @@ enum Error {
 
 async fn busyloop(
     child_supervisor_pid: SupervisorPid,
-    butcher_pid: butcher::Pid,
-    manager_pid: manager::Pid,
+    mut butcher_pid: butcher::Pid,
+    mut manager_pid: manager::Pid,
     mut state: State,
 )
     -> Result<(), ErrorSeverity<State, Error>>
@@ -216,7 +216,25 @@ async fn busyloop(
             proto::Request::Info(proto::RequestInfo { context, }) =>
                 unimplemented!(),
 
-            proto::Request::Insert(proto::RequestInsert { key_value, context, }) => {
+            proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
+                let status = match butcher_pid.insert(key_value).await {
+                    Ok(Inserted) =>
+                        Ok(Inserted),
+                    Err(butcher::InsertError::GenServer(ero::NoProcError)) => {
+                        log::warn!("butcher has gone during flush, terminating");
+                        break;
+                    },
+                    Err(butcher::InsertError::NoSpaceLeft) =>
+                        Err(kv_context::RequestInsertError::NoSpaceLeft),
+                };
+                if let Err(_send_error) = reply_tx.send(status) {
+                    log::warn!("client canceled insert request");
+                }
+
+                unimplemented!()
+            },
+
+            proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
 
                 unimplemented!()
             },
@@ -234,6 +252,7 @@ mod kv_context {
     };
 
     use super::{
+        kv,
         context,
         Info,
         Inserted,
@@ -244,6 +263,7 @@ mod kv_context {
     impl context::Context for Context {
         type Info = oneshot::Sender<Info>;
         type Insert = oneshot::Sender<Result<Inserted, RequestInsertError>>;
+        type Lookup = oneshot::Sender<Result<Option<kv::KeyValue>, RequestLookupError>>;
     }
 
     #[derive(Clone, PartialEq, Eq, Debug)]
@@ -251,4 +271,7 @@ mod kv_context {
         NoSpaceLeft,
     }
 
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub enum RequestLookupError {
+    }
 }

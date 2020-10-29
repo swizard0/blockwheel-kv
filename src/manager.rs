@@ -24,6 +24,7 @@ use alloc_pool::bytes::BytesPool;
 use ero_blockwheel_fs as blockwheel;
 
 use super::{
+    kv,
     butcher,
 };
 
@@ -109,7 +110,8 @@ enum Request {
 pub struct Flushed;
 
 #[derive(Debug)]
-enum Error {
+pub enum LookupError {
+    GenServer(ero::NoProcError),
 }
 
 impl Pid {
@@ -118,6 +120,15 @@ impl Pid {
             .map_err(|_send_error| ero::NoProcError)?;
         Ok(Flushed)
     }
+
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+
+        unimplemented!()
+    }
+}
+
+#[derive(Debug)]
+enum Error {
 }
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {

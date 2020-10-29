@@ -1,5 +1,5 @@
 use super::{
-    kv::KeyValue,
+    kv,
     context::Context,
 };
 
@@ -7,6 +7,7 @@ use super::{
 pub enum Request<C> where C: Context {
     Info(RequestInfo<C::Info>),
     Insert(RequestInsert<C::Insert>),
+    Lookup(RequestLookup<C::Lookup>),
 }
 
 #[derive(Debug)]
@@ -16,6 +17,12 @@ pub struct RequestInfo<C> {
 
 #[derive(Debug)]
 pub struct RequestInsert<C> {
-    pub key_value: KeyValue,
+    pub key_value: kv::KeyValue,
+    pub context: C,
+}
+
+#[derive(Debug)]
+pub struct RequestLookup<C> {
+    pub key: kv::Key,
     pub context: C,
 }

@@ -29,7 +29,9 @@ use super::{
     proto,
     storage,
     manager,
+    context,
     kv_context,
+    Info,
     Inserted,
 };
 
@@ -99,7 +101,55 @@ impl GenServer {
     }
 }
 
-type Request = proto::Request<kv_context::Context>;
+#[derive(Debug)]
+pub enum Request {
+    Info(proto::RequestInfo<<kv_context::Context as context::Context>::Info>),
+    Insert(proto::RequestInsert<<kv_context::Context as context::Context>::Insert>),
+}
+
+#[derive(Debug)]
+pub enum InsertError {
+    GenServer(ero::NoProcError),
+    NoSpaceLeft,
+}
+
+impl Pid {
+    pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Info(proto::RequestInfo { context: reply_tx, })).await
+                .map_err(|_send_error| ero::NoProcError)?;
+            match reply_rx.await {
+                Ok(info) =>
+                    return Ok(info),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn insert(&mut self, key_value: kv::KeyValue) -> Result<Inserted, InsertError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::Insert(proto::RequestInsert {
+                    key_value: key_value.clone(),
+                    context: reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Ok(Inserted)) =>
+                    return Ok(Inserted),
+                Ok(Err(kv_context::RequestInsertError::NoSpaceLeft)) =>
+                     return Err(InsertError::NoSpaceLeft),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+}
 
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
@@ -121,10 +171,10 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            proto::Request::Info(..) =>
+            Request::Info(..) =>
                 unimplemented!(),
 
-            proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
+            Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
                 work_block.clear();
                 storage::serialize_key_value(&key_value, storage::JumpRef::None, &mut work_block)
                     .map_err(Error::Storage)
