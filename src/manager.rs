@@ -25,7 +25,10 @@ use ero_blockwheel_fs as blockwheel;
 
 use super::{
     kv,
+    proto,
     butcher,
+    context,
+    kv_context,
 };
 
 #[derive(Clone, Debug)]
@@ -104,6 +107,7 @@ enum Request {
         cache: Arc<butcher::Cache>,
         current_block_size: usize,
     },
+    Lookup(proto::RequestLookup<<kv_context::Context as context::Context>::Lookup>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -122,8 +126,25 @@ impl Pid {
     }
 
     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::Lookup(proto::RequestLookup {
+                    key: key.clone(),
+                    context: reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
 
-        unimplemented!()
+            match reply_rx.await {
+                Ok(Ok(result)) =>
+                    return Ok(result),
+                Ok(Err(..)) =>
+                    unreachable!(),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
     }
 }
 
@@ -135,6 +156,9 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
             Request::ButcherFlush { cache, current_block_size, } =>
+                unimplemented!(),
+
+            Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) =>
                 unimplemented!(),
         }
     }

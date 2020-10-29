@@ -146,6 +146,11 @@ pub enum InsertError {
     NoSpaceLeft,
 }
 
+#[derive(Debug)]
+pub enum LookupError {
+    GenServer(ero::NoProcError),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Inserted;
 
@@ -184,6 +189,28 @@ impl Pid {
                     return Ok(Inserted),
                 Ok(Err(kv_context::RequestInsertError::NoSpaceLeft)) =>
                     return Err(InsertError::NoSpaceLeft),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(proto::Request::Lookup(proto::RequestLookup {
+                    key: key.clone(),
+                    context: reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Ok(result)) =>
+                    return Ok(result),
+                Ok(Err(..)) =>
+                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -230,13 +257,20 @@ async fn busyloop(
                 if let Err(_send_error) = reply_tx.send(status) {
                     log::warn!("client canceled insert request");
                 }
-
-                unimplemented!()
             },
 
             proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
-
-                unimplemented!()
+                let status = match manager_pid.lookup(key).await {
+                    Ok(result) =>
+                        Ok(result),
+                    Err(manager::LookupError::GenServer(ero::NoProcError)) => {
+                        log::warn!("manager has gone during flush, terminating");
+                        break;
+                    },
+                };
+                if let Err(_send_error) = reply_tx.send(status) {
+                    log::warn!("client canceled lookup request");
+                }
             },
         }
     }
