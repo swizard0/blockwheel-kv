@@ -4,13 +4,16 @@ use std::{
 };
 
 use futures::{
+    select,
     stream,
+    pin_mut,
     channel::{
         mpsc,
         oneshot,
     },
     SinkExt,
     StreamExt,
+    FutureExt,
 };
 
 use ero::{
@@ -24,6 +27,7 @@ use alloc_pool::bytes::BytesPool;
 
 use super::{
     kv,
+    storage,
     butcher,
     blockwheel::{
         self,
@@ -175,6 +179,9 @@ enum Request {
 
 #[derive(Debug)]
 enum Error {
+    BootstrapSerializeBlockStorage(storage::Error),
+    BootstrapSerializeBlockJoin(tokio::task::JoinError),
+    BootstrapWriteBlock(blockwheel::WriteBlockError),
 }
 
 #[derive(Debug)]
@@ -183,25 +190,33 @@ enum SearchTreeLookupError {
 
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
-    let maybe_bootstrap_task = match &state.mode {
+    let mut maybe_bootstrap_task = match &state.mode {
         Mode::CacheBootstrap { cache, } => {
-            let cache = cache.clone();
-            let blockwheel_pid = state.blockwheel_pid.clone();
-            Some(async move {
-                let block_bytes = unimplemented!();
-                blockwheel_pid.write_block(block_bytes).await
-            })
+            let fused_task = bootstrap_task(cache.clone(), state.blocks_pool.clone(), state.blockwheel_pid.clone())
+                .fuse();
+            pin_mut!(fused_task);
+            Some(fused_task)
         },
         Mode::Regular { root_block_id, } =>
             None,
     };
 
     loop {
-        enum Event<R> {
+        enum Event<R, B> {
             Request(Option<R>),
+            Bootstrap(B),
         }
 
-        let event = Event::Request(state.fused_request_rx.next().await);
+        let event = if let Some(mut bootstrap_task) = maybe_bootstrap_task.as_mut() {
+            select! {
+                result = state.fused_request_rx.next() =>
+                    Event::Request(result),
+                result = bootstrap_task =>
+                    Event::Bootstrap(result),
+            }
+        } else {
+            Event::Request(state.fused_request_rx.next().await)
+        };
 
         match event {
             Event::Request(None) => {
@@ -228,4 +243,26 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 },
         }
     }
+}
+
+async fn bootstrap_task(
+    cache: Arc<butcher::Cache>,
+    blocks_pool: BytesPool,
+    mut blockwheel_pid: blockwheel::Pid,
+)
+    -> Result<block::Id, Error>
+{
+    let mut block_bytes = blocks_pool.lend();
+    let serialize_task = tokio::task::spawn_blocking(move || {
+        for (key, &()) in cache.iter() {
+            storage::serialize_key_value(&key, storage::JumpRef::None, &mut block_bytes)?;
+        }
+        Ok(block_bytes)
+    });
+    let block_bytes = serialize_task.await
+        .map_err(Error::BootstrapSerializeBlockJoin)?
+        .map_err(Error::BootstrapSerializeBlockStorage)?;
+
+    blockwheel_pid.write_block(block_bytes.freeze()).await
+        .map_err(Error::BootstrapWriteBlock)
 }
