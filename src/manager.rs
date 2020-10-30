@@ -20,7 +20,6 @@ use futures::{
 use o1::{
     set::{
         Set,
-        Ref,
     },
 };
 
@@ -28,11 +27,10 @@ use ero::{
     restart,
     ErrorSeverity,
     RestartStrategy,
+    supervisor::SupervisorPid,
 };
 
 use alloc_pool::bytes::BytesPool;
-
-use ero_blockwheel_fs as blockwheel;
 
 use super::{
     kv,
@@ -40,6 +38,7 @@ use super::{
     butcher,
     context,
     kv_context,
+    blockwheel,
 };
 
 #[derive(Clone, Debug)]
@@ -82,6 +81,7 @@ impl GenServer {
 
     pub async fn run(
         self,
+        parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
         butcher_pid: butcher::Pid,
         blockwheel_pid: blockwheel::Pid,
@@ -97,12 +97,21 @@ impl GenServer {
             },
             State {
                 fused_request_rx: self.fused_request_rx,
+                parent_supervisor,
                 blocks_pool,
                 butcher_pid,
                 blockwheel_pid,
                 params,
             },
-            |state| busyloop(state),
+            |mut state| async move {
+                let child_supervisor_gen_server = state.parent_supervisor.child_supevisor();
+                let child_supervisor_pid = child_supervisor_gen_server.pid();
+                state.parent_supervisor.spawn_link_temporary(
+                    child_supervisor_gen_server.run(),
+                );
+
+                busyloop(child_supervisor_pid, state).await
+            },
         ).await;
         if let Err(error) = terminate_result {
             log::error!("fatal error: {:?}", error);
@@ -112,6 +121,7 @@ impl GenServer {
 
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
     butcher_pid: butcher::Pid,
     blockwheel_pid: blockwheel::Pid,
@@ -170,10 +180,11 @@ enum Error {
 
 struct LookupRequest {
     reply_tx: <kv_context::Context as context::Context>::Lookup,
-    pending: usize,
+    pending_count: usize,
 }
 
-async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+    // let mut search_trees = Set::new();
     let mut lookup_requests = Set::new();
     let mut lookup_tasks = FuturesUnordered::new();
 
@@ -204,13 +215,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 return Ok(());
             },
 
-            Event::Request(Some(Request::ButcherFlush { cache, current_block_size, })) =>
-                unimplemented!(),
+            Event::Request(Some(Request::ButcherFlush { cache: _, current_block_size: _, })) => {
+
+                unimplemented!()
+            },
 
             Event::Request(Some(Request::Lookup(proto::RequestLookup { key, context: reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
                     reply_tx,
-                    pending: 1,
+                    pending_count: 1,
                 });
                 let mut butcher_pid = state.butcher_pid.clone();
                 let key = key.clone();
@@ -226,8 +239,10 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 unimplemented!()
             },
 
-            Event::LookupTask((request_ref, result)) =>
+            Event::LookupTask((request_ref, _result)) =>
                 if let Some(lookup_request) = lookup_requests.get_mut(request_ref) {
+                    assert!(lookup_request.pending_count > 0);
+                    lookup_request.pending_count -= 1;
 
                     unreachable!()
                 } else {

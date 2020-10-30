@@ -30,6 +30,7 @@ mod context;
 mod storage;
 mod manager;
 mod butcher;
+mod search_tree;
 
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -125,6 +126,7 @@ impl GenServer {
                 );
                 child_supervisor_pid.spawn_link_permanent(
                     manager_gen_server.run(
+                        child_supervisor_pid.clone(),
                         state.blocks_pool.clone(),
                         butcher_pid.clone(),
                         state.blockwheel_pid.clone(),
@@ -232,7 +234,7 @@ enum Error {
 }
 
 async fn busyloop(
-    child_supervisor_pid: SupervisorPid,
+    _child_supervisor_pid: SupervisorPid,
     mut butcher_pid: butcher::Pid,
     mut manager_pid: manager::Pid,
     mut state: State,
@@ -241,7 +243,7 @@ async fn busyloop(
 {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            proto::Request::Info(proto::RequestInfo { context, }) =>
+            proto::Request::Info(proto::RequestInfo { context: _, }) =>
                 unimplemented!(),
 
             proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
@@ -283,7 +285,6 @@ mod kv_context {
         channel::{
             oneshot,
         },
-        future,
     };
 
     use super::{
