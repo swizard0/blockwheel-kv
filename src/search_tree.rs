@@ -1,12 +1,15 @@
 use std::{
+    mem,
     sync::Arc,
     time::Duration,
 };
 
 use futures::{
     select,
-    stream,
-    pin_mut,
+    stream::{
+        self,
+        FuturesUnordered,
+    },
     channel::{
         mpsc,
         oneshot,
@@ -189,33 +192,40 @@ enum SearchTreeLookupError {
 }
 
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+    let mut bg_tasks = FuturesUnordered::new();
 
-    let mut maybe_bootstrap_task = match &state.mode {
+    enum BgTask {
+        Bootstrap(Result<block::Id, Error>),
+    }
+
+    match &state.mode {
         Mode::CacheBootstrap { cache, } => {
-            let fused_task = bootstrap_task(cache.clone(), state.blocks_pool.clone(), state.blockwheel_pid.clone())
-                .fuse();
-            pin_mut!(fused_task);
-            Some(fused_task)
+            let task = bootstrap_task(cache.clone(), state.blocks_pool.clone(), state.blockwheel_pid.clone());
+            bg_tasks.push(async { BgTask::Bootstrap(task.await) });
         },
-        Mode::Regular { root_block_id, } =>
-            None,
+        Mode::Regular { .. } =>
+            (),
     };
 
     loop {
         enum Event<R, B> {
             Request(Option<R>),
-            Bootstrap(B),
+            BgTask(B),
         }
 
-        let event = if let Some(mut bootstrap_task) = maybe_bootstrap_task.as_mut() {
+        let event = if bg_tasks.is_empty() {
+            Event::Request(state.fused_request_rx.next().await)
+        } else {
             select! {
                 result = state.fused_request_rx.next() =>
                     Event::Request(result),
-                result = bootstrap_task =>
-                    Event::Bootstrap(result),
+                result = bg_tasks.next() => match result {
+                    None =>
+                        unreachable!(),
+                    Some(bg_task) =>
+                        Event::BgTask(bg_task),
+                },
             }
-        } else {
-            Event::Request(state.fused_request_rx.next().await)
         };
 
         match event {
@@ -236,11 +246,22 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             log::warn!("client canceled lookup request");
                         }
                     },
-                    Mode::Regular { root_block_id, } => {
+                    Mode::Regular { root_block_id: _, } => {
 
                         unimplemented!()
                     },
                 },
+
+            Event::BgTask(BgTask::Bootstrap(Ok(root_block_id))) =>
+                match mem::replace(&mut state.mode, Mode::Regular { root_block_id, }) {
+                    Mode::CacheBootstrap { .. } =>
+                        (),
+                    Mode::Regular { .. } =>
+                        unreachable!(),
+                },
+
+            Event::BgTask(BgTask::Bootstrap(Err(error))) =>
+                return Err(ErrorSeverity::Fatal(error)),
         }
     }
 }
