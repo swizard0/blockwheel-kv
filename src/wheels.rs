@@ -33,7 +33,7 @@ pub struct WheelFilename {
     pub filename: Arc<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,
     pub blockwheel_pid: blockwheel::Pid,

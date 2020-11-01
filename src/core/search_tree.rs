@@ -195,6 +195,8 @@ struct Lookup {
 
 #[derive(Debug)]
 enum Error {
+    BootstrapWheelsGone,
+    BootstrapWheelsEmpty,
     BootstrapSerializeBlockStorage(storage::Error),
     BootstrapSerializeBlockJoin(tokio::task::JoinError),
     BootstrapWriteBlock(blockwheel::WriteBlockError),
@@ -291,14 +293,14 @@ enum TaskArgs {
 }
 
 enum TaskDone {
-    Bootstrap(Result<block::Id, Error>),
+    Bootstrap(Result<BlockRef, Error>),
 }
 
 async fn run_task_args(args: TaskArgs) -> TaskDone {
     match args {
-        TaskArgs::Bootstrap { cache, blocks_pool, blockwheel_pid, } =>
+        TaskArgs::Bootstrap { cache, blocks_pool, wheels_pid, } =>
             TaskDone::Bootstrap(
-                task_bootstrap(cache, blocks_pool, blockwheel_pid).await,
+                task_bootstrap(cache, blocks_pool, wheels_pid).await,
             ),
     }
 }
@@ -306,9 +308,9 @@ async fn run_task_args(args: TaskArgs) -> TaskDone {
 async fn task_bootstrap(
     cache: Arc<butcher::Cache>,
     blocks_pool: BytesPool,
-    mut blockwheel_pid: blockwheel::Pid,
+    mut wheels_pid: wheels::Pid,
 )
-    -> Result<block::Id, Error>
+    -> Result<BlockRef, Error>
 {
     let mut block_bytes = blocks_pool.lend();
     let serialize_task = tokio::task::spawn_blocking(move || {
@@ -320,7 +322,13 @@ async fn task_bootstrap(
     let block_bytes = serialize_task.await
         .map_err(Error::BootstrapSerializeBlockJoin)?
         .map_err(Error::BootstrapSerializeBlockStorage)?;
-
-    blockwheel_pid.write_block(block_bytes.freeze()).await
-        .map_err(Error::BootstrapWriteBlock)
+    let mut wheel_ref = wheels_pid.acquire().await
+        .map_err(|ero::NoProcError| Error::BootstrapWheelsGone)?
+        .ok_or(Error::BootstrapWheelsEmpty)?;
+    let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes.freeze()).await
+        .map_err(Error::BootstrapWriteBlock)?;
+    Ok(BlockRef {
+        blockwheel_filename: wheel_ref.blockwheel_filename,
+        block_id,
+    })
 }
