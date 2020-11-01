@@ -32,13 +32,15 @@ use ero::{
 
 use alloc_pool::bytes::BytesPool;
 
-use super::{
+use crate::{
     kv,
     proto,
-    butcher,
+    wheels,
     context,
     kv_context,
-    blockwheel,
+    core::{
+        butcher,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -84,7 +86,7 @@ impl GenServer {
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
         butcher_pid: butcher::Pid,
-        blockwheel_pid: blockwheel::Pid,
+        wheels_pid: wheels::Pid,
         params: Params,
     )
     {
@@ -100,7 +102,7 @@ impl GenServer {
                 parent_supervisor,
                 blocks_pool,
                 butcher_pid,
-                blockwheel_pid,
+                wheels_pid,
                 params,
             },
             |mut state| async move {
@@ -124,7 +126,7 @@ struct State {
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
     butcher_pid: butcher::Pid,
-    blockwheel_pid: blockwheel::Pid,
+    wheels_pid: wheels::Pid,
     params: Params,
 }
 

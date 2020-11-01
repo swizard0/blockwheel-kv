@@ -2,6 +2,7 @@ use std::{
     mem,
     sync::Arc,
     time::Duration,
+    collections::HashMap,
 };
 
 use futures::{
@@ -26,15 +27,22 @@ use ero::{
     supervisor::SupervisorPid,
 };
 
-use alloc_pool::bytes::BytesPool;
+use alloc_pool::bytes::{
+    Bytes,
+    BytesPool,
+};
 
-use super::{
+use crate::{
     kv,
+    wheels,
     storage,
-    butcher,
     blockwheel::{
         self,
         block,
+    },
+    core::{
+        butcher,
+        BlockRef,
     },
 };
 
@@ -82,7 +90,7 @@ impl GenServer {
         self,
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
-        blockwheel_pid: blockwheel::Pid,
+        wheels_pid: wheels::Pid,
         params: Params,
         cache: Arc<butcher::Cache>,
     )
@@ -91,7 +99,7 @@ impl GenServer {
             fused_request_rx: self.fused_request_rx,
             parent_supervisor,
             blocks_pool,
-            blockwheel_pid,
+            wheels_pid,
             params,
             mode: Mode::CacheBootstrap { cache, },
         }).await
@@ -115,10 +123,10 @@ impl Pid {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(Request::Lookup {
+                .send(Request::Lookup(Lookup {
                     key: key.clone(),
                     reply_tx,
-                })
+                }))
                 .await
                 .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
 
@@ -138,7 +146,7 @@ struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
-    blockwheel_pid: blockwheel::Pid,
+    wheels_pid: wheels::Pid,
     params: Params,
     mode: Mode,
 }
@@ -148,7 +156,7 @@ enum Mode {
         cache: Arc<butcher::Cache>,
     },
     Regular {
-        root_block_id: block::Id,
+        root_block: BlockRef,
     },
 }
 
@@ -177,7 +185,12 @@ async fn run(state: State) {
 }
 
 enum Request {
-    Lookup { key: kv::Key, reply_tx: oneshot::Sender<Result<Found, SearchTreeLookupError>>, },
+    Lookup(Lookup),
+}
+
+struct Lookup {
+    key: kv::Key,
+    reply_tx: oneshot::Sender<Result<Found, SearchTreeLookupError>>,
 }
 
 #[derive(Debug)]
@@ -192,38 +205,41 @@ enum SearchTreeLookupError {
 }
 
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    let mut bg_tasks = FuturesUnordered::new();
-
-    enum BgTask {
-        Bootstrap(Result<block::Id, Error>),
-    }
+    let mut tree_view: HashMap<BlockRef, Bytes> = HashMap::new();
+    let mut tasks = FuturesUnordered::new();
 
     match &state.mode {
-        Mode::CacheBootstrap { cache, } => {
-            let task = bootstrap_task(cache.clone(), state.blocks_pool.clone(), state.blockwheel_pid.clone());
-            bg_tasks.push(async { BgTask::Bootstrap(task.await) });
-        },
+        Mode::CacheBootstrap { cache, } =>
+            tasks.push(
+                run_task_args(
+                    TaskArgs::Bootstrap {
+                        cache: cache.clone(),
+                        blocks_pool: state.blocks_pool.clone(),
+                        wheels_pid: state.wheels_pid.clone(),
+                    },
+                ),
+            ),
         Mode::Regular { .. } =>
             (),
     };
 
     loop {
-        enum Event<R, B> {
+        enum Event<R, T> {
             Request(Option<R>),
-            BgTask(B),
+            Task(T),
         }
 
-        let event = if bg_tasks.is_empty() {
+        let event = if tasks.is_empty() {
             Event::Request(state.fused_request_rx.next().await)
         } else {
             select! {
                 result = state.fused_request_rx.next() =>
                     Event::Request(result),
-                result = bg_tasks.next() => match result {
+                result = tasks.next() => match result {
                     None =>
                         unreachable!(),
-                    Some(bg_task) =>
-                        Event::BgTask(bg_task),
+                    Some(task) =>
+                        Event::Task(task),
                 },
             }
         };
@@ -234,39 +250,60 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 return Ok(());
             },
 
-            Event::Request(Some(Request::Lookup { key, reply_tx, })) =>
+            Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = if let Some((key, ())) = cache.get_key_value(key.data()) {
+                        let result = if let Some((key, ())) = cache.get_key_value(lookup_request.key.data()) {
                             Found::InCache { kv: key.as_ref().clone(), }
                         } else {
                             Found::Nothing
                         };
-                        if let Err(_send_error) = reply_tx.send(Ok(result)) {
+                        if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result)) {
                             log::warn!("client canceled lookup request");
                         }
                     },
-                    Mode::Regular { root_block_id: _, } => {
+                    Mode::Regular { root_block: _, } => {
 
                         unimplemented!()
                     },
                 },
 
-            Event::BgTask(BgTask::Bootstrap(Ok(root_block_id))) =>
-                match mem::replace(&mut state.mode, Mode::Regular { root_block_id, }) {
+            Event::Task(TaskDone::Bootstrap(Ok(root_block))) =>
+                match mem::replace(&mut state.mode, Mode::Regular { root_block, }) {
                     Mode::CacheBootstrap { .. } =>
                         (),
                     Mode::Regular { .. } =>
                         unreachable!(),
                 },
 
-            Event::BgTask(BgTask::Bootstrap(Err(error))) =>
+            Event::Task(TaskDone::Bootstrap(Err(error))) =>
                 return Err(ErrorSeverity::Fatal(error)),
         }
     }
 }
 
-async fn bootstrap_task(
+enum TaskArgs {
+    Bootstrap {
+        cache: Arc<butcher::Cache>,
+        blocks_pool: BytesPool,
+        wheels_pid: wheels::Pid,
+    },
+}
+
+enum TaskDone {
+    Bootstrap(Result<block::Id, Error>),
+}
+
+async fn run_task_args(args: TaskArgs) -> TaskDone {
+    match args {
+        TaskArgs::Bootstrap { cache, blocks_pool, blockwheel_pid, } =>
+            TaskDone::Bootstrap(
+                task_bootstrap(cache, blocks_pool, blockwheel_pid).await,
+            ),
+    }
+}
+
+async fn task_bootstrap(
     cache: Arc<butcher::Cache>,
     blocks_pool: BytesPool,
     mut blockwheel_pid: blockwheel::Pid,

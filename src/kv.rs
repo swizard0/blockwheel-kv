@@ -21,7 +21,7 @@ use alloc_pool::bytes::{
     BytesMut,
 };
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Key {
     key_header: KeyHeader,
     key_bytes: Bytes,
@@ -33,13 +33,13 @@ impl Key {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct KeyHeader {
     len: usize,
     hash: u64,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyValue {
     key_header: KeyHeader,
     key_value_bytes: Bytes,

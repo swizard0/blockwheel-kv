@@ -24,14 +24,16 @@ use ero::{
     RestartStrategy,
 };
 
-use super::{
+use crate::{
     kv,
     proto,
     storage,
-    manager,
     kv_context,
     Info,
     Inserted,
+    core::{
+        manager,
+    },
 };
 
 #[derive(Clone, Debug)]

@@ -24,13 +24,12 @@ use alloc_pool::bytes::BytesPool;
 use ero_blockwheel_fs as blockwheel;
 
 pub mod kv;
+pub mod wheels;
 
+mod core;
 mod proto;
 mod context;
 mod storage;
-mod manager;
-mod butcher;
-mod search_tree;
 
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -84,7 +83,7 @@ impl GenServer {
         self,
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
-        blockwheel_pid: blockwheel::Pid,
+        wheels_pid: wheels::Pid,
         params: Params,
     )
     {
@@ -98,21 +97,21 @@ impl GenServer {
             State {
                 parent_supervisor,
                 blocks_pool,
-                blockwheel_pid,
+                wheels_pid,
                 fused_request_rx: self.fused_request_rx,
                 params,
             },
             |mut state| async move {
-                let butcher_gen_server = butcher::GenServer::new();
+                let butcher_gen_server = core::butcher::GenServer::new();
                 let butcher_pid = butcher_gen_server.pid();
-                let butcher_params = butcher::Params {
+                let butcher_params = core::butcher::Params {
                     tree_block_size: state.params.tree_block_size,
                     task_restart_sec: state.params.butcher_task_restart_sec,
                 };
 
-                let manager_gen_server = manager::GenServer::new();
+                let manager_gen_server = core::manager::GenServer::new();
                 let manager_pid = manager_gen_server.pid();
-                let manager_params = manager::Params {
+                let manager_params = core::manager::Params {
                     task_restart_sec: state.params.manager_task_restart_sec,
                 };
 
@@ -129,7 +128,7 @@ impl GenServer {
                         child_supervisor_pid.clone(),
                         state.blocks_pool.clone(),
                         butcher_pid.clone(),
-                        state.blockwheel_pid.clone(),
+                        state.wheels_pid.clone(),
                         manager_params,
                     ),
                 );
@@ -224,7 +223,7 @@ impl Pid {
 struct State {
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
-    blockwheel_pid: blockwheel::Pid,
+    wheels_pid: wheels::Pid,
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     params: Params,
 }
@@ -235,8 +234,8 @@ enum Error {
 
 async fn busyloop(
     _child_supervisor_pid: SupervisorPid,
-    mut butcher_pid: butcher::Pid,
-    mut manager_pid: manager::Pid,
+    mut butcher_pid: core::butcher::Pid,
+    mut manager_pid: core::manager::Pid,
     mut state: State,
 )
     -> Result<(), ErrorSeverity<State, Error>>
@@ -250,11 +249,11 @@ async fn busyloop(
                 let status = match butcher_pid.insert(key_value).await {
                     Ok(Inserted) =>
                         Ok(Inserted),
-                    Err(butcher::InsertError::GenServer(ero::NoProcError)) => {
+                    Err(core::butcher::InsertError::GenServer(ero::NoProcError)) => {
                         log::warn!("butcher has gone during flush, terminating");
                         break;
                     },
-                    Err(butcher::InsertError::NoSpaceLeft) =>
+                    Err(core::butcher::InsertError::NoSpaceLeft) =>
                         Err(kv_context::RequestInsertError::NoSpaceLeft),
                 };
                 if let Err(_send_error) = reply_tx.send(status) {
@@ -266,7 +265,7 @@ async fn busyloop(
                 let status = match manager_pid.lookup(key).await {
                     Ok(result) =>
                         Ok(result),
-                    Err(manager::LookupError::GenServer(ero::NoProcError)) => {
+                    Err(core::manager::LookupError::GenServer(ero::NoProcError)) => {
                         log::warn!("manager has gone during flush, terminating");
                         break;
                     },

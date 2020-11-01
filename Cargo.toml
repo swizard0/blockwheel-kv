@@ -1,6 +1,6 @@
 [package]
 name = "ero-blockwheel-kv"
-version = "0.1.8"
+version = "0.1.10"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 description = "Key/value persistent store based on `ero-blockwheel` framework."
 edition = "2018"
@@ -12,6 +12,7 @@ alloc-pool = { git = "https://github.com/swizard0/alloc-pool.git" }
 o1 = { git = "https://github.com/swizard0/o1.git" }
 
 log = "^0.4"
+rand = "^0.7"
 serde = "^1.0"
 futures = "^0.3"
 bincode = "^1.2"
