@@ -23,15 +23,15 @@ pub mod butcher;
 pub mod search_tree;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-struct BlockRef {
+pub struct BlockRef {
     blockwheel_filename: WheelFilename,
     block_id: block::Id,
 }
 
-type MemCache = BTreeMap<OrdKey<KeyValue>, ()>;
+pub type MemCache = BTreeMap<OrdKey<KeyValue>, ()>;
 
 #[derive(Clone, Debug)]
-struct OrdKey<T> {
+pub struct OrdKey<T> {
     inner: T,
 }
 
