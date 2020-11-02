@@ -99,11 +99,6 @@ struct State {
     params: Params,
 }
 
-enum Request {
-    Add { wheel_ref: WheelRef, reply_tx: oneshot::Sender<bool>, },
-    Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, }
-}
-
 impl Pid {
     pub async fn add(&mut self, wheel_ref: WheelRef) -> Result<bool, ero::NoProcError> {
         loop {
@@ -132,6 +127,26 @@ impl Pid {
             }
         }
     }
+
+    pub async fn get(&mut self, blockwheel_filename: WheelFilename) -> Result<Option<WheelRef>, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Get { blockwheel_filename: blockwheel_filename.clone(), reply_tx, }).await
+                .map_err(|_send_error| ero::NoProcError)?;
+            match reply_rx.await {
+                Ok(maybe_wheel_ref) =>
+                    return Ok(maybe_wheel_ref),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+}
+
+enum Request {
+    Add { wheel_ref: WheelRef, reply_tx: oneshot::Sender<bool>, },
+    Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, },
+    Get { blockwheel_filename: WheelFilename, reply_tx: oneshot::Sender<Option<WheelRef>>, },
 }
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
@@ -169,6 +184,14 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
                 };
                 if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
                     log::warn!("client canceled add request");
+                }
+            },
+
+            Request::Get { blockwheel_filename, reply_tx, } => {
+                let maybe_wheel_ref = index.get(&blockwheel_filename)
+                    .map(|&offset| wheels[offset].clone());
+                if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
+                    log::warn!("client canceled get request");
                 }
             },
         }

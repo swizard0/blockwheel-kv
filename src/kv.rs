@@ -21,14 +21,18 @@ use alloc_pool::bytes::{
     BytesMut,
 };
 
+pub trait ContainsKey {
+    fn key_data(&self) -> &[u8];
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Key {
     key_header: KeyHeader,
     key_bytes: Bytes,
 }
 
-impl Key {
-    pub fn data(&self) -> &[u8] {
+impl ContainsKey for Key {
+    fn key_data(&self) -> &[u8] {
         &self.key_bytes
     }
 }
@@ -45,11 +49,13 @@ pub struct KeyValue {
     key_value_bytes: Bytes,
 }
 
-impl KeyValue {
-    pub fn key_data(&self) -> &[u8] {
+impl ContainsKey for KeyValue {
+    fn key_data(&self) -> &[u8] {
         &self.key_value_bytes[.. self.key_header.len]
     }
+}
 
+impl KeyValue {
     pub fn value_data(&self) -> &[u8] {
         &self.key_value_bytes[self.key_header.len ..]
     }

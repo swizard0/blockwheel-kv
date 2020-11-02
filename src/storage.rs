@@ -4,7 +4,10 @@ use serde_derive::{
 };
 
 use super::{
-    kv,
+    kv::{
+        self,
+        ContainsKey,
+    },
     blockwheel::block,
 };
 

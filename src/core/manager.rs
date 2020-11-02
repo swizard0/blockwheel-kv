@@ -40,6 +40,7 @@ use crate::{
     kv_context,
     core::{
         butcher,
+        MemCache,
     },
 };
 
@@ -132,7 +133,7 @@ struct State {
 
 enum Request {
     ButcherFlush {
-        cache: Arc<butcher::Cache>,
+        cache: Arc<MemCache>,
         current_block_size: usize,
     },
     Lookup(proto::RequestLookup<<kv_context::Context as context::Context>::Lookup>),
@@ -147,7 +148,7 @@ pub enum LookupError {
 }
 
 impl Pid {
-    pub async fn flush_cache(&mut self, cache: Arc<butcher::Cache>, current_block_size: usize) -> Result<Flushed, ero::NoProcError> {
+    pub async fn flush_cache(&mut self, cache: Arc<MemCache>, current_block_size: usize) -> Result<Flushed, ero::NoProcError> {
         self.request_tx.send(Request::ButcherFlush { cache: cache.clone(), current_block_size, }).await
             .map_err(|_send_error| ero::NoProcError)?;
         Ok(Flushed)

@@ -1,11 +1,7 @@
 use std::{
-    cmp,
     mem,
     sync::Arc,
-    ops::Deref,
     time::Duration,
-    borrow::Borrow,
-    collections::BTreeMap,
 };
 
 use futures::{
@@ -25,7 +21,10 @@ use ero::{
 };
 
 use crate::{
-    kv,
+    kv::{
+        self,
+        ContainsKey,
+    },
     proto,
     storage,
     kv_context,
@@ -33,6 +32,8 @@ use crate::{
     Inserted,
     core::{
         manager,
+        OrdKey,
+        MemCache,
     },
 };
 
@@ -186,10 +187,8 @@ enum Error {
     Storage(storage::Error),
 }
 
-pub type Cache = BTreeMap<Key, ()>;
-
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    let mut memcache = Cache::new();
+    let mut memcache = MemCache::new();
     let mut work_block = Vec::new();
     let mut current_block_size = 0;
 
@@ -204,14 +203,14 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     .map_err(Error::Storage)
                     .map_err(ErrorSeverity::Fatal)?;
                 current_block_size += work_block.len();
-                memcache.insert(Key::new(key_value.clone()), ());
+                memcache.insert(OrdKey::new(key_value.clone()), ());
                 if let Err(_send_error) = reply_tx.send(Ok(Inserted)) {
                     log::warn!("client canceled insert request");
                     current_block_size -= work_block.len();
                     memcache.remove(key_value.key_data());
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
-                    let cache = Arc::new(mem::replace(&mut memcache, Cache::new()));
+                    let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
                     if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache, current_block_size).await {
                         log::warn!("manager has gone during flush, terminating");
                         break;
@@ -221,7 +220,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
-                let result = memcache.get_key_value(key.data())
+                let result = memcache.get_key_value(key.key_data())
                     .map(|(key, ())| key.as_ref().clone());
                 if let Err(_send_error) = reply_tx.send(Ok(result)) {
                     log::warn!("client canceled lookup request");
@@ -230,57 +229,4 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
         }
     }
     Ok(())
-}
-
-#[derive(Clone, Debug)]
-pub struct Key {
-    kv: kv::KeyValue,
-}
-
-impl Key {
-    fn new(kv: kv::KeyValue) -> Key {
-        Key { kv, }
-    }
-}
-
-impl AsRef<kv::KeyValue> for Key {
-    #[inline]
-    fn as_ref(&self) -> &kv::KeyValue {
-        &self.kv
-    }
-}
-
-impl Deref for Key {
-    type Target = kv::KeyValue;
-
-    #[inline]
-    fn deref(&self) -> &kv::KeyValue {
-        self.as_ref()
-    }
-}
-
-impl PartialEq for Key {
-    fn eq(&self, other: &Key) -> bool {
-        self.kv.key_data() == other.kv.key_data()
-    }
-}
-
-impl Eq for Key { }
-
-impl PartialOrd for Key {
-    fn partial_cmp(&self, other: &Key) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Key {
-    fn cmp(&self, other: &Key) -> cmp::Ordering {
-        self.kv.key_data().cmp(other.kv.key_data())
-    }
-}
-
-impl Borrow<[u8]> for Key {
-    fn borrow(&self) -> &[u8] {
-        self.kv.key_data()
-    }
 }

@@ -2,7 +2,11 @@ use std::{
     mem,
     sync::Arc,
     time::Duration,
-    collections::HashMap,
+    collections::{
+        hash_map,
+        HashMap,
+        BinaryHeap,
+    },
 };
 
 use futures::{
@@ -17,7 +21,6 @@ use futures::{
     },
     SinkExt,
     StreamExt,
-    FutureExt,
 };
 
 use ero::{
@@ -27,13 +30,20 @@ use ero::{
     supervisor::SupervisorPid,
 };
 
-use alloc_pool::bytes::{
-    Bytes,
-    BytesPool,
+use alloc_pool::{
+    pool,
+    bytes::{
+        Bytes,
+        BytesPool,
+    },
+    Unique,
 };
 
 use crate::{
-    kv,
+    kv::{
+        self,
+        ContainsKey,
+    },
     wheels,
     storage,
     blockwheel::{
@@ -41,8 +51,9 @@ use crate::{
         block,
     },
     core::{
-        butcher,
+        OrdKey,
         BlockRef,
+        MemCache,
     },
 };
 
@@ -92,7 +103,7 @@ impl GenServer {
         blocks_pool: BytesPool,
         wheels_pid: wheels::Pid,
         params: Params,
-        cache: Arc<butcher::Cache>,
+        cache: Arc<MemCache>,
     )
     {
         run(State {
@@ -153,7 +164,7 @@ struct State {
 
 enum Mode {
     CacheBootstrap {
-        cache: Arc<butcher::Cache>,
+        cache: Arc<MemCache>,
     },
     Regular {
         root_block: BlockRef,
@@ -193,6 +204,12 @@ struct Lookup {
     reply_tx: oneshot::Sender<Result<Found, SearchTreeLookupError>>,
 }
 
+impl ContainsKey for Lookup {
+    fn key_data(&self) -> &[u8] {
+        self.key.key_data()
+    }
+}
+
 #[derive(Debug)]
 enum Error {
     BootstrapWheelsGone,
@@ -200,6 +217,11 @@ enum Error {
     BootstrapSerializeBlockStorage(storage::Error),
     BootstrapSerializeBlockJoin(tokio::task::JoinError),
     BootstrapWriteBlock(blockwheel::WriteBlockError),
+    LoadBlockLookupWheelsGone,
+    LoadBlockLookupWheelNotFound {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    LoadBlockLookupReadBlock(blockwheel::ReadBlockError),
 }
 
 #[derive(Debug)]
@@ -207,8 +229,10 @@ enum SearchTreeLookupError {
 }
 
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    let mut tree_view: HashMap<BlockRef, Bytes> = HashMap::new();
+    let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
+    let mut requests_queue_pool = pool::Pool::new();
+    let mut outcomes_pool = pool::Pool::new();
 
     match &state.mode {
         Mode::CacheBootstrap { cache, } =>
@@ -255,7 +279,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = if let Some((key, ())) = cache.get_key_value(lookup_request.key.data()) {
+                        let result = if let Some((key, ())) = cache.get_key_value(lookup_request.key.key_data()) {
                             Found::InCache { kv: key.as_ref().clone(), }
                         } else {
                             Found::Nothing
@@ -264,13 +288,30 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             log::warn!("client canceled lookup request");
                         }
                     },
-                    Mode::Regular { root_block: _, } => {
-
-                        unimplemented!()
-                    },
+                    Mode::Regular { root_block, } =>
+                        match async_tree.entry(root_block.clone()) {
+                            hash_map::Entry::Occupied(oe) =>
+                                unimplemented!(),
+                            hash_map::Entry::Vacant(ve) => {
+                                let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
+                                requests_queue.push(OrdKey::new(lookup_request));
+                                ve.insert(AsyncBlock {
+                                    parent: None,
+                                    state: AsyncBlockState::Awaiting { requests_queue, },
+                                });
+                                tasks.push(
+                                    run_task_args(
+                                        TaskArgs::LoadBlockLookup {
+                                            block_ref: root_block.clone(),
+                                            wheels_pid: state.wheels_pid.clone(),
+                                        },
+                                    ),
+                                );
+                            },
+                        },
                 },
 
-            Event::Task(TaskDone::Bootstrap(Ok(root_block))) =>
+            Event::Task(Ok(TaskDone::Bootstrap(root_block))) =>
                 match mem::replace(&mut state.mode, Mode::Regular { root_block, }) {
                     Mode::CacheBootstrap { .. } =>
                         (),
@@ -278,35 +319,131 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                 },
 
-            Event::Task(TaskDone::Bootstrap(Err(error))) =>
+            Event::Task(Ok(TaskDone::LoadBlockLookup((block_ref, block_bytes)))) =>
+                match async_tree.remove(&block_ref) {
+                    Some(AsyncBlock { parent, state: AsyncBlockState::Awaiting { requests_queue, }, }) => {
+                        if let Some(ref parent_block_ref) = parent {
+                            match async_tree.get_mut(parent_block_ref) {
+                                Some(AsyncBlock { state: AsyncBlockState::Ready { activity_refs, .. }, .. }) =>
+                                    *activity_refs += 1,
+                                None | Some(AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. }) =>
+                                    unreachable!(),
+                            }
+                        }
+                        async_tree.insert(block_ref.clone(), AsyncBlock {
+                            parent,
+                            state: AsyncBlockState::Ready {
+                                block_bytes: block_bytes.clone(),
+                                activity_refs: 1,
+                                barrier: Barrier::SearchInProgress {
+                                    requests_queue: requests_queue_pool.lend(BinaryHeap::new),
+                                },
+                            },
+                        });
+                        tasks.push(
+                            run_task_args(
+                                TaskArgs::SearchBlock {
+                                    block_ref,
+                                    block_bytes,
+                                    requests_queue,
+                                    outcomes: outcomes_pool.lend(Vec::new),
+                                },
+                            ),
+                        );
+                    },
+                    None | Some(AsyncBlock { state: AsyncBlockState::Ready { .. }, .. }) =>
+                        unreachable!(),
+                },
+
+            Event::Task(Ok(TaskDone::SearchBlock((block_ref, outcomes)))) =>
+                unimplemented!(),
+
+            Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(error)),
         }
     }
 }
 
+type AsyncTree = HashMap<BlockRef, AsyncBlock>;
+
+struct AsyncBlock {
+    parent: Option<BlockRef>,
+    state: AsyncBlockState,
+}
+
+enum AsyncBlockState {
+    Awaiting {
+        requests_queue: RequestsQueue,
+    },
+    Ready {
+        block_bytes: Bytes,
+        activity_refs: usize,
+        barrier: Barrier,
+    },
+}
+
+enum Barrier {
+    Opened,
+    SearchInProgress { requests_queue: RequestsQueue, },
+}
+
+type RequestsQueue = Unique<BinaryHeap<OrdKey<Lookup>>>;
+type SearchOutcomes = Unique<Vec<SearchOutcome>>;
+
+struct SearchOutcome {
+    request: Lookup,
+    outcome: Outcome,
+}
+
+enum Outcome {
+    Found { kv: kv::KeyValue, },
+    NotFound,
+    Jump { block_ref: BlockRef, },
+}
+
 enum TaskArgs {
     Bootstrap {
-        cache: Arc<butcher::Cache>,
+        cache: Arc<MemCache>,
         blocks_pool: BytesPool,
         wheels_pid: wheels::Pid,
+    },
+    LoadBlockLookup {
+        block_ref: BlockRef,
+        wheels_pid: wheels::Pid,
+    },
+    SearchBlock {
+        block_ref: BlockRef,
+        block_bytes: Bytes,
+        requests_queue: RequestsQueue,
+        outcomes: SearchOutcomes,
     },
 }
 
 enum TaskDone {
-    Bootstrap(Result<BlockRef, Error>),
+    Bootstrap(BlockRef),
+    LoadBlockLookup((BlockRef, Bytes)),
+    SearchBlock((BlockRef, SearchOutcomes)),
 }
 
-async fn run_task_args(args: TaskArgs) -> TaskDone {
-    match args {
+async fn run_task_args(args: TaskArgs) -> Result<TaskDone, Error> {
+    Ok(match args {
         TaskArgs::Bootstrap { cache, blocks_pool, wheels_pid, } =>
             TaskDone::Bootstrap(
-                task_bootstrap(cache, blocks_pool, wheels_pid).await,
+                task_bootstrap(cache, blocks_pool, wheels_pid).await?,
             ),
-    }
+        TaskArgs::LoadBlockLookup { block_ref, wheels_pid, } =>
+            TaskDone::LoadBlockLookup(
+                task_load_block_lookup(block_ref, wheels_pid).await?,
+            ),
+        TaskArgs::SearchBlock { block_ref, block_bytes, requests_queue, outcomes, } =>
+            TaskDone::SearchBlock(
+                task_search_block(block_ref, block_bytes, requests_queue, outcomes).await?,
+            ),
+    })
 }
 
 async fn task_bootstrap(
-    cache: Arc<butcher::Cache>,
+    cache: Arc<MemCache>,
     blocks_pool: BytesPool,
     mut wheels_pid: wheels::Pid,
 )
@@ -331,4 +468,32 @@ async fn task_bootstrap(
         blockwheel_filename: wheel_ref.blockwheel_filename,
         block_id,
     })
+}
+
+async fn task_load_block_lookup(
+    block_ref: BlockRef,
+    mut wheels_pid: wheels::Pid,
+)
+    -> Result<(BlockRef, Bytes), Error>
+{
+    let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
+        .map_err(|ero::NoProcError| Error::LoadBlockLookupWheelsGone)?
+        .ok_or_else(|| Error::LoadBlockLookupWheelNotFound {
+            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+        })?;
+    let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await
+        .map_err(Error::LoadBlockLookupReadBlock)?;
+    Ok((block_ref, block_bytes))
+}
+
+async fn task_search_block(
+    block_ref: BlockRef,
+    block_bytes: Bytes,
+    requests_queue: RequestsQueue,
+    outcomes: SearchOutcomes,
+)
+    -> Result<(BlockRef, SearchOutcomes), Error>
+{
+
+    unimplemented!()
 }
