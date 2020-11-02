@@ -1,6 +1,7 @@
 use std::{
     mem,
     sync::Arc,
+    cmp::Reverse,
     time::Duration,
     collections::{
         hash_map,
@@ -269,7 +270,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 unimplemented!(),
                             hash_map::Entry::Vacant(ve) => {
                                 let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                                requests_queue.push(OrdKey::new(lookup_request));
+                                requests_queue.push(Reverse(OrdKey::new(lookup_request)));
                                 ve.insert(AsyncBlock {
                                     parent: None,
                                     state: AsyncBlockState::Awaiting { requests_queue, },
@@ -319,6 +320,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             task::run_args(
                                 task::TaskArgs::SearchBlock(task::search_block::Args {
                                     block_ref,
+                                    blocks_pool: state.blocks_pool.clone(),
                                     block_bytes,
                                     requests_queue,
                                     outcomes: outcomes_pool.lend(Vec::new),

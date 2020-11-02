@@ -132,10 +132,7 @@ struct State {
 }
 
 enum Request {
-    ButcherFlush {
-        cache: Arc<MemCache>,
-        current_block_size: usize,
-    },
+    ButcherFlush { cache: Arc<MemCache>, },
     Lookup(proto::RequestLookup<<kv_context::Context as context::Context>::Lookup>),
 }
 
@@ -148,8 +145,8 @@ pub enum LookupError {
 }
 
 impl Pid {
-    pub async fn flush_cache(&mut self, cache: Arc<MemCache>, current_block_size: usize) -> Result<Flushed, ero::NoProcError> {
-        self.request_tx.send(Request::ButcherFlush { cache: cache.clone(), current_block_size, }).await
+    pub async fn flush_cache(&mut self, cache: Arc<MemCache>) -> Result<Flushed, ero::NoProcError> {
+        self.request_tx.send(Request::ButcherFlush { cache: cache.clone(), }).await
             .map_err(|_send_error| ero::NoProcError)?;
         Ok(Flushed)
     }
@@ -218,7 +215,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 return Ok(());
             },
 
-            Event::Request(Some(Request::ButcherFlush { cache: _, current_block_size: _, })) => {
+            Event::Request(Some(Request::ButcherFlush { cache: _, })) => {
 
                 unimplemented!()
             },

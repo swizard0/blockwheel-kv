@@ -33,6 +33,12 @@ pub struct WheelFilename {
     pub filename: Arc<String>,
 }
 
+impl<'a> From<&'a str> for WheelFilename {
+    fn from(filename: &'a str) -> WheelFilename {
+        WheelFilename { filename: Arc::new(filename.to_string()), }
+    }
+}
+
 #[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,

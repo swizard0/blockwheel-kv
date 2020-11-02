@@ -32,12 +32,24 @@ pub enum Error {
 }
 
 pub async fn run(Args { cache, blocks_pool, mut wheels_pid, }: Args) -> Result<Done, Error> {
-    let mut block_bytes = blocks_pool.lend();
+    let block_bytes = blocks_pool.lend();
     let serialize_task = tokio::task::spawn_blocking(move || {
-        for (key, &()) in cache.iter() {
-            storage::serialize_key_value(&key, storage::JumpRef::None, &mut block_bytes)?;
+        let mut kont = storage::BlockSerializer::start(
+            storage::NodeType::Root,
+            cache.len(),
+            block_bytes,
+        )?;
+        let mut cache_iter = cache.iter();
+        loop {
+            match kont {
+                storage::BlockSerializerContinue::Done(block_bytes) =>
+                    return Ok(block_bytes),
+                storage::BlockSerializerContinue::More(serializer) => {
+                    let (key, &()) = cache_iter.next().unwrap();
+                    kont = serializer.entry(key, storage::JumpRef::None)?;
+                },
+            }
         }
-        Ok(block_bytes)
     });
     let block_bytes = serialize_task.await
         .map_err(Error::SerializeBlockJoin)?

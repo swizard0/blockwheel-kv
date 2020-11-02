@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::BinaryHeap,
 };
 
@@ -28,7 +29,7 @@ pub mod bootstrap;
 pub mod load_block_lookup;
 pub mod search_block;
 
-pub type RequestsQueue = Unique<BinaryHeap<OrdKey<Lookup>>>;
+pub type RequestsQueue = Unique<BinaryHeap<Reverse<OrdKey<Lookup>>>>;
 pub type SearchOutcomes = Unique<Vec<SearchOutcome>>;
 
 pub struct SearchOutcome {

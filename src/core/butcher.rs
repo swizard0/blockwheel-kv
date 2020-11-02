@@ -189,8 +189,6 @@ enum Error {
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut memcache = MemCache::new();
-    let mut work_block = Vec::new();
-    let mut current_block_size = 0;
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
@@ -198,24 +196,17 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 unimplemented!(),
 
             proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
-                work_block.clear();
-                storage::serialize_key_value(&key_value, storage::JumpRef::None, &mut work_block)
-                    .map_err(Error::Storage)
-                    .map_err(ErrorSeverity::Fatal)?;
-                current_block_size += work_block.len();
                 memcache.insert(OrdKey::new(key_value.clone()), ());
                 if let Err(_send_error) = reply_tx.send(Ok(Inserted)) {
                     log::warn!("client canceled insert request");
-                    current_block_size -= work_block.len();
                     memcache.remove(key_value.key_data());
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
-                    if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache, current_block_size).await {
+                    if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
                         log::warn!("manager has gone during flush, terminating");
                         break;
                     }
-                    current_block_size = 0;
                 }
             },
 
