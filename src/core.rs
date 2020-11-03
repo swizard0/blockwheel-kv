@@ -31,6 +31,13 @@ pub struct BlockRef {
 pub type MemCache = BTreeMap<OrdKey<KeyValue>, ()>;
 
 #[derive(Clone, Debug)]
+pub enum Found {
+    Nothing,
+    InCache { kv: KeyValue, },
+    InBlock { kv: KeyValue, block_ref: BlockRef, },
+}
+
+#[derive(Clone, Debug)]
 pub struct OrdKey<T> {
     inner: T,
 }

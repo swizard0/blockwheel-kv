@@ -17,11 +17,9 @@ use crate::{
         ContainsKey,
     },
     core::{
+        Found,
         OrdKey,
         BlockRef,
-        search_tree::{
-            Found,
-        },
     },
 };
 
@@ -29,15 +27,16 @@ pub mod bootstrap;
 pub mod load_block_lookup;
 pub mod search_block;
 
-pub type RequestsQueue = Unique<BinaryHeap<Reverse<OrdKey<Lookup>>>>;
+pub type RequestsQueueType = BinaryHeap<Reverse<OrdKey<Lookup>>>;
+pub type RequestsQueue = Unique<RequestsQueueType>;
 pub type SearchOutcomes = Unique<Vec<SearchOutcome>>;
 
 pub struct SearchOutcome {
-    request: Lookup,
-    outcome: Outcome,
+    pub request: Lookup,
+    pub outcome: Outcome,
 }
 
-enum Outcome {
+pub enum Outcome {
     Found { kv: kv::KeyValue, },
     NotFound,
     Jump { block_ref: BlockRef, },

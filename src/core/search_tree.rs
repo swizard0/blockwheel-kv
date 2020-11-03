@@ -2,6 +2,10 @@ use std::{
     mem,
     sync::Arc,
     cmp::Reverse,
+    ops::{
+        Deref,
+        DerefMut,
+    },
     time::Duration,
     collections::{
         hash_map,
@@ -45,10 +49,8 @@ use crate::{
         ContainsKey,
     },
     wheels,
-    blockwheel::{
-        block,
-    },
     core::{
+        Found,
         OrdKey,
         BlockRef,
         MemCache,
@@ -115,13 +117,6 @@ impl GenServer {
             mode: Mode::CacheBootstrap { cache, },
         }).await
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum Found {
-    Nothing,
-    InCache { kv: kv::KeyValue, },
-    InBlock { kv: kv::KeyValue, block_id: block::Id, },
 }
 
 #[derive(Debug)]
@@ -207,8 +202,8 @@ enum Error {
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
-    let mut requests_queue_pool = pool::Pool::new();
-    let mut outcomes_pool = pool::Pool::new();
+    let requests_queue_pool = pool::Pool::new();
+    let outcomes_pool = pool::Pool::new();
 
     match &state.mode {
         Mode::CacheBootstrap { cache, } =>
@@ -264,27 +259,19 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             log::warn!("client canceled lookup request");
                         }
                     },
-                    Mode::Regular { root_block, } =>
-                        match async_tree.entry(root_block.clone()) {
-                            hash_map::Entry::Occupied(oe) =>
-                                unimplemented!(),
-                            hash_map::Entry::Vacant(ve) => {
-                                let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                                requests_queue.push(Reverse(OrdKey::new(lookup_request)));
-                                ve.insert(AsyncBlock {
-                                    parent: None,
-                                    state: AsyncBlockState::Awaiting { requests_queue, },
-                                });
-                                tasks.push(
-                                    task::run_args(
-                                        task::TaskArgs::LoadBlockLookup(task::load_block_lookup::Args {
-                                            block_ref: root_block.clone(),
-                                            wheels_pid: state.wheels_pid.clone(),
-                                        }),
-                                    ),
-                                );
-                            },
-                        },
+                    Mode::Regular { root_block, } => {
+                        let maybe_task_args = async_tree.apply_lookup_request(
+                            lookup_request,
+                            root_block.clone(),
+                            &state.blocks_pool,
+                            &requests_queue_pool,
+                            &outcomes_pool,
+                            &state.wheels_pid,
+                        );
+                        if let Some(task_args) = maybe_task_args {
+                            tasks.push(task::run_args(task_args));
+                        }
+                    },
                 },
 
             Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
@@ -298,19 +285,11 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Task(Ok(task::TaskDone::LoadBlockLookup(task::load_block_lookup::Done { block_ref, block_bytes, }))) =>
                 match async_tree.remove(&block_ref) {
                     Some(AsyncBlock { parent, state: AsyncBlockState::Awaiting { requests_queue, }, }) => {
-                        if let Some(ref parent_block_ref) = parent {
-                            match async_tree.get_mut(parent_block_ref) {
-                                Some(AsyncBlock { state: AsyncBlockState::Ready { activity_refs, .. }, .. }) =>
-                                    *activity_refs += 1,
-                                None | Some(AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. }) =>
-                                    unreachable!(),
-                            }
-                        }
                         async_tree.insert(block_ref.clone(), AsyncBlock {
                             parent,
                             state: AsyncBlockState::Ready {
                                 block_bytes: block_bytes.clone(),
-                                activity_refs: 1,
+                                children_refs: 0,
                                 barrier: Barrier::SearchInProgress {
                                     requests_queue: requests_queue_pool.lend(BinaryHeap::new),
                                 },
@@ -332,8 +311,35 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                 },
 
-            Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, outcomes, }))) =>
-                unimplemented!(),
+            Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, mut outcomes, }))) => {
+                for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
+                    match outcome {
+                        task::Outcome::Found { kv, } => {
+                            let found = Found::InBlock { kv, block_ref: block_ref.clone(), };
+                            if let Err(_send_error) = lookup_request.reply_tx.send(Ok(found)) {
+                                log::warn!("client canceled lookup request");
+                            }
+                        },
+                        task::Outcome::NotFound =>
+                            if let Err(_send_error) = lookup_request.reply_tx.send(Ok(Found::Nothing)) {
+                                log::warn!("client canceled lookup request");
+                            },
+                        task::Outcome::Jump { block_ref: jump_block_ref, } => {
+                            let maybe_task_args = async_tree.apply_lookup_request(
+                                lookup_request,
+                                jump_block_ref,
+                                &state.blocks_pool,
+                                &requests_queue_pool,
+                                &outcomes_pool,
+                                &state.wheels_pid,
+                            );
+                            if let Some(task_args) = maybe_task_args {
+                                tasks.push(task::run_args(task_args));
+                            }
+                        },
+                    }
+                }
+            },
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
@@ -341,7 +347,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
     }
 }
 
-type AsyncTree = HashMap<BlockRef, AsyncBlock>;
+struct AsyncTree {
+    tree: HashMap<BlockRef, AsyncBlock>,
+}
 
 struct AsyncBlock {
     parent: Option<BlockRef>,
@@ -354,7 +362,7 @@ enum AsyncBlockState {
     },
     Ready {
         block_bytes: Bytes,
-        activity_refs: usize,
+        children_refs: usize,
         barrier: Barrier,
     },
 }
@@ -362,4 +370,76 @@ enum AsyncBlockState {
 enum Barrier {
     Opened,
     SearchInProgress { requests_queue: task::RequestsQueue, },
+}
+
+impl AsyncTree {
+    fn new() -> AsyncTree {
+        AsyncTree {
+            tree: HashMap::new(),
+        }
+    }
+
+    fn apply_lookup_request(
+        &mut self,
+        lookup_request: task::Lookup,
+        block_ref: BlockRef,
+        blocks_pool: &BytesPool,
+        requests_queue_pool: &pool::Pool<task::RequestsQueueType>,
+        outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
+        wheels_pid: &wheels::Pid,
+    )
+        -> Option<task::TaskArgs>
+    {
+        match self.tree.entry(block_ref.clone()) {
+            hash_map::Entry::Occupied(mut oe) =>
+                match oe.get_mut() {
+                    AsyncBlock { state: AsyncBlockState::Awaiting { requests_queue, }, .. } |
+                    AsyncBlock { state: AsyncBlockState::Ready { barrier: Barrier::SearchInProgress { requests_queue, }, .. }, .. } => {
+                        requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                        None
+                    },
+                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, barrier: barrier @ Barrier::Opened, .. }, .. } => {
+                        *barrier = Barrier::SearchInProgress { requests_queue: requests_queue_pool.lend(BinaryHeap::new), };
+                        let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
+                        requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                        Some(task::TaskArgs::SearchBlock(task::search_block::Args {
+                            block_ref,
+                            blocks_pool: blocks_pool.clone(),
+                            block_bytes: block_bytes.clone(),
+                            requests_queue,
+                            outcomes: outcomes_pool.lend(Vec::new),
+                        }))
+                    },
+                },
+
+            hash_map::Entry::Vacant(ve) => {
+                let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
+                requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                ve.insert(AsyncBlock {
+                    parent: None,
+                    state: AsyncBlockState::Awaiting { requests_queue, },
+                });
+                Some(task::TaskArgs::LoadBlockLookup(task::load_block_lookup::Args {
+                    block_ref,
+                    wheels_pid: wheels_pid.clone(),
+                }))
+            },
+        }
+    }
+}
+
+impl Deref for AsyncTree {
+    type Target = HashMap<BlockRef, AsyncBlock>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.tree
+    }
+}
+
+impl DerefMut for AsyncTree {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tree
+    }
 }
