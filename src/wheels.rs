@@ -90,7 +90,6 @@ impl GenServer {
             },
             State {
                 request_rx: self.request_rx,
-                params,
             },
             |state| busyloop(state),
         ).await;
@@ -102,7 +101,6 @@ impl GenServer {
 
 struct State {
     request_rx: mpsc::Receiver<Request>,
-    params: Params,
 }
 
 impl Pid {

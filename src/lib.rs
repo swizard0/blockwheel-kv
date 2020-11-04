@@ -38,6 +38,7 @@ pub struct Params {
     pub kv_task_restart_sec: usize,
     pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
+    pub search_tree_task_restart_sec: usize,
 }
 
 impl Default for Params {
@@ -48,6 +49,7 @@ impl Default for Params {
             kv_task_restart_sec: 2,
             butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
+            search_tree_task_restart_sec: 1,
         }
     }
 }
@@ -113,6 +115,10 @@ impl GenServer {
                 let manager_pid = manager_gen_server.pid();
                 let manager_params = core::manager::Params {
                     task_restart_sec: state.params.manager_task_restart_sec,
+                    search_tree_params: core::search_tree::Params {
+                        task_restart_sec: state.params.search_tree_task_restart_sec,
+                        tree_block_size: state.params.tree_block_size,
+                    },
                 };
 
                 let child_supervisor_gen_server = state.parent_supervisor.child_supevisor();
@@ -242,8 +248,22 @@ async fn busyloop(
 {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            proto::Request::Info(proto::RequestInfo { context: _, }) =>
-                unimplemented!(),
+            proto::Request::Info(proto::RequestInfo { context: reply_tx, }) => {
+                let info = match butcher_pid.info().await {
+                    Ok(info) =>
+                        info,
+                    Err(ero::NoProcError) => {
+                        log::warn!("butcher has gone during info, terminating");
+                        break;
+                    },
+                };
+                if let Err(_send_error) = reply_tx.send(info) {
+                    log::warn!("client canceled info request");
+                }
+
+                // more info from manager?
+                unimplemented!()
+            },
 
             proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
                 let status = match butcher_pid.insert(key_value).await {

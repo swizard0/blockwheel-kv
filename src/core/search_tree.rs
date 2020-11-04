@@ -50,10 +50,10 @@ use crate::{
     },
     wheels,
     core::{
-        Found,
         OrdKey,
         BlockRef,
         MemCache,
+        ValueFound,
     },
 };
 
@@ -117,6 +117,21 @@ impl GenServer {
             mode: Mode::CacheBootstrap { cache, },
         }).await
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum Found {
+    Nothing,
+    Something {
+        value: ValueFound,
+        site: FoundSite,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum FoundSite {
+    Cache,
+    Block { block_ref: BlockRef, },
 }
 
 #[derive(Debug)]
@@ -462,7 +477,10 @@ impl AsyncTree {
                         unreachable!(),
                     Barrier::SearchInProgress { requests_queue, } if requests_queue.is_empty() =>
                         None,
-                    Barrier::SearchInProgress { requests_queue, } =>
+                    Barrier::SearchInProgress { requests_queue, } => {
+                        *barrier = Barrier::SearchInProgress {
+                            requests_queue: requests_queue_pool.lend(BinaryHeap::new),
+                        };
                         Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                             block_ref: block_ref.clone(),
                             blocks_pool: blocks_pool.clone(),
@@ -470,6 +488,7 @@ impl AsyncTree {
                             requests_queue,
                             outcomes: outcomes_pool.lend(Vec::new),
                         }))
+                    },
                 },
         }
     }

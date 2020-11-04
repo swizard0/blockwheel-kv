@@ -26,7 +26,6 @@ use crate::{
         ContainsKey,
     },
     proto,
-    storage,
     kv_context,
     Info,
     Inserted,
@@ -184,7 +183,6 @@ struct State {
 
 #[derive(Debug)]
 enum Error {
-    Storage(storage::Error),
 }
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {

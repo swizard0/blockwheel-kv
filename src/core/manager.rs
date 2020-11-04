@@ -19,6 +19,7 @@ use futures::{
 
 use o1::{
     set::{
+        Ref,
         Set,
     },
 };
@@ -38,8 +39,13 @@ use crate::{
     wheels,
     context,
     kv_context,
+    blockwheel::{
+        block,
+    },
     core::{
         butcher,
+        search_tree,
+        Found,
         MemCache,
     },
 };
@@ -47,12 +53,14 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Params {
     pub task_restart_sec: usize,
+    pub search_tree_params: search_tree::Params,
 }
 
 impl Default for Params {
     fn default() -> Params {
         Params {
             task_restart_sec: 4,
+            search_tree_params: Default::default(),
         }
     }
 }
@@ -176,15 +184,32 @@ impl Pid {
 
 #[derive(Debug)]
 enum Error {
+    ButcherLookup(butcher::LookupError),
+    SearchTreeLookup(search_tree::LookupError),
 }
 
 struct LookupRequest {
     reply_tx: <kv_context::Context as context::Context>::Lookup,
     pending_count: usize,
+    found_fold: FoundFold,
 }
 
-async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    // let mut search_trees = Set::new();
+struct FoundFold {
+    current: Found,
+    found_where: FoundWhere,
+}
+
+enum FoundWhere {
+    Initial,
+    Butcher,
+    SearchTree {
+        generation: Ref,
+        block_id: block::Id,
+    },
+}
+
+async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+    let mut search_trees = Set::new();
     let mut lookup_requests = Set::new();
     let mut lookup_tasks = FuturesUnordered::new();
 
@@ -215,39 +240,128 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 return Ok(());
             },
 
-            Event::Request(Some(Request::ButcherFlush { cache: _, })) => {
-
-                unimplemented!()
+            Event::Request(Some(Request::ButcherFlush { cache, })) => {
+                let search_tree_gen_server = search_tree::GenServer::new();
+                let search_tree_pid = search_tree_gen_server.pid();
+                child_supervisor_pid.spawn_link_temporary(
+                    search_tree_gen_server.run_cache_bootstrap(
+                        child_supervisor_pid.clone(),
+                        state.blocks_pool.clone(),
+                        state.wheels_pid.clone(),
+                        state.params.search_tree_params.clone(),
+                        cache,
+                    ),
+                );
+                search_trees.insert(search_tree_pid);
             },
 
             Event::Request(Some(Request::Lookup(proto::RequestLookup { key, context: reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
                     reply_tx,
-                    pending_count: 1,
+                    pending_count: 1 + search_trees.len(),
+                    found_fold: FoundFold {
+                        current: Found::Nothing,
+                        found_where: FoundWhere::Initial,
+                    },
                 });
-                let mut butcher_pid = state.butcher_pid.clone();
-                let key = key.clone();
-                lookup_tasks.push(async move {
-                    let result = butcher_pid.lookup(key).await
-                        .map_err(|error| match error {
-                            butcher::LookupError::GenServer(ero::NoProcError) =>
-                                LookupError::GenServer(ero::NoProcError),
-                        });
-                    (request_ref, result)
-                });
-
-                unimplemented!()
+                lookup_tasks.push(run_lookup_task(LookupTaskArg {
+                    key: key.clone(),
+                    request_ref: request_ref.clone(),
+                    kind: LookupTaskArgKind::Butcher(ButcherLookupTaskArg {
+                        butcher_pid: state.butcher_pid.clone(),
+                    }),
+                }));
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                    lookup_tasks.push(run_lookup_task(LookupTaskArg {
+                        key: key.clone(),
+                        request_ref: request_ref.clone(),
+                        kind: LookupTaskArgKind::SearchTree(SearchTreeLookupTaskArg {
+                            search_tree_pid: search_tree_pid.clone(),
+                        }),
+                    }));
+                }
             },
 
-            Event::LookupTask((request_ref, _result)) =>
-                if let Some(lookup_request) = lookup_requests.get_mut(request_ref) {
-                    assert!(lookup_request.pending_count > 0);
-                    lookup_request.pending_count -= 1;
+            Event::LookupTask(Ok(LookupTaskDone { request_ref, found, })) => {
+                let lookup_request = lookup_requests.get_mut(request_ref).unwrap();
+                assert!(lookup_request.pending_count > 0);
+                lookup_request.pending_count -= 1;
+                if lookup_request.pending_count == 0 {
 
-                    unreachable!()
-                } else {
-                    log::error!("something went wrong: lookup task ready for nonexisting task ref = {:?}, ignoring", request_ref);
-                },
+
+                    unimplemented!()
+                }
+            },
+
+            Event::LookupTask(Err(error)) =>
+                return Err(ErrorSeverity::Fatal(error)),
         }
     }
+}
+
+struct LookupTaskArg {
+    key: kv::Key,
+    request_ref: Ref,
+    kind: LookupTaskArgKind,
+}
+
+enum LookupTaskArgKind {
+    Butcher(ButcherLookupTaskArg),
+    SearchTree(SearchTreeLookupTaskArg),
+}
+
+struct ButcherLookupTaskArg {
+    butcher_pid: butcher::Pid,
+}
+
+struct SearchTreeLookupTaskArg {
+    search_tree_pid: search_tree::Pid,
+}
+
+struct LookupTaskDone {
+    request_ref: Ref,
+    found: Option<kv::KeyValue>,
+    found_where: FoundWhere,
+}
+
+async fn run_lookup_task(arg: LookupTaskArg) -> Result<LookupTaskDone, Error> {
+    match arg {
+        LookupTaskArg { key, request_ref, kind: LookupTaskArgKind::Butcher(args), } =>
+            run_lookup_task_butcher(request_ref, key, args).await,
+        LookupTaskArg { key, request_ref, kind: LookupTaskArgKind::SearchTree(args), } =>
+            run_lookup_task_search_tree(request_ref, key, args).await,
+    }
+}
+
+async fn run_lookup_task_butcher(
+    request_ref: Ref,
+    key: kv::Key,
+    mut args: ButcherLookupTaskArg,
+)
+    -> Result<LookupTaskDone, Error>
+{
+    let found = args.butcher_pid.lookup(key).await
+        .map_err(Error::ButcherLookup)?;
+    Ok(LookupTaskDone { request_ref, found, found_where: FoundWhere::Butcher, })
+}
+
+async fn run_lookup_task_search_tree(
+    request_ref: Ref,
+    key: kv::Key,
+    mut args: SearchTreeLookupTaskArg,
+)
+    -> Result<LookupTaskDone, Error>
+{
+    let found = args.search_tree_pid.lookup(key).await
+        .map_err(Error::SearchTreeLookup)?;
+    Ok(LookupTaskDone {
+        request_ref,
+        found,
+        found_where: FoundWhere::SearchTree {
+            generation: args.generation,
+            site: match found {
+
+            },
+        },
+    })
 }
