@@ -31,6 +31,9 @@ mod proto;
 mod context;
 mod storage;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct Params {
     pub tree_block_size: usize,
