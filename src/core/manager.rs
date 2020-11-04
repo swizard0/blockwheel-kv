@@ -198,7 +198,6 @@ struct FoundFold {
 }
 
 enum FoundWhere {
-    Initial,
     Butcher,
     SearchTree(FoundWhereSearchTree),
 }
@@ -219,7 +218,6 @@ fn replace_fold_found(current: &Option<FoundFold>, incoming: &Option<FoundFold>)
     match (current, incoming) {
         (None, None) |
         (Some(..), None) |
-        (Some(..), Some(FoundFold { found_where: FoundWhere::Initial, .. })) |
         (Some(FoundFold { found_where: FoundWhere::Butcher, .. }), Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. })) |
         (
             Some(FoundFold {
@@ -277,7 +275,6 @@ fn replace_fold_found(current: &Option<FoundFold>, incoming: &Option<FoundFold>)
         ) if ref_a.block_id >= ref_b.block_id =>
             false,
         (None, Some(..)) |
-        (Some(FoundFold { found_where: FoundWhere::Initial, .. }), Some(..)) |
         (Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. }), Some(FoundFold { found_where: FoundWhere::Butcher, .. })) |
         (
             Some(FoundFold {
@@ -385,9 +382,20 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     lookup_request.found_fold = found;
                 }
                 if lookup_request.pending_count == 0 {
-
-
-                    unimplemented!()
+                    let lookup_request = lookup_requests.remove(request_ref).unwrap();
+                    let lookup_result = match lookup_request.found_fold {
+                        None =>
+                            None,
+                        Some(FoundFold { value_cell: ValueCell::Value(value), .. }) =>
+                            Some(value),
+                        Some(FoundFold { value_cell: ValueCell::Tombstone, .. }) =>
+                            None,
+                        Some(FoundFold { value_cell: ValueCell::Blackmark, .. }) =>
+                            None,
+                    };
+                    if let Err(_send_error) = lookup_request.reply_tx.send(Ok(lookup_result)) {
+                        log::warn!("client canceled lookup request");
+                    }
                 }
             },
 

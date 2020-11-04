@@ -174,8 +174,12 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            Request::Info { .. } =>
-                unimplemented!(),
+            Request::Info { reply_tx, } => {
+                let info = Info { };
+                if let Err(_send_error) = reply_tx.send(info) {
+                    log::warn!("client canceled info request");
+                }
+            },
 
             Request::Insert { key, value, reply_tx, } => {
                 let ord_key = OrdKey::new(key);
