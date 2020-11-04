@@ -13,10 +13,6 @@ use serde_derive::{
 use bincode::Options;
 
 use super::{
-    kv::{
-        self,
-        ContainsKey,
-    },
     blockwheel::block,
 };
 
@@ -33,10 +29,16 @@ pub enum NodeType { Root, Leaf, }
 pub struct Entry<'a> {
     #[serde(borrow)]
     pub jump_ref: JumpRef<'a>,
-    #[serde(borrow)]
     pub key: &'a [u8],
     #[serde(borrow)]
-    pub value: &'a [u8],
+    pub value_cell: ValueCell<'a>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum ValueCell<'a> {
+    Value { value: &'a [u8], },
+    Tombstone,
+    Blackmark,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -84,12 +86,8 @@ impl<B> BlockSerializer<B> where B: DerefMut<Target = Vec<u8>> {
         })
     }
 
-    pub fn entry(mut self, kv: &kv::KeyValue, jump_ref: JumpRef<'_>) -> Result<BlockSerializerContinue<B>, Error> {
-        let entry = Entry {
-            jump_ref,
-            key: kv.key_data(),
-            value: kv.value_data(),
-        };
+    pub fn entry(mut self, key: &[u8], value_cell: ValueCell, jump_ref: JumpRef) -> Result<BlockSerializerContinue<B>, Error> {
+        let entry = Entry { key, value_cell, jump_ref, };
         bincode_options()
             .serialize_into(self.block_bytes.deref_mut(), &entry)
             .map_err(Error::EntrySerialize)?;

@@ -39,14 +39,12 @@ use crate::{
     wheels,
     context,
     kv_context,
-    blockwheel::{
-        block,
-    },
     core::{
         butcher,
         search_tree,
-        Found,
         MemCache,
+        BlockRef,
+        ValueCell,
     },
 };
 
@@ -159,7 +157,7 @@ impl Pid {
         Ok(Flushed)
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::Value>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -184,28 +182,127 @@ impl Pid {
 
 #[derive(Debug)]
 enum Error {
-    ButcherLookup(butcher::LookupError),
+    ButcherLookup(ero::NoProcError),
     SearchTreeLookup(search_tree::LookupError),
 }
 
 struct LookupRequest {
     reply_tx: <kv_context::Context as context::Context>::Lookup,
     pending_count: usize,
-    found_fold: FoundFold,
+    found_fold: Option<FoundFold>,
 }
 
 struct FoundFold {
-    current: Found,
+    value_cell: ValueCell,
     found_where: FoundWhere,
 }
 
 enum FoundWhere {
     Initial,
     Butcher,
-    SearchTree {
-        generation: Ref,
-        block_id: block::Id,
+    SearchTree(FoundWhereSearchTree),
+}
+
+struct FoundWhereSearchTree {
+    generation: Ref,
+    location: SearchTreeLocation,
+}
+
+enum SearchTreeLocation {
+    BootstrapCache,
+    StorageBlock {
+        block_ref: BlockRef,
     },
+}
+
+fn replace_fold_found(current: &Option<FoundFold>, incoming: &Option<FoundFold>) -> bool {
+    match (current, incoming) {
+        (None, None) |
+        (Some(..), None) |
+        (Some(..), Some(FoundFold { found_where: FoundWhere::Initial, .. })) |
+        (Some(FoundFold { found_where: FoundWhere::Butcher, .. }), Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. })) |
+        (
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::BootstrapCache, .. }),
+                ..
+            }),
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
+                ..
+            }),
+        ) =>
+            false,
+        (
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                    location: SearchTreeLocation::BootstrapCache,
+                    generation: gen_a,
+                }),
+                ..
+            }),
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                    location: SearchTreeLocation::BootstrapCache,
+                    generation: gen_b,
+                }),
+                ..
+            }),
+        ) =>
+            gen_a < gen_b,
+        (
+            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_a, .. }), .. }),
+            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_b, .. }), .. }),
+        ) if gen_a < gen_b =>
+            true,
+        (
+            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_a, .. }), .. }),
+            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_b, .. }), .. }),
+        ) if gen_a > gen_b =>
+            false,
+        (
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                    location: SearchTreeLocation::StorageBlock { block_ref: ref_a, },
+                    ..
+                }),
+                ..
+            }),
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                    location: SearchTreeLocation::StorageBlock { block_ref: ref_b, },
+                    ..
+                }),
+                ..
+            }),
+        ) if ref_a.block_id >= ref_b.block_id =>
+            false,
+        (None, Some(..)) |
+        (Some(FoundFold { found_where: FoundWhere::Initial, .. }), Some(..)) |
+        (Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. }), Some(FoundFold { found_where: FoundWhere::Butcher, .. })) |
+        (
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
+                ..
+            }),
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::BootstrapCache, .. }),
+                ..
+            }),
+        ) |
+        (
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
+                ..
+            }),
+            Some(FoundFold {
+                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
+                ..
+            }),
+        ) =>
+            true,
+        (Some(FoundFold { found_where: FoundWhere::Butcher, .. }), Some(FoundFold { found_where: FoundWhere::Butcher, .. })) =>
+            unreachable!(),
+    }
 }
 
 async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
@@ -259,10 +356,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 let request_ref = lookup_requests.insert(LookupRequest {
                     reply_tx,
                     pending_count: 1 + search_trees.len(),
-                    found_fold: FoundFold {
-                        current: Found::Nothing,
-                        found_where: FoundWhere::Initial,
-                    },
+                    found_fold: None,
                 });
                 lookup_tasks.push(run_lookup_task(LookupTaskArg {
                     key: key.clone(),
@@ -271,11 +365,12 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         butcher_pid: state.butcher_pid.clone(),
                     }),
                 }));
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                for (search_tree_ref, search_tree_pid) in search_trees.iter() {
                     lookup_tasks.push(run_lookup_task(LookupTaskArg {
                         key: key.clone(),
                         request_ref: request_ref.clone(),
                         kind: LookupTaskArgKind::SearchTree(SearchTreeLookupTaskArg {
+                            search_tree_generation: search_tree_ref.clone(),
                             search_tree_pid: search_tree_pid.clone(),
                         }),
                     }));
@@ -286,6 +381,9 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 let lookup_request = lookup_requests.get_mut(request_ref).unwrap();
                 assert!(lookup_request.pending_count > 0);
                 lookup_request.pending_count -= 1;
+                if replace_fold_found(&lookup_request.found_fold, &found) {
+                    lookup_request.found_fold = found;
+                }
                 if lookup_request.pending_count == 0 {
 
 
@@ -315,13 +413,13 @@ struct ButcherLookupTaskArg {
 }
 
 struct SearchTreeLookupTaskArg {
+    search_tree_generation: Ref,
     search_tree_pid: search_tree::Pid,
 }
 
 struct LookupTaskDone {
     request_ref: Ref,
-    found: Option<kv::KeyValue>,
-    found_where: FoundWhere,
+    found: Option<FoundFold>,
 }
 
 async fn run_lookup_task(arg: LookupTaskArg) -> Result<LookupTaskDone, Error> {
@@ -340,9 +438,16 @@ async fn run_lookup_task_butcher(
 )
     -> Result<LookupTaskDone, Error>
 {
-    let found = args.butcher_pid.lookup(key).await
+    let maybe_value_cell = args.butcher_pid.lookup(key).await
         .map_err(Error::ButcherLookup)?;
-    Ok(LookupTaskDone { request_ref, found, found_where: FoundWhere::Butcher, })
+    Ok(LookupTaskDone {
+        request_ref,
+        found: maybe_value_cell
+            .map(|value_cell| FoundFold {
+                value_cell,
+                found_where: FoundWhere::Butcher,
+            }),
+    })
 }
 
 async fn run_lookup_task_search_tree(
@@ -352,16 +457,37 @@ async fn run_lookup_task_search_tree(
 )
     -> Result<LookupTaskDone, Error>
 {
-    let found = args.search_tree_pid.lookup(key).await
+    let search_tree_found = args.search_tree_pid.lookup(key).await
         .map_err(Error::SearchTreeLookup)?;
     Ok(LookupTaskDone {
         request_ref,
-        found,
-        found_where: FoundWhere::SearchTree {
-            generation: args.generation,
-            site: match found {
-
-            },
+        found: match search_tree_found {
+            search_tree::Found::Nothing =>
+                None,
+            search_tree::Found::Something {
+                value_cell,
+                location: search_tree::FoundLocation::Cache,
+            } =>
+                Some(FoundFold {
+                    value_cell,
+                    found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                        generation: args.search_tree_generation,
+                        location: SearchTreeLocation::BootstrapCache,
+                    }),
+                }),
+            search_tree::Found::Something {
+                value_cell,
+                location: search_tree::FoundLocation::Block { block_ref, },
+            } =>
+                Some(FoundFold {
+                    value_cell,
+                    found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
+                        generation: args.search_tree_generation,
+                        location: SearchTreeLocation::StorageBlock {
+                            block_ref,
+                        },
+                    }),
+                }),
         },
     })
 }

@@ -21,18 +21,14 @@ use ero::{
 };
 
 use crate::{
-    kv::{
-        self,
-        ContainsKey,
-    },
-    proto,
-    kv_context,
+    kv,
     Info,
     Inserted,
     core::{
         manager,
         OrdKey,
         MemCache,
+        ValueCell,
     },
 };
 
@@ -102,24 +98,26 @@ impl GenServer {
     }
 }
 
-type Request = proto::Request<kv_context::Context>;
-
-#[derive(Debug)]
-pub enum InsertError {
-    GenServer(ero::NoProcError),
-    NoSpaceLeft,
-}
-
-#[derive(Debug)]
-pub enum LookupError {
-    GenServer(ero::NoProcError),
+enum Request {
+    Info {
+        reply_tx: oneshot::Sender<Info>,
+    },
+    Insert {
+        key: kv::Key,
+        value: kv::Value,
+        reply_tx: oneshot::Sender<Inserted>,
+    },
+    Lookup {
+        key: kv::Key,
+        reply_tx: oneshot::Sender<Option<ValueCell>>,
+    },
 }
 
 impl Pid {
     pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Info(proto::RequestInfo { context: reply_tx, })).await
+            self.request_tx.send(Request::Info { reply_tx, }).await
                 .map_err(|_send_error| ero::NoProcError)?;
             match reply_rx.await {
                 Ok(info) =>
@@ -130,44 +128,30 @@ impl Pid {
         }
     }
 
-    pub async fn insert(&mut self, key_value: kv::KeyValue) -> Result<Inserted, InsertError> {
+    pub async fn insert(&mut self, key: kv::Key, value: kv::Value) -> Result<Inserted, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx
-                .send(Request::Insert(proto::RequestInsert {
-                    key_value: key_value.clone(),
-                    context: reply_tx,
-                }))
-                .await
-                .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
+            self.request_tx.send(Request::Insert { key: key.clone(), value: value.clone(), reply_tx, }).await
+                .map_err(|_send_error| ero::NoProcError)?;
 
             match reply_rx.await {
-                Ok(Ok(Inserted)) =>
+                Ok(Inserted) =>
                     return Ok(Inserted),
-                Ok(Err(kv_context::RequestInsertError::NoSpaceLeft)) =>
-                     return Err(InsertError::NoSpaceLeft),
                 Err(oneshot::Canceled) =>
                     (),
             }
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<ValueCell>, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx
-                .send(proto::Request::Lookup(proto::RequestLookup {
-                    key: key.clone(),
-                    context: reply_tx,
-                }))
-                .await
-                .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
+            self.request_tx.send(Request::Lookup { key: key.clone(), reply_tx, }).await
+                .map_err(|_send_error| ero::NoProcError)?;
 
             match reply_rx.await {
-                Ok(Ok(result)) =>
+                Ok(result) =>
                     return Ok(result),
-                Ok(Err(..)) =>
-                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -190,14 +174,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            proto::Request::Info(..) =>
+            Request::Info { .. } =>
                 unimplemented!(),
 
-            proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
-                memcache.insert(OrdKey::new(key_value.clone()), ());
-                if let Err(_send_error) = reply_tx.send(Ok(Inserted)) {
+            Request::Insert { key, value, reply_tx, } => {
+                let ord_key = OrdKey::new(key);
+                memcache.insert(ord_key.clone(), ValueCell::Value(value));
+                if let Err(_send_error) = reply_tx.send(Inserted) {
                     log::warn!("client canceled insert request");
-                    memcache.remove(key_value.key_data());
+                    memcache.remove(&ord_key);
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
@@ -208,10 +193,10 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 }
             },
 
-            proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
-                let result = memcache.get_key_value(key.key_data())
-                    .map(|(key, ())| key.as_ref().clone());
-                if let Err(_send_error) = reply_tx.send(Ok(result)) {
+            Request::Lookup { key, reply_tx, } => {
+                let lookup_result = memcache.get(&**key.key_bytes)
+                    .cloned();
+                if let Err(_send_error) = reply_tx.send(lookup_result) {
                     log::warn!("client canceled lookup request");
                 }
             }

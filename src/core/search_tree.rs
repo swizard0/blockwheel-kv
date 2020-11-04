@@ -1,7 +1,6 @@
 use std::{
     mem,
     sync::Arc,
-    cmp::Reverse,
     ops::{
         Deref,
         DerefMut,
@@ -44,16 +43,12 @@ use alloc_pool::{
 };
 
 use crate::{
-    kv::{
-        self,
-        ContainsKey,
-    },
+    kv,
     wheels,
     core::{
-        OrdKey,
         BlockRef,
         MemCache,
-        ValueFound,
+        ValueCell,
     },
 };
 
@@ -123,13 +118,13 @@ impl GenServer {
 pub enum Found {
     Nothing,
     Something {
-        value: ValueFound,
-        site: FoundSite,
+        value_cell: ValueCell,
+        location: FoundLocation,
     },
 }
 
 #[derive(Clone, Debug)]
-pub enum FoundSite {
+pub enum FoundLocation {
     Cache,
     Block { block_ref: BlockRef, },
 }
@@ -265,8 +260,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = if let Some((key, ())) = cache.get_key_value(lookup_request.key.key_data()) {
-                            Found::InCache { kv: key.as_ref().clone(), }
+                        let result = if let Some(value_cell) = cache.get(&**lookup_request.key.key_bytes).cloned() {
+                            Found::Something { value_cell, location: FoundLocation::Cache, }
                         } else {
                             Found::Nothing
                         };
@@ -331,8 +326,11 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 let mut jumps_count = 0;
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
                     match outcome {
-                        task::Outcome::Found { kv, } => {
-                            let found = Found::InBlock { kv, block_ref: block_ref.clone(), };
+                        task::Outcome::Found { value_cell, } => {
+                            let found = Found::Something {
+                                value_cell,
+                                location: FoundLocation::Block { block_ref: block_ref.clone(), },
+                            };
                             if let Err(_send_error) = lookup_request.reply_tx.send(Ok(found)) {
                                 log::warn!("client canceled lookup request");
                             }
@@ -427,13 +425,13 @@ impl AsyncTree {
                 match oe.get_mut() {
                     AsyncBlock { state: AsyncBlockState::Awaiting { requests_queue, }, .. } |
                     AsyncBlock { state: AsyncBlockState::Ready { barrier: Barrier::SearchInProgress { requests_queue, }, .. }, .. } => {
-                        requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                        requests_queue.push(lookup_request);
                         None
                     },
                     AsyncBlock { state: AsyncBlockState::Ready { block_bytes, barrier: barrier @ Barrier::Opened, .. }, .. } => {
                         *barrier = Barrier::SearchInProgress { requests_queue: requests_queue_pool.lend(BinaryHeap::new), };
                         let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                        requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                        requests_queue.push(lookup_request);
                         Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                             block_ref,
                             blocks_pool: blocks_pool.clone(),
@@ -446,7 +444,7 @@ impl AsyncTree {
 
             hash_map::Entry::Vacant(ve) => {
                 let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                requests_queue.push(Reverse(OrdKey::new(lookup_request)));
+                requests_queue.push(lookup_request);
                 ve.insert(AsyncBlock {
                     parent: None,
                     state: AsyncBlockState::Awaiting { requests_queue, },

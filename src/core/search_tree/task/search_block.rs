@@ -1,6 +1,5 @@
 use std::{
     cmp::{
-        Reverse,
         Ordering,
     },
 };
@@ -11,13 +10,11 @@ use alloc_pool::bytes::{
 };
 
 use crate::{
-    kv::{
-        self,
-        ContainsKey,
-    },
+    kv,
     storage,
     core::{
         BlockRef,
+        ValueCell,
         search_tree::{
             task::{
                 Outcome,
@@ -58,11 +55,11 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
             match maybe_request {
                 None =>
                     break,
-                Some(Reverse(request_key)) =>
+                Some(request_key) =>
                     match maybe_entry {
                         None => {
                             outcomes.push(SearchOutcome {
-                                request: request_key.into_inner(),
+                                request: request_key,
                                 outcome: Outcome::NotFound,
                             });
                             maybe_request = requests_queue.pop();
@@ -70,22 +67,28 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                         },
                         Some(entry_result) => {
                             let entry = entry_result?;
-                            match entry.key.cmp(request_key.key_data()) {
+                            match entry.key.cmp(&request_key.key.key_bytes) {
                                 Ordering::Less => {
-                                    maybe_request = Some(Reverse(request_key));
+                                    maybe_request = Some(request_key);
                                     maybe_entry = entries_iter.next();
                                 },
                                 Ordering::Equal => {
-                                    let mut key_builder = kv::Builder::new(blocks_pool.lend())
-                                        .build_key();
-                                    key_builder.writer().extend(entry.key.iter().cloned());
-                                    let mut value_builder = key_builder
-                                        .build_value();
-                                    value_builder.writer().extend(entry.value.iter().cloned());
-                                    let kv = value_builder.key_value_done();
+                                    let value_cell = match entry.value_cell {
+                                        storage::ValueCell::Value { value, } => {
+                                            let mut value_bytes = blocks_pool.lend();
+                                            value_bytes.extend_from_slice(value);
+                                            ValueCell::Value(kv::Value {
+                                                value_bytes: value_bytes.freeze(),
+                                            })
+                                        },
+                                        storage::ValueCell::Tombstone =>
+                                            ValueCell::Tombstone,
+                                        storage::ValueCell::Blackmark =>
+                                            ValueCell::Blackmark,
+                                    };
                                     outcomes.push(SearchOutcome {
-                                        request: request_key.into_inner(),
-                                        outcome: Outcome::Found { kv, },
+                                        request: request_key,
+                                        outcome: Outcome::Found { value_cell, },
                                     });
                                     maybe_request = requests_queue.pop();
                                     maybe_entry = Some(Ok(entry));
@@ -110,7 +113,7 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                                             },
                                     };
                                     outcomes.push(SearchOutcome {
-                                        request: request_key.into_inner(),
+                                        request: request_key,
                                         outcome,
                                     });
                                     maybe_request = requests_queue.pop();

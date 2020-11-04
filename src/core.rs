@@ -6,10 +6,7 @@ use std::{
 };
 
 use super::{
-    kv::{
-        KeyValue,
-        ContainsKey,
-    },
+    kv,
     wheels::{
         WheelFilename,
     },
@@ -28,68 +25,64 @@ pub struct BlockRef {
     block_id: block::Id,
 }
 
-pub type MemCache = BTreeMap<OrdKey<KeyValue>, ()>;
-
 #[derive(Clone, Debug)]
-enum ValueFound {
-    Value { kv: kv::KeyValue, },
+pub enum ValueCell {
+    Value(kv::Value),
     Tombstone,
     Blackmark,
 }
 
+pub type MemCache = BTreeMap<OrdKey, ValueCell>;
+
 #[derive(Clone, Debug)]
-pub struct OrdKey<T> {
-    inner: T,
+pub struct OrdKey {
+    inner: kv::Key,
 }
 
-impl<T> OrdKey<T> {
-    fn new(inner: T) -> OrdKey<T> {
+impl OrdKey {
+    fn new(inner: kv::Key) -> OrdKey {
         OrdKey { inner, }
     }
-
-    fn into_inner(self) -> T {
-        self.inner
-    }
 }
 
-impl<T> AsRef<T> for OrdKey<T> {
+impl AsRef<kv::Key> for OrdKey {
     #[inline]
-    fn as_ref(&self) -> &T {
+    fn as_ref(&self) -> &kv::Key {
         &self.inner
     }
 }
 
-impl<T> Deref for OrdKey<T> {
-    type Target = T;
+impl Deref for OrdKey {
+    type Target = kv::Key;
 
     #[inline]
-    fn deref(&self) -> &T {
+    fn deref(&self) -> &kv::Key {
         self.as_ref()
     }
 }
 
-impl<T> PartialEq for OrdKey<T> where T: ContainsKey {
-    fn eq(&self, other: &OrdKey<T>) -> bool {
-        self.inner.key_data() == other.inner.key_data()
+impl PartialEq for OrdKey {
+    fn eq(&self, other: &OrdKey) -> bool {
+        self.inner.key_bytes == other.inner.key_bytes
     }
 }
 
-impl<T> Eq for OrdKey<T> where T: ContainsKey { }
+impl Eq for OrdKey { }
 
-impl<T> PartialOrd for OrdKey<T> where T: ContainsKey {
-    fn partial_cmp(&self, other: &OrdKey<T>) -> Option<cmp::Ordering> {
+impl PartialOrd for OrdKey {
+    fn partial_cmp(&self, other: &OrdKey) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<T> Ord for OrdKey<T> where T: ContainsKey {
-    fn cmp(&self, other: &OrdKey<T>) -> cmp::Ordering {
-        self.inner.key_data().cmp(other.inner.key_data())
+impl Ord for OrdKey {
+    fn cmp(&self, other: &OrdKey) -> cmp::Ordering {
+        self.inner.key_bytes.cmp(&other.inner.key_bytes)
     }
 }
 
-impl<T> Borrow<[u8]> for OrdKey<T> where T: ContainsKey {
+impl Borrow<[u8]> for OrdKey {
     fn borrow(&self) -> &[u8] {
-        self.inner.key_data()
+        &self.inner.key_bytes
     }
 }

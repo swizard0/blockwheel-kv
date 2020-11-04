@@ -17,7 +17,8 @@ pub struct RequestInfo<C> {
 
 #[derive(Debug)]
 pub struct RequestInsert<C> {
-    pub key_value: kv::KeyValue,
+    pub key: kv::Key,
+    pub value: kv::Value,
     pub context: C,
 }
 

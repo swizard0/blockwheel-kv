@@ -1,5 +1,5 @@
 use std::{
-    cmp::Reverse,
+    cmp::Ordering,
     collections::BinaryHeap,
 };
 
@@ -12,14 +12,13 @@ use futures::{
 use alloc_pool::Unique;
 
 use crate::{
-    kv::{
-        self,
-        ContainsKey,
-    },
+    kv,
     core::{
-        Found,
-        OrdKey,
         BlockRef,
+        ValueCell,
+        search_tree::{
+            Found,
+        },
     },
 };
 
@@ -27,7 +26,7 @@ pub mod bootstrap;
 pub mod load_block_lookup;
 pub mod search_block;
 
-pub type RequestsQueueType = BinaryHeap<Reverse<OrdKey<Lookup>>>;
+pub type RequestsQueueType = BinaryHeap<Lookup>;
 pub type RequestsQueue = Unique<RequestsQueueType>;
 pub type SearchOutcomes = Unique<Vec<SearchOutcome>>;
 
@@ -37,7 +36,7 @@ pub struct SearchOutcome {
 }
 
 pub enum Outcome {
-    Found { kv: kv::KeyValue, },
+    Found { value_cell: ValueCell, },
     NotFound,
     Jump { block_ref: BlockRef, },
 }
@@ -49,12 +48,6 @@ pub struct Lookup {
 
 #[derive(Debug)]
 pub enum SearchTreeLookupError {
-}
-
-impl ContainsKey for Lookup {
-    fn key_data(&self) -> &[u8] {
-        self.key.key_data()
-    }
 }
 
 pub enum TaskArgs {
@@ -94,4 +87,24 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
                     .map_err(Error::SearchBlock)?,
             ),
     })
+}
+
+impl PartialEq for Lookup {
+    fn eq(&self, other: &Lookup) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for Lookup { }
+
+impl PartialOrd for Lookup {
+    fn partial_cmp(&self, other: &Lookup) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Lookup {
+    fn cmp(&self, other: &Lookup) -> Ordering {
+        other.key.key_bytes.cmp(&self.key.key_bytes)
+    }
 }

@@ -151,7 +151,6 @@ impl GenServer {
 #[derive(Debug)]
 pub enum InsertError {
     GenServer(ero::NoProcError),
-    NoSpaceLeft,
 }
 
 #[derive(Debug)]
@@ -181,12 +180,13 @@ impl Pid {
         }
     }
 
-    pub async fn insert(&mut self, key_value: kv::KeyValue) -> Result<Inserted, InsertError> {
+    pub async fn insert(&mut self, key: kv::Key, value: kv::Value) -> Result<Inserted, InsertError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
                 .send(proto::Request::Insert(proto::RequestInsert {
-                    key_value: key_value.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
                     context: reply_tx,
                 }))
                 .await
@@ -195,15 +195,15 @@ impl Pid {
             match reply_rx.await {
                 Ok(Ok(Inserted)) =>
                     return Ok(Inserted),
-                Ok(Err(kv_context::RequestInsertError::NoSpaceLeft)) =>
-                    return Err(InsertError::NoSpaceLeft),
+                Ok(Err(..)) =>
+                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::KeyValue>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::Value>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -265,16 +265,14 @@ async fn busyloop(
                 unimplemented!()
             },
 
-            proto::Request::Insert(proto::RequestInsert { key_value, context: reply_tx, }) => {
-                let status = match butcher_pid.insert(key_value).await {
+            proto::Request::Insert(proto::RequestInsert { key, value, context: reply_tx, }) => {
+                let status = match butcher_pid.insert(key, value).await {
                     Ok(Inserted) =>
                         Ok(Inserted),
-                    Err(core::butcher::InsertError::GenServer(ero::NoProcError)) => {
+                    Err(ero::NoProcError) => {
                         log::warn!("butcher has gone during flush, terminating");
                         break;
                     },
-                    Err(core::butcher::InsertError::NoSpaceLeft) =>
-                        Err(kv_context::RequestInsertError::NoSpaceLeft),
                 };
                 if let Err(_send_error) = reply_tx.send(status) {
                     log::warn!("client canceled insert request");
@@ -318,12 +316,11 @@ mod kv_context {
     impl context::Context for Context {
         type Info = oneshot::Sender<Info>;
         type Insert = oneshot::Sender<Result<Inserted, RequestInsertError>>;
-        type Lookup = oneshot::Sender<Result<Option<kv::KeyValue>, RequestLookupError>>;
+        type Lookup = oneshot::Sender<Result<Option<kv::Value>, RequestLookupError>>;
     }
 
     #[derive(Clone, PartialEq, Eq, Debug)]
     pub enum RequestInsertError {
-        NoSpaceLeft,
     }
 
     #[derive(Clone, PartialEq, Eq, Debug)]

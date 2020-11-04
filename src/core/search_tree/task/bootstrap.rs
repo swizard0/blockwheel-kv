@@ -9,6 +9,7 @@ use crate::{
     core::{
         BlockRef,
         MemCache,
+        ValueCell,
     },
 };
 
@@ -45,8 +46,16 @@ pub async fn run(Args { cache, blocks_pool, mut wheels_pid, }: Args) -> Result<D
                 storage::BlockSerializerContinue::Done(block_bytes) =>
                     return Ok(block_bytes),
                 storage::BlockSerializerContinue::More(serializer) => {
-                    let (key, &()) = cache_iter.next().unwrap();
-                    kont = serializer.entry(key, storage::JumpRef::None)?;
+                    let (key, value_cell) = cache_iter.next().unwrap();
+                    let storage_value_cell = match &value_cell {
+                        ValueCell::Value(value) =>
+                            storage::ValueCell::Value { value: &value.value_bytes, },
+                        ValueCell::Tombstone =>
+                            storage::ValueCell::Tombstone,
+                        ValueCell::Blackmark =>
+                            storage::ValueCell::Blackmark,
+                    };
+                    kont = serializer.entry(&key.key_bytes, storage_value_cell, storage::JumpRef::None)?;
                 },
             }
         }
