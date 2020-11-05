@@ -1,4 +1,5 @@
 use std::{
+    fs,
     collections::{
         HashMap,
     },
@@ -64,15 +65,23 @@ fn stress() {
     let limits = Limits {
         active_tasks: 128,
         // actions: 1024,
-        actions: 1,
+        actions: 80,
         key_size_bytes: 64,
         value_size_bytes: 4096,
     };
 
-    let mut data = HashMap::new();
+    let mut data = DataIndex {
+        index: HashMap::new(),
+        data: Vec::new(),
+    };
     let mut counter = Counter::default();
 
+    fs::remove_file(&params.wheel_a.wheel_filename).ok();
+    fs::remove_file(&params.wheel_b.wheel_filename).ok();
     runtime.block_on(stress_loop(params.clone(), &mut data, &mut counter, &limits)).unwrap();
+
+    fs::remove_file(&params.wheel_a.wheel_filename).ok();
+    fs::remove_file(&params.wheel_b.wheel_filename).ok();
 }
 
 #[derive(Clone)]
@@ -108,11 +117,20 @@ impl Counter {
     // }
 }
 
-type DataIndex = HashMap<kv::Key, kv::Value>;
+struct DataIndex {
+    index: HashMap<kv::Key, usize>,
+    data: Vec<(kv::Key, kv::Value)>,
+}
 
 #[derive(Debug)]
 enum Error {
     Insert(blockwheel_kv::InsertError),
+    Lookup(blockwheel_kv::LookupError),
+    ExpectedValueNotFound { key: kv::Key, value: kv::Value, },
+    UnexpectedValueFound { key: kv::Key, expected_value: kv::Value, found_value: kv::Value, },
+    WheelAGoneDuringInfo,
+    WheelBGoneDuringInfo,
+    WheelsGoneDuringFlush,
 }
 
 async fn stress_loop(
@@ -129,15 +147,16 @@ async fn stress_loop(
 
     let blocks_pool = BytesPool::new();
     let blockwheel_a_filename = params.wheel_a.wheel_filename.clone().into();
+    let blockwheel_b_filename = params.wheel_b.wheel_filename.clone().into();
 
     let wheel_a_gen_server = blockwheel::GenServer::new();
-    let wheel_a_pid = wheel_a_gen_server.pid();
+    let mut wheel_a_pid = wheel_a_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
         wheel_a_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_a),
     );
 
     let wheel_b_gen_server = blockwheel::GenServer::new();
-    let wheel_b_pid = wheel_b_gen_server.pid();
+    let mut wheel_b_pid = wheel_b_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
         wheel_b_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_b),
     );
@@ -150,10 +169,15 @@ async fn stress_loop(
 
     let has_added = wheels_pid.add(wheels::WheelRef {
         blockwheel_filename: blockwheel_a_filename,
-        blockwheel_pid: wheel_a_pid,
+        blockwheel_pid: wheel_a_pid.clone(),
     }).await;
     assert_eq!(has_added, Ok(true));
 
+    let has_added = wheels_pid.add(wheels::WheelRef {
+        blockwheel_filename: blockwheel_b_filename,
+        blockwheel_pid: wheel_b_pid.clone(),
+    }).await;
+    assert_eq!(has_added, Ok(true));
 
     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
     let wheel_kv_pid = wheel_kv_gen_server.pid();
@@ -161,7 +185,7 @@ async fn stress_loop(
         wheel_kv_gen_server.run(
             supervisor_pid.clone(),
             blocks_pool.clone(),
-            wheels_pid,
+            wheels_pid.clone(),
             blockwheel_kv::Params::default(),
         ),
     );
@@ -194,7 +218,9 @@ async fn stress_loop(
     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) {
         match task_done {
             TaskDone::Insert { key, value, } => {
-                data.insert(key, value);
+                let offset = data.data.len();
+                data.data.push((key.clone(), value));
+                data.index.insert(key, offset);
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
@@ -218,16 +244,17 @@ async fn stress_loop(
             }
             break;
         }
-        let maybe_task_result = if (active_tasks_counter.sum() >= limits.active_tasks) || (data.is_empty() && active_tasks_counter.inserts > 0) {
-            Some(done_rx.next().await.unwrap())
-        } else {
-            select! {
-                task_result = done_rx.next() =>
-                    Some(task_result.unwrap()),
-                default =>
-                    None,
-            }
-        };
+        let maybe_task_result =
+            if (active_tasks_counter.sum() >= limits.active_tasks) || (data.data.is_empty() && active_tasks_counter.inserts > 0) {
+                Some(done_rx.next().await.unwrap())
+            } else {
+                select! {
+                    task_result = done_rx.next() =>
+                        Some(task_result.unwrap()),
+                    default =>
+                        None,
+                }
+            };
         match maybe_task_result {
             None =>
                 (),
@@ -237,78 +264,100 @@ async fn stress_loop(
             }
         }
 
-        // insert task
-        let mut wheel_kv_pid = wheel_kv_pid.clone();
-        let blocks_pool = blocks_pool.clone();
-        let key_amount = rng.gen_range(1, limits.key_size_bytes);
-        let value_amount = rng.gen_range(1, limits.value_size_bytes);
-        spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-            let mut block = blocks_pool.lend();
-            block.resize(key_amount, 0);
-            rand::thread_rng().fill(&mut block[..]);
-            let key = kv::Key { key_bytes: block.freeze(), };
-            let mut block = blocks_pool.lend();
-            block.resize(value_amount, 0);
-            rand::thread_rng().fill(&mut block[..]);
-            let value = kv::Value { value_bytes: block.freeze(), };
-            match wheel_kv_pid.insert(key.clone(), value.clone()).await {
-                Ok(blockwheel_kv::Inserted) =>
-                    Ok(TaskDone::Insert { key, value, }),
-                Err(error) =>
-                    Err(Error::Insert(error))
+        // construct action and run task
+        let info_a = wheel_a_pid.info().await
+            .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
+        let info_b = wheel_b_pid.info().await
+            .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
+        if data.data.is_empty() || rng.gen_range(0.0, 1.0) < 0.5 {
+            // insert or remove task
+            let prob_space = (info_a.wheel_size_bytes + info_b.wheel_size_bytes) as f64;
+            let insert_prob_space = (info_a.bytes_free + info_b.bytes_free) as f64;
+            let insert_prob = insert_prob_space / prob_space;
+            let dice = rng.gen_range(0.0, 1.0);
+            if data.data.is_empty() || dice < insert_prob {
+                // insert task
+                let mut wheel_kv_pid = wheel_kv_pid.clone();
+                let blocks_pool = blocks_pool.clone();
+                let key_amount = rng.gen_range(1, limits.key_size_bytes);
+                let value_amount = rng.gen_range(1, limits.value_size_bytes);
+
+                println!(
+                    " ;; {}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
+                    actions_counter,
+                    key_amount,
+                    value_amount,
+                    dice,
+                    insert_prob,
+                    counter,
+                );
+
+                spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
+                    let mut block = blocks_pool.lend();
+                    block.resize(key_amount, 0);
+                    rand::thread_rng().fill(&mut block[..]);
+                    let key = kv::Key { key_bytes: block.freeze(), };
+                    let mut block = blocks_pool.lend();
+                    block.resize(value_amount, 0);
+                    rand::thread_rng().fill(&mut block[..]);
+                    let value = kv::Value { value_bytes: block.freeze(), };
+                    match wheel_kv_pid.insert(key.clone(), value.clone()).await {
+                        Ok(blockwheel_kv::Inserted) =>
+                            Ok(TaskDone::Insert { key, value, }),
+                        Err(error) =>
+                            Err(Error::Insert(error))
+                    }
+                });
+                active_tasks_counter.inserts += 1;
+            } else {
+                // remove task
+                let key_index = rng.gen_range(0, data.data.len());
+                let (key, value) = data.data.swap_remove(key_index);
+                data.index.remove(&key);
+
+                println!(
+                    " ;; {}. performing REMOVE with {} bytes key and {} bytes value (dice = {}, prob = {}) | {:?}",
+                    actions_counter,
+                    key.key_bytes.len(),
+                    value.value_bytes.len(),
+                    dice,
+                    1.0 - insert_prob,
+                    counter,
+                );
+
+                let mut wheel_kv_pid = wheel_kv_pid.clone();
+                spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
+
+                    Ok(TaskDone::Remove)
+                });
+                active_tasks_counter.removes += 1;
             }
-        });
-        active_tasks_counter.inserts += 1;
+        } else {
+            // lookup task
+            let key_index = rng.gen_range(0, data.data.len());
+            let (key, value) = data.data[key_index].clone();
 
+            println!(
+                " ;; {}. performing LOOKUP with {} bytes key and {} bytes value | {:?}",
+                actions_counter,
+                key.key_bytes.len(),
+                value.value_bytes.len(),
+                counter,
+            );
 
-    //     // construct action and run task
-    //     let info = pid.info().await
-    //         .map_err(|ero::NoProcError| Error::WheelGoneDuringInfo)?;
-    //     if blocks.is_empty() || rng.gen_range(0.0, 1.0) < 0.5 {
-    //         // write or delete task
-    //         let write_prob = if info.bytes_free * 2 >= info.wheel_size_bytes {
-    //             1.0
-    //         } else {
-    //             (info.bytes_free * 2) as f64 / info.wheel_size_bytes as f64
-    //         };
-    //         let dice = rng.gen_range(0.0, 1.0);
-    //         if blocks.is_empty() || dice < write_prob {
-    //             // write task
-    //             let mut blockwheel_pid = pid.clone();
-    //             let blocks_pool = blocks_pool.clone();
-    //             let amount = rng.gen_range(1, limits.block_size_bytes);
-    //             spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-    //                 let mut block = blocks_pool.lend();
-    //                 block.extend((0 .. amount).map(|_| 0));
-    //                 rand::thread_rng().fill(&mut block[..]);
-    //                 let block_bytes = block.freeze();
-    //                 match blockwheel_pid.write_block(block_bytes.clone()).await {
-    //                     Ok(block_id) =>
-    //                         Ok(TaskDone::WriteBlock(BlockTank { block_id, block_bytes, })),
-    //                     Err(super::WriteBlockError::NoSpaceLeft) =>
-    //                         Ok(TaskDone::WriteBlockNoSpace),
-    //                     Err(error) =>
-    //                         Err(Error::WriteBlock(error))
-    //                 }
-    //             });
-    //             active_tasks_counter.writes += 1;
-    //         } else {
-    //             // delete task
-    //             let block_index = rng.gen_range(0, blocks.len());
-    //             let BlockTank { block_id, .. } = blocks.swap_remove(block_index);
-    //             let mut blockwheel_pid = pid.clone();
-    //             spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-    //                 let Deleted = blockwheel_pid.delete_block(block_id.clone()).await
-    //                     .map_err(Error::DeleteBlock)?;
-    //                 Ok(TaskDone::DeleteBlock)
-    //             });
-    //             active_tasks_counter.deletes += 1;
-    //         }
-    //     } else {
-    //         // read task
-    //         let block_index = rng.gen_range(0, blocks.len());
-    //         let BlockTank { block_id, block_bytes, } = blocks[block_index].clone();
-    //         let mut blockwheel_pid = pid.clone();
+            let mut wheel_kv_pid = wheel_kv_pid.clone();
+            spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
+                match wheel_kv_pid.lookup(key.clone()).await {
+                    Ok(None) =>
+                        Err(Error::ExpectedValueNotFound { key, value, }),
+                    Ok(Some(found_value)) if found_value == value =>
+                        Ok(TaskDone::Lookup),
+                    Ok(Some(found_value)) =>
+                        Err(Error::UnexpectedValueFound { key, expected_value: value, found_value, }),
+                    Err(error) =>
+                        Err(Error::Lookup(error))
+                }
+            });
     //         spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
     //             let block_bytes_read = blockwheel_pid.read_block(block_id.clone()).await
     //                 .map_err(Error::ReadBlock)?;
@@ -320,12 +369,15 @@ async fn stress_loop(
     //                 Ok(TaskDone::ReadBlock)
     //             }
     //         });
-    //         active_tasks_counter.reads += 1;
-    //     }
+            active_tasks_counter.lookups += 1;
+        }
         actions_counter += 1;
     }
 
     assert!(done_rx.next().await.is_none());
+
+    let wheels::Flushed = wheels_pid.flush().await
+        .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
 
     Ok::<_, Error>(())
 }

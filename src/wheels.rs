@@ -13,6 +13,9 @@ use futures::{
         mpsc,
         oneshot,
     },
+    stream::{
+        FuturesUnordered,
+    },
     StreamExt,
     SinkExt,
 };
@@ -120,6 +123,9 @@ struct State {
     request_rx: mpsc::Receiver<Request>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Flushed;
+
 impl Pid {
     pub async fn add(&mut self, wheel_ref: WheelRef) -> Result<bool, ero::NoProcError> {
         loop {
@@ -162,15 +168,35 @@ impl Pid {
             }
         }
     }
+
+    pub async fn flush(&mut self) -> Result<Flushed, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Flush { reply_tx, }).await
+                .map_err(|_send_error| ero::NoProcError)?;
+            match reply_rx.await {
+                Ok(Flushed) =>
+                    return Ok(Flushed),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 enum Request {
     Add { wheel_ref: WheelRef, reply_tx: oneshot::Sender<bool>, },
     Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, },
     Get { blockwheel_filename: WheelFilename, reply_tx: oneshot::Sender<Option<WheelRef>>, },
+    Flush { reply_tx: oneshot::Sender<Flushed>, },
 }
 
-async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
+#[derive(Debug)]
+enum Error {
+    WheelGoneDuringFlush { blockwheel_filename: WheelFilename, },
+}
+
+async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut wheels = Vec::new();
     let mut index = HashMap::new();
 
@@ -213,6 +239,29 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
                     .map(|&offset| wheels[offset].clone());
                 if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
                     log::warn!("client canceled get request");
+                }
+            },
+
+            Request::Flush { reply_tx, } => {
+                let mut flush_tasks = FuturesUnordered::new();
+                for WheelRef { blockwheel_pid, blockwheel_filename, } in &wheels {
+                    let mut blockwheel_pid = blockwheel_pid.clone();
+                    let blockwheel_filename = blockwheel_filename.clone();
+                    flush_tasks.push(async move {
+                        let status = blockwheel_pid.flush().await;
+                        (blockwheel_filename, status)
+                    });
+                }
+                while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
+                    match flush_status {
+                        Ok(blockwheel::Flushed) =>
+                            (),
+                        Err(ero::NoProcError) =>
+                            return Err(ErrorSeverity::Fatal(Error::WheelGoneDuringFlush { blockwheel_filename, })),
+                    }
+                }
+                if let Err(_send_error) = reply_tx.send(Flushed) {
+                    log::warn!("client canceled flush request");
                 }
             },
         }
