@@ -23,14 +23,16 @@ use ero::{
 };
 
 use alloc_pool::bytes::{
-    Bytes,
     BytesPool,
 };
 
 use super::{
     kv,
+    wheels,
     blockwheel,
 };
+
+use crate as blockwheel_kv;
 
 #[test]
 fn stress() {
@@ -62,7 +64,7 @@ fn stress() {
     let limits = Limits {
         active_tasks: 128,
         // actions: 1024,
-        actions: 0,
+        actions: 1,
         key_size_bytes: 64,
         value_size_bytes: 4096,
     };
@@ -99,17 +101,18 @@ impl Counter {
         self.lookups + self.inserts + self.removes
     }
 
-    fn clear(&mut self) {
-        self.lookups = 0;
-        self.inserts = 0;
-        self.removes = 0;
-    }
+    // fn clear(&mut self) {
+    //     self.lookups = 0;
+    //     self.inserts = 0;
+    //     self.removes = 0;
+    // }
 }
 
 type DataIndex = HashMap<kv::Key, kv::Value>;
 
 #[derive(Debug)]
 enum Error {
+    Insert(blockwheel_kv::InsertError),
 }
 
 async fn stress_loop(
@@ -123,6 +126,45 @@ async fn stress_loop(
     let supervisor_gen_server = SupervisorGenServer::new();
     let mut supervisor_pid = supervisor_gen_server.pid();
     tokio::spawn(supervisor_gen_server.run());
+
+    let blocks_pool = BytesPool::new();
+    let blockwheel_a_filename = params.wheel_a.wheel_filename.clone().into();
+
+    let wheel_a_gen_server = blockwheel::GenServer::new();
+    let wheel_a_pid = wheel_a_gen_server.pid();
+    supervisor_pid.spawn_link_permanent(
+        wheel_a_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_a),
+    );
+
+    let wheel_b_gen_server = blockwheel::GenServer::new();
+    let wheel_b_pid = wheel_b_gen_server.pid();
+    supervisor_pid.spawn_link_permanent(
+        wheel_b_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_b),
+    );
+
+    let wheels_gen_server = wheels::GenServer::new();
+    let mut wheels_pid = wheels_gen_server.pid();
+    supervisor_pid.spawn_link_permanent(
+        wheels_gen_server.run(wheels::Params::default()),
+    );
+
+    let has_added = wheels_pid.add(wheels::WheelRef {
+        blockwheel_filename: blockwheel_a_filename,
+        blockwheel_pid: wheel_a_pid,
+    }).await;
+    assert_eq!(has_added, Ok(true));
+
+
+    let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
+    let wheel_kv_pid = wheel_kv_gen_server.pid();
+    supervisor_pid.spawn_link_permanent(
+        wheel_kv_gen_server.run(
+            supervisor_pid.clone(),
+            blocks_pool.clone(),
+            wheels_pid,
+            blockwheel_kv::Params::default(),
+        ),
+    );
 
     let mut rng = rand::thread_rng();
     let (done_tx, done_rx) = mpsc::channel(0);
@@ -196,24 +238,27 @@ async fn stress_loop(
         }
 
         // insert task
-        let mut blockwheel_pid = pid.clone();
+        let mut wheel_kv_pid = wheel_kv_pid.clone();
         let blocks_pool = blocks_pool.clone();
-        let amount = rng.gen_range(1, limits.block_size_bytes);
+        let key_amount = rng.gen_range(1, limits.key_size_bytes);
+        let value_amount = rng.gen_range(1, limits.value_size_bytes);
         spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
             let mut block = blocks_pool.lend();
-            block.extend((0 .. amount).map(|_| 0));
+            block.resize(key_amount, 0);
             rand::thread_rng().fill(&mut block[..]);
-            let block_bytes = block.freeze();
-            match blockwheel_pid.write_block(block_bytes.clone()).await {
-                Ok(block_id) =>
-                    Ok(TaskDone::WriteBlock(BlockTank { block_id, block_bytes, })),
-                Err(super::WriteBlockError::NoSpaceLeft) =>
-                    Ok(TaskDone::WriteBlockNoSpace),
+            let key = kv::Key { key_bytes: block.freeze(), };
+            let mut block = blocks_pool.lend();
+            block.resize(value_amount, 0);
+            rand::thread_rng().fill(&mut block[..]);
+            let value = kv::Value { value_bytes: block.freeze(), };
+            match wheel_kv_pid.insert(key.clone(), value.clone()).await {
+                Ok(blockwheel_kv::Inserted) =>
+                    Ok(TaskDone::Insert { key, value, }),
                 Err(error) =>
-                    Err(Error::WriteBlock(error))
+                    Err(Error::Insert(error))
             }
         });
-        active_tasks_counter.writes += 1;
+        active_tasks_counter.inserts += 1;
 
 
     //     // construct action and run task
@@ -277,7 +322,7 @@ async fn stress_loop(
     //         });
     //         active_tasks_counter.reads += 1;
     //     }
-    //     actions_counter += 1;
+        actions_counter += 1;
     }
 
     assert!(done_rx.next().await.is_none());
