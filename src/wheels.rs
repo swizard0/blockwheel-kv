@@ -1,4 +1,5 @@
 use std::{
+    path,
     sync::Arc,
     time::Duration,
     collections::{
@@ -36,6 +37,22 @@ pub struct WheelFilename {
 impl<'a> From<&'a str> for WheelFilename {
     fn from(filename: &'a str) -> WheelFilename {
         WheelFilename { filename: Arc::new(filename.to_string()), }
+    }
+}
+
+impl<'a> From<&'a path::Path> for WheelFilename {
+    fn from(filename: &'a path::Path) -> WheelFilename {
+        WheelFilename {
+            filename: Arc::new(filename.to_string_lossy().to_string()),
+        }
+    }
+}
+
+impl From<path::PathBuf> for WheelFilename {
+    fn from(filename: path::PathBuf) -> WheelFilename {
+        WheelFilename {
+            filename: Arc::new(filename.to_string_lossy().to_string()),
+        }
     }
 }
 
@@ -156,7 +173,6 @@ enum Request {
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
     let mut wheels = Vec::new();
     let mut index = HashMap::new();
-    let mut rng = rand::thread_rng();
 
     while let Some(request) = state.request_rx.next().await {
         match request {
@@ -183,6 +199,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, ()>> {
                 let maybe_wheel_ref = if wheels.is_empty() {
                     None
                 } else {
+                    let mut rng = rand::thread_rng();
                     let offset = rng.gen_range(0, wheels.len());
                     Some(wheels[offset].clone())
                 };
