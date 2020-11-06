@@ -35,10 +35,7 @@ use alloc_pool::bytes::BytesPool;
 
 use crate::{
     kv,
-    proto,
     wheels,
-    context,
-    kv_context,
     core::{
         butcher,
         search_tree,
@@ -46,6 +43,7 @@ use crate::{
         BlockRef,
         ValueCell,
     },
+    RequestLookup,
 };
 
 #[derive(Clone, Debug)]
@@ -139,7 +137,7 @@ struct State {
 
 enum Request {
     ButcherFlush { cache: Arc<MemCache>, },
-    Lookup(proto::RequestLookup<<kv_context::Context as context::Context>::Lookup>),
+    Lookup(RequestLookup),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -161,18 +159,16 @@ impl Pid {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(Request::Lookup(proto::RequestLookup {
+                .send(Request::Lookup(RequestLookup {
                     key: key.clone(),
-                    context: reply_tx,
+                    reply_tx,
                 }))
                 .await
                 .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
-                Ok(Ok(result)) =>
+                Ok(result) =>
                     return Ok(result),
-                Ok(Err(..)) =>
-                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -187,7 +183,7 @@ enum Error {
 }
 
 struct LookupRequest {
-    reply_tx: <kv_context::Context as context::Context>::Lookup,
+    reply_tx: oneshot::Sender<Option<kv::Value>>,
     pending_count: usize,
     found_fold: Option<FoundFold>,
 }
@@ -349,7 +345,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 search_trees.insert(search_tree_pid);
             },
 
-            Event::Request(Some(Request::Lookup(proto::RequestLookup { key, context: reply_tx, }))) => {
+            Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
                     reply_tx,
                     pending_count: 1 + search_trees.len(),
@@ -393,7 +389,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         Some(FoundFold { value_cell: ValueCell::Blackmark, .. }) =>
                             None,
                     };
-                    if let Err(_send_error) = lookup_request.reply_tx.send(Ok(lookup_result)) {
+                    if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
                         log::warn!("client canceled lookup request");
                     }
                 }

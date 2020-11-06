@@ -27,8 +27,6 @@ pub mod kv;
 pub mod wheels;
 
 mod core;
-mod proto;
-mod context;
 mod storage;
 
 #[cfg(test)]
@@ -56,8 +54,6 @@ impl Default for Params {
         }
     }
 }
-
-type Request = proto::Request<kv_context::Context>;
 
 pub struct GenServer {
     request_tx: mpsc::Sender<Request>,
@@ -164,6 +160,9 @@ pub enum LookupError {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Inserted;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Removed;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
 }
@@ -172,7 +171,7 @@ impl Pid {
     pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Info(proto::RequestInfo { context: reply_tx, })).await
+            self.request_tx.send(Request::Info(RequestInfo { reply_tx, })).await
                 .map_err(|_send_error| ero::NoProcError)?;
             match reply_rx.await {
                 Ok(info) =>
@@ -187,19 +186,17 @@ impl Pid {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(proto::Request::Insert(proto::RequestInsert {
+                .send(Request::Insert(RequestInsert {
                     key: key.clone(),
                     value: value.clone(),
-                    context: reply_tx,
+                    reply_tx,
                 }))
                 .await
                 .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
-                Ok(Ok(Inserted)) =>
+                Ok(Inserted) =>
                     return Ok(Inserted),
-                Ok(Err(..)) =>
-                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -210,18 +207,16 @@ impl Pid {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(proto::Request::Lookup(proto::RequestLookup {
+                .send(Request::Lookup(RequestLookup {
                     key: key.clone(),
-                    context: reply_tx,
+                    reply_tx,
                 }))
                 .await
                 .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
-                Ok(Ok(result)) =>
+                Ok(result) =>
                     return Ok(result),
-                Ok(Err(..)) =>
-                    unreachable!(),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -238,6 +233,39 @@ struct State {
 }
 
 #[derive(Debug)]
+pub enum Request {
+    Info(RequestInfo),
+    Insert(RequestInsert),
+    Lookup(RequestLookup),
+    Remove(RequestRemove),
+}
+
+#[derive(Debug)]
+pub struct RequestInfo {
+    pub reply_tx: oneshot::Sender<Info>,
+}
+
+#[derive(Debug)]
+pub struct RequestInsert {
+    pub key: kv::Key,
+    pub value: kv::Value,
+    pub reply_tx: oneshot::Sender<Inserted>,
+}
+
+#[derive(Debug)]
+pub struct RequestLookup {
+    pub key: kv::Key,
+    pub reply_tx: oneshot::Sender<Option<kv::Value>>,
+}
+
+#[derive(Debug)]
+pub struct RequestRemove {
+    pub key: kv::Key,
+    pub reply_tx: oneshot::Sender<Removed>,
+}
+
+
+#[derive(Debug)]
 enum Error {
 }
 
@@ -251,7 +279,7 @@ async fn busyloop(
 {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
-            proto::Request::Info(proto::RequestInfo { context: reply_tx, }) => {
+            Request::Info(RequestInfo { reply_tx, }) => {
                 let info = match butcher_pid.info().await {
                     Ok(info) =>
                         info,
@@ -268,12 +296,12 @@ async fn busyloop(
                 unimplemented!()
             },
 
-            proto::Request::Insert(proto::RequestInsert { key, value, context: reply_tx, }) => {
+            Request::Insert(RequestInsert { key, value, reply_tx, }) => {
                 let status = match butcher_pid.insert(key, value).await {
                     Ok(Inserted) =>
-                        Ok(Inserted),
+                        Inserted,
                     Err(ero::NoProcError) => {
-                        log::warn!("butcher has gone during flush, terminating");
+                        log::warn!("butcher has gone during insert, terminating");
                         break;
                     },
                 };
@@ -282,12 +310,12 @@ async fn busyloop(
                 }
             },
 
-            proto::Request::Lookup(proto::RequestLookup { key, context: reply_tx, }) => {
+            Request::Lookup(RequestLookup { key, reply_tx, }) => {
                 let status = match manager_pid.lookup(key).await {
                     Ok(result) =>
-                        Ok(result),
+                        result,
                     Err(core::manager::LookupError::GenServer(ero::NoProcError)) => {
-                        log::warn!("manager has gone during flush, terminating");
+                        log::warn!("manager has gone during lookup, terminating");
                         break;
                     },
                 };
@@ -295,38 +323,21 @@ async fn busyloop(
                     log::warn!("client canceled lookup request");
                 }
             },
+
+            Request::Remove(RequestRemove { key, reply_tx, }) => {
+                let status = match butcher_pid.remove(key).await {
+                    Ok(Removed) =>
+                        Removed,
+                    Err(ero::NoProcError) => {
+                        log::warn!("butcher has gone during remove, terminating");
+                        break;
+                    },
+                };
+                if let Err(_send_error) = reply_tx.send(status) {
+                    log::warn!("client canceled remove request");
+                }
+            },
         }
     }
     Ok(())
-}
-
-mod kv_context {
-    use futures::{
-        channel::{
-            oneshot,
-        },
-    };
-
-    use super::{
-        kv,
-        context,
-        Info,
-        Inserted,
-    };
-
-    pub struct Context;
-
-    impl context::Context for Context {
-        type Info = oneshot::Sender<Info>;
-        type Insert = oneshot::Sender<Result<Inserted, RequestInsertError>>;
-        type Lookup = oneshot::Sender<Result<Option<kv::Value>, RequestLookupError>>;
-    }
-
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    pub enum RequestInsertError {
-    }
-
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    pub enum RequestLookupError {
-    }
 }
