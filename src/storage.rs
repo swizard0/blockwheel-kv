@@ -142,6 +142,7 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
         if self.entries_read >= self.block_header.entries_count {
             None
         } else {
+            self.entries_read += 1;
             Some(
                 serde::Deserialize::deserialize(&mut self.deserializer)
                     .map_err(Error::EntryDeserialize)

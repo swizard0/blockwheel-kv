@@ -37,6 +37,8 @@ use crate as blockwheel_kv;
 
 #[test]
 fn stress() {
+    env_logger::init();
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -65,7 +67,7 @@ fn stress() {
     let limits = Limits {
         active_tasks: 128,
         // actions: 1024,
-        actions: 80,
+        actions: 1024,
         key_size_bytes: 64,
         value_size_bytes: 4096,
     };
@@ -282,8 +284,8 @@ async fn stress_loop(
                 let key_amount = rng.gen_range(1, limits.key_size_bytes);
                 let value_amount = rng.gen_range(1, limits.value_size_bytes);
 
-                println!(
-                    " ;; {}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
+                log::info!(
+                    "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
                     actions_counter,
                     key_amount,
                     value_amount,
@@ -315,8 +317,8 @@ async fn stress_loop(
                 let (key, value) = data.data.swap_remove(key_index);
                 data.index.remove(&key);
 
-                println!(
-                    " ;; {}. performing REMOVE with {} bytes key and {} bytes value (dice = {}, prob = {}) | {:?}",
+                log::info!(
+                    "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
                     actions_counter,
                     key.key_bytes.len(),
                     value.value_bytes.len(),
@@ -337,8 +339,8 @@ async fn stress_loop(
             let key_index = rng.gen_range(0, data.data.len());
             let (key, value) = data.data[key_index].clone();
 
-            println!(
-                " ;; {}. performing LOOKUP with {} bytes key and {} bytes value | {:?}",
+            log::info!(
+                "{}. performing LOOKUP with {} bytes key and {} bytes value | {:?}",
                 actions_counter,
                 key.key_bytes.len(),
                 value.value_bytes.len(),
@@ -358,17 +360,6 @@ async fn stress_loop(
                         Err(Error::Lookup(error))
                 }
             });
-    //         spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-    //             let block_bytes_read = blockwheel_pid.read_block(block_id.clone()).await
-    //                 .map_err(Error::ReadBlock)?;
-    //             let expected_crc = block::crc(&block_bytes);
-    //             let provided_crc = block::crc(&block_bytes_read);
-    //             if expected_crc != provided_crc {
-    //                 Err(Error::ReadBlockCrcMismarch { block_id, expected_crc, provided_crc, })
-    //             } else {
-    //                 Ok(TaskDone::ReadBlock)
-    //             }
-    //         });
             active_tasks_counter.lookups += 1;
         }
         actions_counter += 1;

@@ -41,7 +41,7 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    ReadBlockStorage(storage::Error),
+    ReadBlockStorage { block_ref: BlockRef, error: storage::Error, },
     SearchBlockJoin(tokio::task::JoinError),
 }
 
@@ -128,6 +128,9 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
     });
     let outcomes = search_task.await
         .map_err(Error::SearchBlockJoin)?
-        .map_err(Error::ReadBlockStorage)?;
+        .map_err(|error| Error::ReadBlockStorage {
+            block_ref: block_ref.clone(),
+            error,
+        })?;
     Ok(Done { block_ref, outcomes, })
 }
