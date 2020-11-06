@@ -9,3 +9,15 @@ pub struct Key {
 pub struct Value {
     pub value_bytes: Bytes,
 }
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ValueCell {
+    pub version: u64,
+    pub cell: Cell,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Cell {
+    Value(Value),
+    Tombstone,
+}

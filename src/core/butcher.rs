@@ -22,11 +22,11 @@ use ero::{
 
 use crate::{
     kv,
+    version,
     core::{
         manager,
         OrdKey,
         MemCache,
-        ValueCell,
     },
     Info,
     Request,
@@ -80,6 +80,7 @@ impl GenServer {
 
     pub async fn run(
         self,
+        version_provider: version::Provider,
         manager_pid: manager::Pid,
         params: Params,
     )
@@ -93,6 +94,7 @@ impl GenServer {
             },
             State {
                 fused_request_rx: self.fused_request_rx,
+                version_provider,
                 manager_pid,
                 params,
             },
@@ -134,7 +136,7 @@ impl Pid {
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<ValueCell>, ero::NoProcError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx.send(Request::Lookup(RequestLookup { key: key.clone(), reply_tx, })).await
@@ -167,6 +169,7 @@ impl Pid {
 
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    version_provider: version::Provider,
     manager_pid: manager::Pid,
     params: Params,
 }
@@ -189,10 +192,21 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
             Request::Insert(RequestInsert { key, value, reply_tx, }) => {
                 let ord_key = OrdKey::new(key);
-                memcache.insert(ord_key.clone(), ValueCell::Value(value));
+                let value_cell = kv::ValueCell {
+                    version: state.version_provider.obtain(),
+                    cell: kv::Cell::Value(value),
+                };
+                let maybe_prev = memcache.insert(ord_key.clone(), value_cell);
                 if let Err(_send_error) = reply_tx.send(Inserted) {
                     log::warn!("client canceled insert request");
-                    memcache.remove(&ord_key);
+                    match maybe_prev {
+                        None => {
+                            memcache.remove(&ord_key);
+                        },
+                        Some(prev_value_cell) => {
+                            memcache.insert(ord_key, prev_value_cell);
+                        },
+                    }
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
@@ -212,8 +226,30 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             Request::Remove(RequestRemove { key, reply_tx, }) => {
-
-                unimplemented!()
+                let ord_key = OrdKey::new(key);
+                let value_cell = kv::ValueCell {
+                    version: state.version_provider.obtain(),
+                    cell: kv::Cell::Tombstone,
+                };
+                let maybe_prev = memcache.insert(ord_key.clone(), value_cell);
+                if let Err(_send_error) = reply_tx.send(Removed) {
+                    log::warn!("client canceled remove request");
+                    match maybe_prev {
+                        None => {
+                            memcache.remove(&ord_key);
+                        },
+                        Some(prev_value_cell) => {
+                            memcache.insert(ord_key, prev_value_cell);
+                        },
+                    }
+                } else if memcache.len() >= state.params.tree_block_size {
+                    // flush tree block
+                    let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
+                    if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
+                        log::warn!("manager has gone during flush, terminating");
+                        break;
+                    }
+                }
             },
         }
     }

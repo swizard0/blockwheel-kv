@@ -48,7 +48,6 @@ use crate::{
     core::{
         BlockRef,
         MemCache,
-        ValueCell,
     },
 };
 
@@ -118,7 +117,7 @@ impl GenServer {
 pub enum Found {
     Nothing,
     Something {
-        value_cell: ValueCell,
+        value_cell: kv::ValueCell,
         location: FoundLocation,
     },
 }

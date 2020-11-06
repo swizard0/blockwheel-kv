@@ -25,14 +25,7 @@ pub struct BlockRef {
     block_id: block::Id,
 }
 
-#[derive(Clone, Debug)]
-pub enum ValueCell {
-    Value(kv::Value),
-    Tombstone,
-    Blackmark,
-}
-
-pub type MemCache = BTreeMap<OrdKey, ValueCell>;
+pub type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
 
 #[derive(Clone, Debug)]
 pub struct OrdKey {

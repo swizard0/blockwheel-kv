@@ -35,10 +35,16 @@ pub struct Entry<'a> {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub enum ValueCell<'a> {
+pub struct ValueCell<'a> {
+    pub version: u64,
+    #[serde(borrow)]
+    pub cell: Cell<'a>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum Cell<'a> {
     Value { value: &'a [u8], },
     Tombstone,
-    Blackmark,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

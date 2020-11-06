@@ -41,7 +41,6 @@ use crate::{
         search_tree,
         MemCache,
         BlockRef,
-        ValueCell,
     },
     RequestLookup,
 };
@@ -155,7 +154,7 @@ impl Pid {
         Ok(Flushed)
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::Value>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -183,13 +182,13 @@ enum Error {
 }
 
 struct LookupRequest {
-    reply_tx: oneshot::Sender<Option<kv::Value>>,
+    reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
     pending_count: usize,
     found_fold: Option<FoundFold>,
 }
 
 struct FoundFold {
-    value_cell: ValueCell,
+    value_cell: kv::ValueCell,
     found_where: FoundWhere,
 }
 
@@ -382,12 +381,8 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     let lookup_result = match lookup_request.found_fold {
                         None =>
                             None,
-                        Some(FoundFold { value_cell: ValueCell::Value(value), .. }) =>
-                            Some(value),
-                        Some(FoundFold { value_cell: ValueCell::Tombstone, .. }) =>
-                            None,
-                        Some(FoundFold { value_cell: ValueCell::Blackmark, .. }) =>
-                            None,
+                        Some(FoundFold { value_cell, .. }) =>
+                            Some(value_cell),
                     };
                     if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
                         log::warn!("client canceled lookup request");

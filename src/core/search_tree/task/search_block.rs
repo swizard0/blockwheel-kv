@@ -14,7 +14,6 @@ use crate::{
     storage,
     core::{
         BlockRef,
-        ValueCell,
         search_tree::{
             task::{
                 Outcome,
@@ -74,17 +73,18 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                                 },
                                 Ordering::Equal => {
                                     let value_cell = match entry.value_cell {
-                                        storage::ValueCell::Value { value, } => {
+                                        storage::ValueCell { version, cell: storage::Cell::Value { value, }, } => {
                                             let mut value_bytes = blocks_pool.lend();
                                             value_bytes.extend_from_slice(value);
-                                            ValueCell::Value(kv::Value {
-                                                value_bytes: value_bytes.freeze(),
-                                            })
+                                            kv::ValueCell {
+                                                version,
+                                                cell: kv::Cell::Value(kv::Value {
+                                                    value_bytes: value_bytes.freeze(),
+                                                }),
+                                            }
                                         },
-                                        storage::ValueCell::Tombstone =>
-                                            ValueCell::Tombstone,
-                                        storage::ValueCell::Blackmark =>
-                                            ValueCell::Blackmark,
+                                        storage::ValueCell { version, cell: storage::Cell::Tombstone, } =>
+                                            kv::ValueCell { version, cell: kv::Cell::Tombstone, },
                                     };
                                     outcomes.push(SearchOutcome {
                                         request: request_key,

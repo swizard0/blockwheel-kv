@@ -25,6 +25,7 @@ use ero_blockwheel_fs as blockwheel;
 
 pub mod kv;
 pub mod wheels;
+pub mod version;
 
 mod core;
 mod storage;
@@ -84,6 +85,7 @@ impl GenServer {
         self,
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
+        version_provider: version::Provider,
         wheels_pid: wheels::Pid,
         params: Params,
     )
@@ -98,6 +100,7 @@ impl GenServer {
             State {
                 parent_supervisor,
                 blocks_pool,
+                version_provider,
                 wheels_pid,
                 fused_request_rx: self.fused_request_rx,
                 params,
@@ -126,7 +129,11 @@ impl GenServer {
                     child_supervisor_gen_server.run(),
                 );
                 child_supervisor_pid.spawn_link_permanent(
-                    butcher_gen_server.run(manager_pid.clone(), butcher_params),
+                    butcher_gen_server.run(
+                        state.version_provider.clone(),
+                        manager_pid.clone(),
+                        butcher_params,
+                    ),
                 );
                 child_supervisor_pid.spawn_link_permanent(
                     manager_gen_server.run(
@@ -154,6 +161,11 @@ pub enum InsertError {
 
 #[derive(Debug)]
 pub enum LookupError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
+pub enum RemoveError {
     GenServer(ero::NoProcError),
 }
 
@@ -203,7 +215,7 @@ impl Pid {
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::Value>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -222,11 +234,32 @@ impl Pid {
             }
         }
     }
+
+    pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::Remove(RequestRemove {
+                    key: key.clone(),
+                    reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| RemoveError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(result) =>
+                    return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 struct State {
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
+    version_provider: version::Provider,
     wheels_pid: wheels::Pid,
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     params: Params,
@@ -255,7 +288,7 @@ pub struct RequestInsert {
 #[derive(Debug)]
 pub struct RequestLookup {
     pub key: kv::Key,
-    pub reply_tx: oneshot::Sender<Option<kv::Value>>,
+    pub reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
 }
 
 #[derive(Debug)]

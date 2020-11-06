@@ -3,13 +3,13 @@ use std::sync::Arc;
 use alloc_pool::bytes::BytesPool;
 
 use crate::{
+    kv,
     wheels,
     storage,
     blockwheel,
     core::{
         BlockRef,
         MemCache,
-        ValueCell,
     },
 };
 
@@ -47,13 +47,11 @@ pub async fn run(Args { cache, blocks_pool, mut wheels_pid, }: Args) -> Result<D
                     return Ok(block_bytes),
                 storage::BlockSerializerContinue::More(serializer) => {
                     let (key, value_cell) = cache_iter.next().unwrap();
-                    let storage_value_cell = match &value_cell {
-                        ValueCell::Value(value) =>
-                            storage::ValueCell::Value { value: &value.value_bytes, },
-                        ValueCell::Tombstone =>
-                            storage::ValueCell::Tombstone,
-                        ValueCell::Blackmark =>
-                            storage::ValueCell::Blackmark,
+                    let storage_value_cell = match value_cell {
+                        &kv::ValueCell { version, cell: kv::Cell::Value(ref value), } =>
+                            storage::ValueCell { version, cell: storage::Cell::Value { value: &value.value_bytes, } },
+                        &kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
+                            storage::ValueCell { version, cell: storage::Cell::Tombstone, },
                     };
                     kont = serializer.entry(&key.key_bytes, storage_value_cell, storage::JumpRef::None)?;
                 },

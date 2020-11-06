@@ -30,6 +30,7 @@ use alloc_pool::bytes::{
 use super::{
     kv,
     wheels,
+    version,
     blockwheel,
 };
 
@@ -66,12 +67,12 @@ fn stress() {
 
     let limits = Limits {
         active_tasks: 128,
-        // actions: 1024,
-        actions: 1024,
+        actions: 2048,
         key_size_bytes: 64,
         value_size_bytes: 4096,
     };
 
+    let version_provider = version::Provider::new();
     let mut data = DataIndex {
         index: HashMap::new(),
         data: Vec::new(),
@@ -80,7 +81,7 @@ fn stress() {
 
     fs::remove_file(&params.wheel_a.wheel_filename).ok();
     fs::remove_file(&params.wheel_b.wheel_filename).ok();
-    runtime.block_on(stress_loop(params.clone(), &mut data, &mut counter, &limits)).unwrap();
+    runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
     fs::remove_file(&params.wheel_a.wheel_filename).ok();
     fs::remove_file(&params.wheel_b.wheel_filename).ok();
@@ -128,8 +129,16 @@ struct DataIndex {
 enum Error {
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
-    ExpectedValueNotFound { key: kv::Key, value: kv::Value, },
-    UnexpectedValueFound { key: kv::Key, expected_value: kv::Value, found_value: kv::Value, },
+    Remove(blockwheel_kv::RemoveError),
+    ExpectedValueNotFound {
+        key: kv::Key,
+        value: kv::Value,
+    },
+    UnexpectedValueFound {
+        key: kv::Key,
+        expected_value: kv::Value,
+        found_value_cell: kv::ValueCell,
+    },
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
     WheelsGoneDuringFlush,
@@ -137,6 +146,7 @@ enum Error {
 
 async fn stress_loop(
     params: Params,
+    version_provider: &version::Provider,
     data: &mut DataIndex,
     counter: &mut Counter,
     limits: &Limits,
@@ -187,6 +197,7 @@ async fn stress_loop(
         wheel_kv_gen_server.run(
             supervisor_pid.clone(),
             blocks_pool.clone(),
+            version_provider.clone(),
             wheels_pid.clone(),
             blockwheel_kv::Params::default(),
         ),
@@ -333,8 +344,12 @@ async fn stress_loop(
 
                 let mut wheel_kv_pid = wheel_kv_pid.clone();
                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-
-                    Ok(TaskDone::Remove)
+                    match wheel_kv_pid.remove(key.clone()).await {
+                        Ok(blockwheel_kv::Removed) =>
+                            Ok(TaskDone::Remove),
+                        Err(error) =>
+                            Err(Error::Remove(error))
+                    }
                 });
                 active_tasks_counter.removes += 1;
             }
@@ -356,10 +371,10 @@ async fn stress_loop(
                 match wheel_kv_pid.lookup(key.clone()).await {
                     Ok(None) =>
                         Err(Error::ExpectedValueNotFound { key, value, }),
-                    Ok(Some(found_value)) if found_value == value =>
+                    Ok(Some(kv::ValueCell { cell: kv::Cell::Value(found_value), .. })) if found_value == value =>
                         Ok(TaskDone::Lookup),
-                    Ok(Some(found_value)) =>
-                        Err(Error::UnexpectedValueFound { key, expected_value: value, found_value, }),
+                    Ok(Some(found_value_cell)) =>
+                        Err(Error::UnexpectedValueFound { key, expected_value: value, found_value_cell, }),
                     Err(error) =>
                         Err(Error::Lookup(error))
                 }

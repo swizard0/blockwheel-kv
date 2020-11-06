@@ -15,7 +15,6 @@ use crate::{
     kv,
     core::{
         BlockRef,
-        ValueCell,
         search_tree::{
             Found,
         },
@@ -36,7 +35,7 @@ pub struct SearchOutcome {
 }
 
 pub enum Outcome {
-    Found { value_cell: ValueCell, },
+    Found { value_cell: kv::ValueCell, },
     NotFound,
     Jump { block_ref: BlockRef, },
 }
