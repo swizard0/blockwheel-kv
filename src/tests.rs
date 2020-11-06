@@ -220,9 +220,13 @@ async fn stress_loop(
     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) {
         match task_done {
             TaskDone::Insert { key, value, } => {
-                let offset = data.data.len();
-                data.data.push((key.clone(), value));
-                data.index.insert(key, offset);
+                if let Some(&offset) = data.index.get(&key) {
+                    data.data[offset] = (key, value);
+                } else {
+                    let offset = data.data.len();
+                    data.data.push((key.clone(), value));
+                    data.index.insert(key, offset);
+                }
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
