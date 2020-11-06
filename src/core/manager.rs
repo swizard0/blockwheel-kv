@@ -40,7 +40,6 @@ use crate::{
         butcher,
         search_tree,
         MemCache,
-        BlockRef,
     },
     RequestLookup,
 };
@@ -184,116 +183,17 @@ enum Error {
 struct LookupRequest {
     reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
     pending_count: usize,
-    found_fold: Option<FoundFold>,
+    found_fold: Option<kv::ValueCell>,
 }
 
-struct FoundFold {
-    value_cell: kv::ValueCell,
-    found_where: FoundWhere,
-}
-
-enum FoundWhere {
-    Butcher,
-    SearchTree(FoundWhereSearchTree),
-}
-
-struct FoundWhereSearchTree {
-    generation: Ref,
-    location: SearchTreeLocation,
-}
-
-enum SearchTreeLocation {
-    BootstrapCache,
-    StorageBlock {
-        block_ref: BlockRef,
-    },
-}
-
-fn replace_fold_found(current: &Option<FoundFold>, incoming: &Option<FoundFold>) -> bool {
+fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::ValueCell>) -> bool {
     match (current, incoming) {
-        (None, None) |
-        (Some(..), None) |
-        (Some(FoundFold { found_where: FoundWhere::Butcher, .. }), Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. })) |
-        (
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::BootstrapCache, .. }),
-                ..
-            }),
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
-                ..
-            }),
-        ) =>
+        (None, None) | (Some(..), None) =>
             false,
-        (
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                    location: SearchTreeLocation::BootstrapCache,
-                    generation: gen_a,
-                }),
-                ..
-            }),
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                    location: SearchTreeLocation::BootstrapCache,
-                    generation: gen_b,
-                }),
-                ..
-            }),
-        ) =>
-            gen_a < gen_b,
-        (
-            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_a, .. }), .. }),
-            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_b, .. }), .. }),
-        ) if gen_a < gen_b =>
+        (None, Some(..)) =>
             true,
-        (
-            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_a, .. }), .. }),
-            Some(FoundFold { found_where: FoundWhere::SearchTree(FoundWhereSearchTree { generation: gen_b, .. }), .. }),
-        ) if gen_a > gen_b =>
-            false,
-        (
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                    location: SearchTreeLocation::StorageBlock { block_ref: ref_a, },
-                    ..
-                }),
-                ..
-            }),
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                    location: SearchTreeLocation::StorageBlock { block_ref: ref_b, },
-                    ..
-                }),
-                ..
-            }),
-        ) if ref_a.block_id >= ref_b.block_id =>
-            false,
-        (None, Some(..)) |
-        (Some(FoundFold { found_where: FoundWhere::SearchTree(..), .. }), Some(FoundFold { found_where: FoundWhere::Butcher, .. })) |
-        (
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
-                ..
-            }),
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::BootstrapCache, .. }),
-                ..
-            }),
-        ) |
-        (
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
-                ..
-            }),
-            Some(FoundFold {
-                found_where: FoundWhere::SearchTree(FoundWhereSearchTree { location: SearchTreeLocation::StorageBlock { .. }, .. }),
-                ..
-            }),
-        ) =>
-            true,
-        (Some(FoundFold { found_where: FoundWhere::Butcher, .. }), Some(FoundFold { found_where: FoundWhere::Butcher, .. })) =>
-            unreachable!(),
+        (Some(kv::ValueCell { version: version_current, .. }), Some(kv::ValueCell { version: version_incoming, .. })) =>
+            version_incoming < version_current,
     }
 }
 
@@ -357,12 +257,11 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         butcher_pid: state.butcher_pid.clone(),
                     }),
                 }));
-                for (search_tree_ref, search_tree_pid) in search_trees.iter() {
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
                     lookup_tasks.push(run_lookup_task(LookupTaskArg {
                         key: key.clone(),
                         request_ref: request_ref.clone(),
                         kind: LookupTaskArgKind::SearchTree(SearchTreeLookupTaskArg {
-                            search_tree_generation: search_tree_ref.clone(),
                             search_tree_pid: search_tree_pid.clone(),
                         }),
                     }));
@@ -378,12 +277,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 }
                 if lookup_request.pending_count == 0 {
                     let lookup_request = lookup_requests.remove(request_ref).unwrap();
-                    let lookup_result = match lookup_request.found_fold {
-                        None =>
-                            None,
-                        Some(FoundFold { value_cell, .. }) =>
-                            Some(value_cell),
-                    };
+                    let lookup_result = lookup_request.found_fold;
                     if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
                         log::warn!("client canceled lookup request");
                     }
@@ -412,13 +306,12 @@ struct ButcherLookupTaskArg {
 }
 
 struct SearchTreeLookupTaskArg {
-    search_tree_generation: Ref,
     search_tree_pid: search_tree::Pid,
 }
 
 struct LookupTaskDone {
     request_ref: Ref,
-    found: Option<FoundFold>,
+    found: Option<kv::ValueCell>,
 }
 
 async fn run_lookup_task(arg: LookupTaskArg) -> Result<LookupTaskDone, Error> {
@@ -441,11 +334,7 @@ async fn run_lookup_task_butcher(
         .map_err(Error::ButcherLookup)?;
     Ok(LookupTaskDone {
         request_ref,
-        found: maybe_value_cell
-            .map(|value_cell| FoundFold {
-                value_cell,
-                found_where: FoundWhere::Butcher,
-            }),
+        found: maybe_value_cell,
     })
 }
 
@@ -467,26 +356,12 @@ async fn run_lookup_task_search_tree(
                 value_cell,
                 location: search_tree::FoundLocation::Cache,
             } =>
-                Some(FoundFold {
-                    value_cell,
-                    found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                        generation: args.search_tree_generation,
-                        location: SearchTreeLocation::BootstrapCache,
-                    }),
-                }),
+                Some(value_cell),
             search_tree::Found::Something {
                 value_cell,
-                location: search_tree::FoundLocation::Block { block_ref, },
+                location: search_tree::FoundLocation::Block { .. },
             } =>
-                Some(FoundFold {
-                    value_cell,
-                    found_where: FoundWhere::SearchTree(FoundWhereSearchTree {
-                        generation: args.search_tree_generation,
-                        location: SearchTreeLocation::StorageBlock {
-                            block_ref,
-                        },
-                    }),
-                }),
+                Some(value_cell),
         },
     })
 }
