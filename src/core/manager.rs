@@ -349,19 +349,6 @@ async fn run_lookup_task_search_tree(
         .map_err(Error::SearchTreeLookup)?;
     Ok(LookupTaskDone {
         request_ref,
-        found: match search_tree_found {
-            search_tree::Found::Nothing =>
-                None,
-            search_tree::Found::Something {
-                value_cell,
-                location: search_tree::FoundLocation::Cache,
-            } =>
-                Some(value_cell),
-            search_tree::Found::Something {
-                value_cell,
-                location: search_tree::FoundLocation::Block { .. },
-            } =>
-                Some(value_cell),
-        },
+        found: search_tree_found,
     })
 }

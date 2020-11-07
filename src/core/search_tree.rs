@@ -113,28 +113,13 @@ impl GenServer {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Found {
-    Nothing,
-    Something {
-        value_cell: kv::ValueCell,
-        location: FoundLocation,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub enum FoundLocation {
-    Cache,
-    Block { block_ref: BlockRef, },
-}
-
 #[derive(Debug)]
 pub enum LookupError {
     GenServer(ero::NoProcError),
 }
 
 impl Pid {
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Found, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -259,11 +244,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = if let Some(value_cell) = cache.get(&**lookup_request.key.key_bytes).cloned() {
-                            Found::Something { value_cell, location: FoundLocation::Cache, }
-                        } else {
-                            Found::Nothing
-                        };
+                        let result = cache.get(&**lookup_request.key.key_bytes)
+                            .cloned();
                         if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result)) {
                             log::warn!("client canceled lookup request");
                         }
@@ -326,17 +308,14 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
                     match outcome {
                         task::Outcome::Found { value_cell, } => {
-                            let found = Found::Something {
-                                value_cell,
-                                location: FoundLocation::Block { block_ref: block_ref.clone(), },
-                            };
+                            let found = Some(value_cell);
                             if let Err(_send_error) = lookup_request.reply_tx.send(Ok(found)) {
                                 log::warn!("client canceled lookup request");
                             }
                             dones_count += 1;
                         },
                         task::Outcome::NotFound => {
-                            if let Err(_send_error) = lookup_request.reply_tx.send(Ok(Found::Nothing)) {
+                            if let Err(_send_error) = lookup_request.reply_tx.send(Ok(None)) {
                                 log::warn!("client canceled lookup request");
                             }
                             dones_count += 1;

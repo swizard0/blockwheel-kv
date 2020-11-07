@@ -15,9 +15,6 @@ use crate::{
     kv,
     core::{
         BlockRef,
-        search_tree::{
-            Found,
-        },
     },
 };
 
@@ -42,7 +39,7 @@ pub enum Outcome {
 
 pub struct Lookup {
     pub key: kv::Key,
-    pub reply_tx: oneshot::Sender<Result<Found, SearchTreeLookupError>>,
+    pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell>, SearchTreeLookupError>>,
 }
 
 #[derive(Debug)]
