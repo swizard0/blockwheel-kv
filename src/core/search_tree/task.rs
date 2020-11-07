@@ -5,6 +5,7 @@ use std::{
 
 use futures::{
     channel::{
+        mpsc,
         oneshot,
     },
 };
@@ -43,16 +44,32 @@ pub struct Lookup {
     pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell>, SearchTreeLookupError>>,
 }
 
-pub type ItersQueue = Unique<Vec<IterCursor>>;
+pub type ItersQueue = Vec<IterCursor>;
 
 pub struct IterCursor {
     dfs_stack: Vec<BlockIter>,
+    iter_tx: mpsc::Sender<kv::KeyValuePair>,
 }
 
 struct BlockIter {
     block_ref: BlockRef,
     item_index: usize,
 }
+
+impl IterCursor {
+    pub fn new(&mut self, iter_tx: mpsc::Sender<kv::KeyValuePair>, root_block_ref: BlockRef) -> IterCursor {
+        IterCursor {
+            dfs_stack: vec![
+                BlockIter {
+                    block_ref: root_block_ref,
+                    item_index: 0,
+                }
+            ],
+            iter_tx,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 pub enum SearchTreeLookupError {
