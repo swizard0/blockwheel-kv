@@ -170,7 +170,9 @@ pub enum RemoveError {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Inserted;
+pub struct Inserted {
+    pub version: u64,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Removed;
@@ -207,8 +209,8 @@ impl Pid {
                 .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
-                Ok(Inserted) =>
-                    return Ok(Inserted),
+                Ok(inserted) =>
+                    return Ok(inserted),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -331,8 +333,8 @@ async fn busyloop(
 
             Request::Insert(RequestInsert { key, value, reply_tx, }) => {
                 let status = match butcher_pid.insert(key, value).await {
-                    Ok(Inserted) =>
-                        Inserted,
+                    Ok(inserted) =>
+                        inserted,
                     Err(ero::NoProcError) => {
                         log::warn!("butcher has gone during insert, terminating");
                         break;

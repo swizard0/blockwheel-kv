@@ -128,8 +128,8 @@ impl Pid {
                 .map_err(|_send_error| ero::NoProcError)?;
 
             match reply_rx.await {
-                Ok(Inserted) =>
-                    return Ok(Inserted),
+                Ok(inserted) =>
+                    return Ok(inserted),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -192,12 +192,13 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
             Request::Insert(RequestInsert { key, value, reply_tx, }) => {
                 let ord_key = OrdKey::new(key);
+                let version = state.version_provider.obtain();
                 let value_cell = kv::ValueCell {
-                    version: state.version_provider.obtain(),
+                    version,
                     cell: kv::Cell::Value(value),
                 };
                 let maybe_prev = memcache.insert(ord_key.clone(), value_cell);
-                if let Err(_send_error) = reply_tx.send(Inserted) {
+                if let Err(_send_error) = reply_tx.send(Inserted { version, }) {
                     log::warn!("client canceled insert request");
                     match maybe_prev {
                         None => {
