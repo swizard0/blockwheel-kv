@@ -21,3 +21,9 @@ pub enum Cell {
     Value(Value),
     Tombstone,
 }
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct KeyValuePair {
+    pub key: Key,
+    pub value_cell: ValueCell,
+}

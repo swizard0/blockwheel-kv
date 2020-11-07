@@ -44,7 +44,7 @@ fn stress() {
         .build()
         .unwrap();
     let work_block_size_bytes = 16 * 1024;
-    let init_wheel_size_bytes = 16 * 1024 * 1024;
+    let init_wheel_size_bytes = 4 * 1024 * 1024;
 
     let params = Params {
         wheel_a: blockwheel::Params {
@@ -66,9 +66,9 @@ fn stress() {
     };
 
     let limits = Limits {
-        active_tasks: 256,
-        actions: 8192,
-        key_size_bytes: 8,
+        active_tasks: 128,
+        actions: 1024,
+        key_size_bytes: 32,
         value_size_bytes: 4096,
     };
 
@@ -123,13 +123,8 @@ impl Counter {
 
 struct DataIndex {
     index: HashMap<kv::Key, usize>,
-    data: Vec<DataCell>,
+    data: Vec<kv::KeyValuePair>,
     current_version: u64,
-}
-
-struct DataCell {
-    key: kv::Key,
-    value_cell: kv::ValueCell,
 }
 
 #[derive(Debug)]
@@ -238,7 +233,7 @@ async fn stress_loop(
     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) -> Result<(), Error> {
         match task_done {
             TaskDone::Insert { key, value, version, } => {
-                let data_cell = DataCell {
+                let data_cell = kv::KeyValuePair {
                     key: key.clone(),
                     value_cell: kv::ValueCell {
                         version,
@@ -258,7 +253,7 @@ async fn stress_loop(
             },
             TaskDone::Lookup { key, found_value_cell, version_snapshot, } => {
                 let &offset = data.index.get(&key).unwrap();
-                let DataCell { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
+                let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
                 let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
                 if version_found == version_current {
                     if cell_found == cell_current {
@@ -289,7 +284,7 @@ async fn stress_loop(
                 active_tasks_counter.lookups -= 1;
             }
             TaskDone::Remove { key, version, } => {
-                let data_cell = DataCell {
+                let data_cell = kv::KeyValuePair {
                     key: key.clone(),
                     value_cell: kv::ValueCell {
                         version,
@@ -384,7 +379,7 @@ async fn stress_loop(
                 // remove task
                 let (key, value) = loop {
                     let key_index = rng.gen_range(0, data.data.len());
-                    let DataCell { key, value_cell, } = &data.data[key_index];
+                    let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
                     match &value_cell.cell {
                         kv::Cell::Value(value) =>
                             break (key, value),
@@ -418,7 +413,7 @@ async fn stress_loop(
         } else {
             // lookup task
             let key_index = rng.gen_range(0, data.data.len());
-            let DataCell { key, value_cell, } = &data.data[key_index];
+            let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
             let version_snapshot = data.current_version;
 
             log::info!(

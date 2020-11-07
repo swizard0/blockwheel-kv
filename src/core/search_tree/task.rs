@@ -21,6 +21,7 @@ use crate::{
 pub mod bootstrap;
 pub mod load_block_lookup;
 pub mod search_block;
+pub mod iter_cache;
 
 pub type RequestsQueueType = BinaryHeap<Lookup>;
 pub type RequestsQueue = Unique<RequestsQueueType>;
@@ -42,6 +43,17 @@ pub struct Lookup {
     pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell>, SearchTreeLookupError>>,
 }
 
+pub type ItersQueue = Unique<Vec<IterCursor>>;
+
+pub struct IterCursor {
+    dfs_stack: Vec<BlockIter>,
+}
+
+struct BlockIter {
+    block_ref: BlockRef,
+    item_index: usize,
+}
+
 #[derive(Debug)]
 pub enum SearchTreeLookupError {
 }
@@ -50,12 +62,14 @@ pub enum TaskArgs {
     Bootstrap(bootstrap::Args),
     LoadBlockLookup(load_block_lookup::Args),
     SearchBlock(search_block::Args),
+    IterCache(iter_cache::Args),
 }
 
 pub enum TaskDone {
     Bootstrap(bootstrap::Done),
     LoadBlockLookup(load_block_lookup::Done),
     SearchBlock(search_block::Done),
+    IterCache(iter_cache::Done),
 }
 
 #[derive(Debug)]
@@ -63,6 +77,7 @@ pub enum Error {
     Bootstrap(bootstrap::Error),
     LoadBlockLookup(load_block_lookup::Error),
     SearchBlock(search_block::Error),
+    IterCache(iter_cache::Error),
 }
 
 pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
@@ -81,6 +96,11 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
             TaskDone::SearchBlock(
                 search_block::run(args).await
                     .map_err(Error::SearchBlock)?,
+            ),
+        TaskArgs::IterCache(args) =>
+            TaskDone::IterCache(
+                iter_cache::run(args).await
+                    .map_err(Error::IterCache)?,
             ),
     })
 }

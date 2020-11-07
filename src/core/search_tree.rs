@@ -118,6 +118,15 @@ pub enum LookupError {
     GenServer(ero::NoProcError),
 }
 
+pub struct SearchTreeIter {
+    pub items_rx: mpsc::Receiver<kv::KeyValuePair>,
+}
+
+#[derive(Debug)]
+pub enum IterError {
+    GenServer(ero::NoProcError),
+}
+
 impl Pid {
     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
@@ -135,6 +144,21 @@ impl Pid {
                     return Ok(result),
                 Ok(Err(..)) =>
                     unreachable!(),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn iter(&mut self) -> Result<SearchTreeIter, IterError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Iter { reply_tx, }).await
+                .map_err(|_send_error| IterError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(iter) =>
+                    return Ok(iter),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -186,6 +210,7 @@ async fn run(state: State) {
 
 enum Request {
     Lookup(task::Lookup),
+    Iter { reply_tx: oneshot::Sender<SearchTreeIter>, },
 }
 
 #[derive(Debug)]
@@ -264,6 +289,25 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         }
                     },
                 },
+
+            Event::Request(Some(Request::Iter { reply_tx, })) => {
+                let (iter_tx, iter_rx) = mpsc::channel(0);
+                match &state.mode {
+                    Mode::CacheBootstrap { cache, } =>
+                        tasks.push(task::run_args(task::TaskArgs::IterCache(
+                            task::iter_cache::Args { cache: cache.clone(), iter_tx, },
+                        ))),
+                    Mode::Regular { root_block, } => {
+
+                        unimplemented!()
+                    },
+                }
+
+                let iter = SearchTreeIter { items_rx: iter_rx, };
+                if let Err(_send_error) = reply_tx.send(iter) {
+                    log::warn!("client canceled iter request");
+                }
+            },
 
             Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
                 match mem::replace(&mut state.mode, Mode::Regular { root_block, }) {
@@ -348,6 +392,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 async_tree.inc_children_reqs(&block_ref, jumps_count);
                 async_tree.dec_parent_reqs(&block_ref, dones_count);
             },
+
+            Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
+                (),
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
