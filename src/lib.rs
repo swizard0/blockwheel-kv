@@ -175,7 +175,9 @@ pub struct Inserted {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Removed;
+pub struct Removed {
+    pub version: u64,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
@@ -361,8 +363,8 @@ async fn busyloop(
 
             Request::Remove(RequestRemove { key, reply_tx, }) => {
                 let status = match butcher_pid.remove(key).await {
-                    Ok(Removed) =>
-                        Removed,
+                    Ok(removed) =>
+                        removed,
                     Err(ero::NoProcError) => {
                         log::warn!("butcher has gone during remove, terminating");
                         break;

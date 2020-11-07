@@ -40,11 +40,11 @@ use crate as blockwheel_kv;
 fn stress() {
     env_logger::init();
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .build()
         .unwrap();
     let work_block_size_bytes = 16 * 1024;
-    let init_wheel_size_bytes = 1 * 1024 * 1024;
+    let init_wheel_size_bytes = 16 * 1024 * 1024;
 
     let params = Params {
         wheel_a: blockwheel::Params {
@@ -66,9 +66,9 @@ fn stress() {
     };
 
     let limits = Limits {
-        active_tasks: 128,
-        actions: 2048,
-        key_size_bytes: 64,
+        active_tasks: 256,
+        actions: 8192,
+        key_size_bytes: 8,
         value_size_bytes: 4096,
     };
 
@@ -76,6 +76,7 @@ fn stress() {
     let mut data = DataIndex {
         index: HashMap::new(),
         data: Vec::new(),
+        current_version: 0,
     };
     let mut counter = Counter::default();
 
@@ -122,7 +123,13 @@ impl Counter {
 
 struct DataIndex {
     index: HashMap<kv::Key, usize>,
-    data: Vec<(kv::Key, kv::Value)>,
+    data: Vec<DataCell>,
+    current_version: u64,
+}
+
+struct DataCell {
+    key: kv::Key,
+    value_cell: kv::ValueCell,
 }
 
 #[derive(Debug)]
@@ -132,11 +139,11 @@ enum Error {
     Remove(blockwheel_kv::RemoveError),
     ExpectedValueNotFound {
         key: kv::Key,
-        value: kv::Value,
+        value_cell: kv::ValueCell,
     },
     UnexpectedValueFound {
         key: kv::Key,
-        expected_value: kv::Value,
+        expected_value_cell: kv::ValueCell,
         found_value_cell: kv::ValueCell,
     },
     WheelAGoneDuringInfo,
@@ -210,9 +217,9 @@ async fn stress_loop(
     let mut actions_counter = 0;
 
     enum TaskDone {
-        Lookup,
-        Insert { key: kv::Key, value: kv::Value, },
-        Remove,
+        Lookup { key: kv::Key, found_value_cell: kv::ValueCell, version_snapshot: u64, },
+        Insert { key: kv::Key, value: kv::Value, version: u64, },
+        Remove { key: kv::Key, version: u64, },
     }
 
     fn spawn_task<T>(
@@ -228,28 +235,76 @@ async fn stress_loop(
         })
     }
 
-    fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) {
+    fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) -> Result<(), Error> {
         match task_done {
-            TaskDone::Insert { key, value, } => {
+            TaskDone::Insert { key, value, version, } => {
+                let data_cell = DataCell {
+                    key: key.clone(),
+                    value_cell: kv::ValueCell {
+                        version,
+                        cell: kv::Cell::Value(value.clone()),
+                    },
+                };
                 if let Some(&offset) = data.index.get(&key) {
-                    data.data[offset] = (key, value);
+                    println!(" // overwriting key: {:?} with value = {:?}", key, value);
+                    data.data[offset] = data_cell;
                 } else {
                     let offset = data.data.len();
-                    data.data.push((key.clone(), value));
+                    data.data.push(data_cell);
                     data.index.insert(key, offset);
                 }
+                data.current_version = version;
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
-            TaskDone::Lookup => {
+            TaskDone::Lookup { key, found_value_cell, version_snapshot, } => {
+                let &offset = data.index.get(&key).unwrap();
+                let DataCell { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
+                let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
+                if version_found == version_current {
+                    if cell_found == cell_current {
+                        // everything is up to date
+                    } else {
+                        // version matches, but actual values are not
+                        return Err(Error::UnexpectedValueFound {
+                            key,
+                            expected_value_cell: data.data[offset].value_cell.clone(),
+                            found_value_cell,
+                        });
+                    }
+                } else if version_found < version_current {
+                    if version_snapshot < version_current {
+                        // deprecated lookup (ignoring)
+                    } else {
+                        // lookup started after value is actually updated, something wrong
+                        return Err(Error::UnexpectedValueFound {
+                            key,
+                            expected_value_cell: data.data[offset].value_cell.clone(),
+                            found_value_cell,
+                        });
+                    }
+                } else {
+                    unreachable!();
+                }
                 counter.lookups += 1;
                 active_tasks_counter.lookups -= 1;
             }
-            TaskDone::Remove => {
+            TaskDone::Remove { key, version, } => {
+                let data_cell = DataCell {
+                    key: key.clone(),
+                    value_cell: kv::ValueCell {
+                        version,
+                        cell: kv::Cell::Tombstone,
+                    },
+                };
+                let &offset = data.index.get(&key).unwrap();
+                data.data[offset] = data_cell;
+                data.current_version = version;
                 counter.removes += 1;
                 active_tasks_counter.removes -= 1;
             },
         }
+        Ok(())
     }
 
     loop {
@@ -257,7 +312,7 @@ async fn stress_loop(
             std::mem::drop(done_tx);
 
             while active_tasks_counter.sum() > 0 {
-                process(done_rx.next().await.unwrap()?, data, counter, &mut active_tasks_counter);
+                process(done_rx.next().await.unwrap()?, data, counter, &mut active_tasks_counter)?;
             }
             break;
         }
@@ -276,7 +331,7 @@ async fn stress_loop(
             None =>
                 (),
             Some(task_result) => {
-                process(task_result?, data, counter, &mut active_tasks_counter);
+                process(task_result?, data, counter, &mut active_tasks_counter)?;
                 continue;
             }
         }
@@ -319,8 +374,8 @@ async fn stress_loop(
                     rand::thread_rng().fill(&mut block[..]);
                     let value = kv::Value { value_bytes: block.freeze(), };
                     match wheel_kv_pid.insert(key.clone(), value.clone()).await {
-                        Ok(blockwheel_kv::Inserted) =>
-                            Ok(TaskDone::Insert { key, value, }),
+                        Ok(blockwheel_kv::Inserted { version, }) =>
+                            Ok(TaskDone::Insert { key, value, version, }),
                         Err(error) =>
                             Err(Error::Insert(error))
                     }
@@ -328,9 +383,16 @@ async fn stress_loop(
                 active_tasks_counter.inserts += 1;
             } else {
                 // remove task
-                let key_index = rng.gen_range(0, data.data.len());
-                let (key, value) = data.data.swap_remove(key_index);
-                data.index.remove(&key);
+                let (key, value) = loop {
+                    let key_index = rng.gen_range(0, data.data.len());
+                    let DataCell { key, value_cell, } = &data.data[key_index];
+                    match &value_cell.cell {
+                        kv::Cell::Value(value) =>
+                            break (key, value),
+                        kv::Cell::Tombstone =>
+                            continue,
+                    }
+                };
 
                 log::info!(
                     "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
@@ -342,11 +404,12 @@ async fn stress_loop(
                     counter,
                 );
 
+                let key = key.clone();
                 let mut wheel_kv_pid = wheel_kv_pid.clone();
                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
                     match wheel_kv_pid.remove(key.clone()).await {
-                        Ok(blockwheel_kv::Removed) =>
-                            Ok(TaskDone::Remove),
+                        Ok(blockwheel_kv::Removed { version, }) =>
+                            Ok(TaskDone::Remove { key, version, }),
                         Err(error) =>
                             Err(Error::Remove(error))
                     }
@@ -356,25 +419,31 @@ async fn stress_loop(
         } else {
             // lookup task
             let key_index = rng.gen_range(0, data.data.len());
-            let (key, value) = data.data[key_index].clone();
+            let DataCell { key, value_cell, } = &data.data[key_index];
+            let version_snapshot = data.current_version;
 
             log::info!(
-                "{}. performing LOOKUP with {} bytes key and {} bytes value | {:?}",
+                "{}. performing LOOKUP with {} bytes key and {} value | {:?}",
                 actions_counter,
                 key.key_bytes.len(),
-                value.value_bytes.len(),
+                match &value_cell.cell {
+                    kv::Cell::Value(value) =>
+                        format!("{} bytes", value.value_bytes.len()),
+                    kv::Cell::Tombstone =>
+                        "tombstone".to_string(),
+                },
                 counter,
             );
 
+            let key = key.clone();
+            let value_cell = value_cell.clone();
             let mut wheel_kv_pid = wheel_kv_pid.clone();
             spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
                 match wheel_kv_pid.lookup(key.clone()).await {
                     Ok(None) =>
-                        Err(Error::ExpectedValueNotFound { key, value, }),
-                    Ok(Some(kv::ValueCell { cell: kv::Cell::Value(found_value), .. })) if found_value == value =>
-                        Ok(TaskDone::Lookup),
+                        Err(Error::ExpectedValueNotFound { key, value_cell, }),
                     Ok(Some(found_value_cell)) =>
-                        Err(Error::UnexpectedValueFound { key, expected_value: value, found_value_cell, }),
+                        Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, }),
                     Err(error) =>
                         Err(Error::Lookup(error))
                 }

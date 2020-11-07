@@ -192,8 +192,17 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
             false,
         (None, Some(..)) =>
             true,
-        (Some(kv::ValueCell { version: version_current, .. }), Some(kv::ValueCell { version: version_incoming, .. })) =>
-            version_incoming < version_current,
+        (Some(kv::ValueCell { version: version_current, .. }), Some(kv::ValueCell { version: version_incoming, .. })) => {
+
+            println!(
+                " ;; okay here we comparing current_version = {:?} with incoming_version = {:?}, resulting = {}",
+                version_current,
+                version_incoming,
+                version_current < version_incoming,
+            );
+
+            version_current < version_incoming
+        },
     }
 }
 
