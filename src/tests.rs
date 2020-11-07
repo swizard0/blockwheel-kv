@@ -246,7 +246,6 @@ async fn stress_loop(
                     },
                 };
                 if let Some(&offset) = data.index.get(&key) {
-                    println!(" // overwriting key: {:?} with value = {:?}", key, value);
                     data.data[offset] = data_cell;
                 } else {
                     let offset = data.data.len();
