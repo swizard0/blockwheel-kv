@@ -164,3 +164,69 @@ fn bincode_options() -> impl Options {
         .with_fixint_encoding()
         .allow_trailing_bytes()
 }
+
+
+
+
+use std::{
+    io,
+    str,
+};
+
+use alloc_pool::bytes::Bytes;
+
+use bincode::BincodeRead;
+
+struct BlockBytes {
+    inner: Bytes,
+}
+
+impl AsRef<[u8]> for BlockBytes {
+    fn as_ref(&self) -> &[u8] {
+        &**self.inner
+    }
+}
+
+pub struct BlockReader {
+    block_bytes: io::Cursor<BlockBytes>,
+    offset: usize,
+}
+
+impl io::Read for BlockReader {
+    #[inline(always)]
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        self.block_bytes.read(out)
+    }
+
+    #[inline(always)]
+    fn read_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
+        self.block_bytes.read_exact(out)
+    }
+}
+
+impl<'a> BincodeRead<'a> for BlockReader {
+    #[inline(always)]
+    fn forward_read_str<V>(&mut self, length: usize, visitor: V) -> bincode::Result<V::Value> where V: serde::de::Visitor<'a> {
+        let offset_from = self.block_bytes.position() as usize;
+        let offset_to = offset_from + length;
+        let block_bytes = self.block_bytes.get_ref();
+        if offset_to > block_bytes.inner.len() {
+            return Err(Box::new(bincode::ErrorKind::Io(io::Error::new(io::ErrorKind::UnexpectedEof, ""))));
+        }
+        let string = str::from_utf8(&block_bytes.inner[offset_from .. offset_to])
+            .map_err(bincode::ErrorKind::InvalidUtf8Encoding)?;
+        visitor.visit_borrowed_str(string)
+    }
+
+    #[inline(always)]
+    fn get_byte_buffer(&mut self, length: usize) -> bincode::Result<Vec<u8>> {
+
+        unimplemented!()
+    }
+
+    #[inline(always)]
+    fn forward_read_bytes<V>(&mut self, length: usize, visitor: V) -> bincode::Result<V::Value> where V: serde::de::Visitor<'a> {
+
+        unimplemented!()
+    }
+}
