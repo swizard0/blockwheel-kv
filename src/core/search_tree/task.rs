@@ -5,7 +5,6 @@ use std::{
 
 use futures::{
     channel::{
-        mpsc,
         oneshot,
     },
 };
@@ -16,20 +15,25 @@ use crate::{
     kv,
     core::{
         BlockRef,
+        search_tree::{
+            SearchTreeIterTx,
+            SearchTreeIterRx,
+        },
     },
 };
 
 pub mod bootstrap;
-pub mod load_block_lookup;
+pub mod load_block;
 pub mod search_block;
 pub mod iter_cache;
+pub mod iter_block;
 
-pub type RequestsQueueType = BinaryHeap<Lookup>;
-pub type RequestsQueue = Unique<RequestsQueueType>;
+pub type LookupRequestsQueueType = BinaryHeap<LookupRequest>;
+pub type LookupRequestsQueue = Unique<LookupRequestsQueueType>;
 pub type SearchOutcomes = Unique<Vec<SearchOutcome>>;
 
 pub struct SearchOutcome {
-    pub request: Lookup,
+    pub request: LookupRequest,
     pub outcome: Outcome,
 }
 
@@ -39,37 +43,19 @@ pub enum Outcome {
     Jump { block_ref: BlockRef, },
 }
 
-pub struct Lookup {
+pub struct LookupRequest {
     pub key: kv::Key,
     pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell>, SearchTreeLookupError>>,
 }
 
-pub type ItersQueue = Vec<IterCursor>;
+pub type IterRequestsQueueType = Vec<IterRequest>;
+pub type IterRequestsQueue = Unique<IterRequestsQueueType>;
+pub type ItersTx = Unique<Vec<SearchTreeIterTx>>;
 
-pub struct IterCursor {
-    dfs_stack: Vec<BlockIter>,
-    iter_tx: mpsc::Sender<kv::KeyValuePair>,
+pub struct IterRequest {
+    pub block_ref: BlockRef,
+    pub reply_tx: oneshot::Sender<SearchTreeIterRx>,
 }
-
-struct BlockIter {
-    block_ref: BlockRef,
-    item_index: usize,
-}
-
-impl IterCursor {
-    pub fn new(&mut self, iter_tx: mpsc::Sender<kv::KeyValuePair>, root_block_ref: BlockRef) -> IterCursor {
-        IterCursor {
-            dfs_stack: vec![
-                BlockIter {
-                    block_ref: root_block_ref,
-                    item_index: 0,
-                }
-            ],
-            iter_tx,
-        }
-    }
-}
-
 
 #[derive(Debug)]
 pub enum SearchTreeLookupError {
@@ -77,24 +63,27 @@ pub enum SearchTreeLookupError {
 
 pub enum TaskArgs {
     Bootstrap(bootstrap::Args),
-    LoadBlockLookup(load_block_lookup::Args),
+    LoadBlock(load_block::Args),
     SearchBlock(search_block::Args),
     IterCache(iter_cache::Args),
+    IterBlock(iter_block::Args),
 }
 
 pub enum TaskDone {
     Bootstrap(bootstrap::Done),
-    LoadBlockLookup(load_block_lookup::Done),
+    LoadBlock(load_block::Done),
     SearchBlock(search_block::Done),
     IterCache(iter_cache::Done),
+    IterBlock(iter_block::Done),
 }
 
 #[derive(Debug)]
 pub enum Error {
     Bootstrap(bootstrap::Error),
-    LoadBlockLookup(load_block_lookup::Error),
+    LoadBlock(load_block::Error),
     SearchBlock(search_block::Error),
     IterCache(iter_cache::Error),
+    IterBlock(iter_block::Error),
 }
 
 pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
@@ -104,10 +93,10 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
                 bootstrap::run(args).await
                     .map_err(Error::Bootstrap)?,
             ),
-        TaskArgs::LoadBlockLookup(args) =>
-            TaskDone::LoadBlockLookup(
-                load_block_lookup::run(args).await
-                    .map_err(Error::LoadBlockLookup)?,
+        TaskArgs::LoadBlock(args) =>
+            TaskDone::LoadBlock(
+                load_block::run(args).await
+                    .map_err(Error::LoadBlock)?,
             ),
         TaskArgs::SearchBlock(args) =>
             TaskDone::SearchBlock(
@@ -119,25 +108,30 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
                 iter_cache::run(args).await
                     .map_err(Error::IterCache)?,
             ),
+        TaskArgs::IterBlock(args) =>
+            TaskDone::IterBlock(
+                iter_block::run(args).await
+                    .map_err(Error::IterBlock)?,
+            ),
     })
 }
 
-impl PartialEq for Lookup {
-    fn eq(&self, other: &Lookup) -> bool {
+impl PartialEq for LookupRequest {
+    fn eq(&self, other: &LookupRequest) -> bool {
         self.key == other.key
     }
 }
 
-impl Eq for Lookup { }
+impl Eq for LookupRequest { }
 
-impl PartialOrd for Lookup {
-    fn partial_cmp(&self, other: &Lookup) -> Option<Ordering> {
+impl PartialOrd for LookupRequest {
+    fn partial_cmp(&self, other: &LookupRequest) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Lookup {
-    fn cmp(&self, other: &Lookup) -> Ordering {
+impl Ord for LookupRequest {
+    fn cmp(&self, other: &LookupRequest) -> Ordering {
         other.key.key_bytes.cmp(&self.key.key_bytes)
     }
 }

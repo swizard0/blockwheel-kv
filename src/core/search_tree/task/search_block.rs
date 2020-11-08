@@ -18,7 +18,7 @@ use crate::{
             task::{
                 Outcome,
                 SearchOutcome,
-                RequestsQueue,
+                LookupRequestsQueue,
                 SearchOutcomes,
             },
         },
@@ -29,7 +29,7 @@ pub struct Args {
     pub block_ref: BlockRef,
     pub blocks_pool: BytesPool,
     pub block_bytes: Bytes,
-    pub requests_queue: RequestsQueue,
+    pub lookup_requests_queue: LookupRequestsQueue,
     pub outcomes: SearchOutcomes,
 }
 
@@ -44,12 +44,12 @@ pub enum Error {
     SearchBlockJoin(tokio::task::JoinError),
 }
 
-pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue, mut outcomes, }: Args) -> Result<Done, Error> {
+pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut lookup_requests_queue, mut outcomes, }: Args) -> Result<Done, Error> {
     let search_block_ref = block_ref.clone();
     let search_task = tokio::task::spawn_blocking(move || {
         let mut entries_iter = storage::block_deserialize_iter(&block_bytes)?;
         let mut maybe_entry = entries_iter.next();
-        let mut maybe_request = requests_queue.pop();
+        let mut maybe_request = lookup_requests_queue.pop();
         loop {
             match maybe_request {
                 None =>
@@ -61,7 +61,7 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                                 request: request_key,
                                 outcome: Outcome::NotFound,
                             });
-                            maybe_request = requests_queue.pop();
+                            maybe_request = lookup_requests_queue.pop();
                             maybe_entry = None;
                         },
                         Some(entry_result) => {
@@ -90,7 +90,7 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                                         request: request_key,
                                         outcome: Outcome::Found { value_cell, },
                                     });
-                                    maybe_request = requests_queue.pop();
+                                    maybe_request = lookup_requests_queue.pop();
                                     maybe_entry = Some(Ok(entry));
                                 },
                                 Ordering::Greater => {
@@ -116,7 +116,7 @@ pub async fn run(Args { block_ref, blocks_pool, block_bytes, mut requests_queue,
                                         request: request_key,
                                         outcome,
                                     });
-                                    maybe_request = requests_queue.pop();
+                                    maybe_request = lookup_requests_queue.pop();
                                     maybe_entry = Some(Ok(entry));
                                 },
                             }

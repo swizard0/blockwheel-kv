@@ -31,7 +31,10 @@ use ero::{
     supervisor::SupervisorPid,
 };
 
-use alloc_pool::bytes::BytesPool;
+use alloc_pool::{
+    pool,
+    bytes::BytesPool,
+};
 
 use crate::{
     kv,
@@ -202,6 +205,11 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
     let mut lookup_requests = Set::new();
     let mut lookup_tasks = FuturesUnordered::new();
 
+    let search_tree_lookup_requests_queue_pool = pool::Pool::new();
+    let search_tree_iter_requests_queue_pool = pool::Pool::new();
+    let search_tree_outcomes_pool = pool::Pool::new();
+    let search_tree_iters_pool = pool::Pool::new();
+
     loop {
         enum Event<R, L> {
             Request(Option<R>),
@@ -236,6 +244,10 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     search_tree_gen_server.run_cache_bootstrap(
                         child_supervisor_pid.clone(),
                         state.blocks_pool.clone(),
+                        search_tree_lookup_requests_queue_pool.clone(),
+                        search_tree_iter_requests_queue_pool.clone(),
+                        search_tree_outcomes_pool.clone(),
+                        search_tree_iters_pool.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
                         cache,

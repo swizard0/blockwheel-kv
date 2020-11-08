@@ -9,7 +9,6 @@ use std::{
     collections::{
         hash_map,
         HashMap,
-        BinaryHeap,
     },
 };
 
@@ -97,6 +96,10 @@ impl GenServer {
         self,
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
+        lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
+        iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
+        outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
+        iters_pool: pool::Pool<Vec<SearchTreeIterTx>>,
         wheels_pid: wheels::Pid,
         params: Params,
         cache: Arc<MemCache>,
@@ -106,6 +109,10 @@ impl GenServer {
             fused_request_rx: self.fused_request_rx,
             parent_supervisor,
             blocks_pool,
+            lookup_requests_queue_pool,
+            iter_requests_queue_pool,
+            outcomes_pool,
+            iters_pool,
             wheels_pid,
             params,
             mode: Mode::CacheBootstrap { cache, },
@@ -118,7 +125,11 @@ pub enum LookupError {
     GenServer(ero::NoProcError),
 }
 
-pub struct SearchTreeIter {
+pub struct SearchTreeIterTx {
+    pub items_tx: mpsc::Sender<kv::KeyValuePair>,
+}
+
+pub struct SearchTreeIterRx {
     pub items_rx: mpsc::Receiver<kv::KeyValuePair>,
 }
 
@@ -132,7 +143,7 @@ impl Pid {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(Request::Lookup(task::Lookup {
+                .send(Request::Lookup(task::LookupRequest {
                     key: key.clone(),
                     reply_tx,
                 }))
@@ -150,7 +161,7 @@ impl Pid {
         }
     }
 
-    pub async fn iter(&mut self) -> Result<SearchTreeIter, IterError> {
+    pub async fn iter(&mut self) -> Result<SearchTreeIterRx, IterError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx.send(Request::Iter { reply_tx, }).await
@@ -170,6 +181,10 @@ struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
+    lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
+    iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
+    outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
+    iters_pool: pool::Pool<Vec<SearchTreeIterTx>>,
     wheels_pid: wheels::Pid,
     params: Params,
     mode: Mode,
@@ -209,8 +224,8 @@ async fn run(state: State) {
 }
 
 enum Request {
-    Lookup(task::Lookup),
-    Iter { reply_tx: oneshot::Sender<SearchTreeIter>, },
+    Lookup(task::LookupRequest),
+    Iter { reply_tx: oneshot::Sender<SearchTreeIterRx>, },
 }
 
 #[derive(Debug)]
@@ -221,8 +236,8 @@ enum Error {
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
-    let requests_queue_pool = pool::Pool::new();
-    let outcomes_pool = pool::Pool::new();
+
+    let (iter_rec_tx, mut iter_rec_rx) = mpsc::channel(0);
 
     match &state.mode {
         Mode::CacheBootstrap { cache, } =>
@@ -240,9 +255,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
     };
 
     loop {
-        enum Event<R, T> {
+        enum Event<R, T, I> {
             Request(Option<R>),
             Task(T),
+            IterRec(I),
         }
 
         let event = if tasks.is_empty() {
@@ -256,6 +272,12 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                     Some(task) =>
                         Event::Task(task),
+                },
+                result = iter_rec_rx.next() => match result {
+                    None =>
+                        unreachable!(),
+                    Some(iter_rec_request) =>
+                        Event::IterRec(iter_rec_request),
                 },
             }
         };
@@ -280,8 +302,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             lookup_request,
                             root_block.clone(),
                             &state.blocks_pool,
-                            &requests_queue_pool,
-                            &outcomes_pool,
+                            &state.lookup_requests_queue_pool,
+                            &state.iter_requests_queue_pool,
+                            &state.outcomes_pool,
                             &state.wheels_pid,
                         );
                         if let Some(task_args) = maybe_task_args {
@@ -290,22 +313,55 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     },
                 },
 
-            Event::Request(Some(Request::Iter { reply_tx, })) => {
-                let (iter_tx, iter_rx) = mpsc::channel(0);
+            Event::Request(Some(Request::Iter { reply_tx, })) =>
                 match &state.mode {
-                    Mode::CacheBootstrap { cache, } =>
+                    Mode::CacheBootstrap { cache, } => {
                         tasks.push(task::run_args(task::TaskArgs::IterCache(
-                            task::iter_cache::Args { cache: cache.clone(), iter_tx, },
-                        ))),
-                    Mode::Regular { root_block, } => {
-
-                        unimplemented!()
+                            task::iter_cache::Args {
+                                cache: cache.clone(),
+                                reply_tx,
+                            },
+                        )))
                     },
-                }
+                    Mode::Regular { root_block, } => {
+                        let maybe_task_args = async_tree.apply_iter_request(
+                            task::IterRequest { block_ref: root_block.clone(), reply_tx, },
+                            &state.blocks_pool,
+                            &state.lookup_requests_queue_pool,
+                            &state.iter_requests_queue_pool,
+                            &state.iters_pool,
+                            &state.wheels_pid,
+                            &iter_rec_tx,
+                        );
+                        if let Some(task_args) = maybe_task_args {
+                            tasks.push(task::run_args(task_args));
+                        }
+                    }
+                },
 
-                let iter = SearchTreeIter { items_rx: iter_rx, };
-                if let Err(_send_error) = reply_tx.send(iter) {
-                    log::warn!("client canceled iter request");
+            Event::IterRec(iter_request) => {
+                match &state.mode {
+                    Mode::CacheBootstrap { .. } =>
+                        unreachable!(),
+                    Mode::Regular { .. } =>
+                        (),
+                }
+                let block_ref = iter_request.block_ref.clone();
+                let maybe_task_args = async_tree.apply_iter_request(
+                    iter_request,
+                    &state.blocks_pool,
+                    &state.lookup_requests_queue_pool,
+                    &state.iter_requests_queue_pool,
+                    &state.iters_pool,
+                    &state.wheels_pid,
+                    &iter_rec_tx,
+                );
+                if let Some(task_args) = maybe_task_args {
+                    tasks.push(task::run_args(task_args));
+                }
+                if let Some(AsyncBlock { parent: Some(parent_block_ref), .. }) = async_tree.get(&block_ref) {
+                    let parent_block_ref = parent_block_ref.clone();
+                    async_tree.inc_children_reqs(&parent_block_ref, 1);
                 }
             },
 
@@ -317,30 +373,56 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                 },
 
-            Event::Task(Ok(task::TaskDone::LoadBlockLookup(task::load_block_lookup::Done { block_ref, block_bytes, }))) =>
+            Event::Task(Ok(task::TaskDone::LoadBlock(task::load_block::Done { block_ref, block_bytes, }))) =>
                 match async_tree.remove(&block_ref) {
-                    Some(AsyncBlock { parent, state: AsyncBlockState::Awaiting { requests_queue, }, }) => {
+                    Some(AsyncBlock { parent, state: AsyncBlockState::Awaiting { lookup_requests_queue, iter_requests_queue, }, }) => {
+                        let search_barrier = if lookup_requests_queue.is_empty() {
+                            SearchBarrier::Opened
+                        } else {
+                            let mut lookup_requests_queue =
+                                state.lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
+                            lookup_requests_queue.clear();
+                            SearchBarrier::InProgress { lookup_requests_queue, }
+                        };
                         async_tree.insert(block_ref.clone(), AsyncBlock {
                             parent,
                             state: AsyncBlockState::Ready {
                                 block_bytes: block_bytes.clone(),
                                 children_reqs: 0,
-                                barrier: Barrier::SearchInProgress {
-                                    requests_queue: requests_queue_pool.lend(BinaryHeap::new),
-                                },
+                                search_barrier,
                             },
                         });
-                        tasks.push(
-                            task::run_args(
-                                task::TaskArgs::SearchBlock(task::search_block::Args {
-                                    block_ref,
-                                    blocks_pool: state.blocks_pool.clone(),
-                                    block_bytes,
-                                    requests_queue,
-                                    outcomes: outcomes_pool.lend(Vec::new),
-                                }),
-                            ),
-                        );
+                        if !lookup_requests_queue.is_empty() {
+                            let mut outcomes = state.outcomes_pool.lend(Vec::new);
+                            outcomes.clear();
+                            tasks.push(
+                                task::run_args(
+                                    task::TaskArgs::SearchBlock(task::search_block::Args {
+                                        block_ref: block_ref.clone(),
+                                        blocks_pool: state.blocks_pool.clone(),
+                                        block_bytes: block_bytes.clone(),
+                                        lookup_requests_queue,
+                                        outcomes,
+                                    }),
+                                ),
+                            );
+                        }
+                        if !iter_requests_queue.is_empty() {
+                            let mut iters_tx = state.iters_pool.lend(Vec::new);
+                            iters_tx.clear();
+                            tasks.push(
+                                task::run_args(
+                                    task::TaskArgs::IterBlock(task::iter_block::Args {
+                                        block_ref,
+                                        blocks_pool: state.blocks_pool.clone(),
+                                        block_bytes: block_bytes,
+                                        iters_tx,
+                                        iter_rec_tx: iter_rec_tx.clone(),
+                                        iter_requests_queue,
+                                    }),
+                                ),
+                            );
+                        }
                     },
                     None | Some(AsyncBlock { state: AsyncBlockState::Ready { .. }, .. }) =>
                         unreachable!(),
@@ -369,8 +451,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 lookup_request,
                                 jump_block_ref,
                                 &state.blocks_pool,
-                                &requests_queue_pool,
-                                &outcomes_pool,
+                                &state.lookup_requests_queue_pool,
+                                &state.iter_requests_queue_pool,
+                                &state.outcomes_pool,
                                 &state.wheels_pid,
                             );
                             if let Some(task_args) = maybe_task_args {
@@ -383,8 +466,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 let maybe_task_args = async_tree.open_barrier(
                     &block_ref,
                     &state.blocks_pool,
-                    &requests_queue_pool,
-                    &outcomes_pool,
+                    &state.lookup_requests_queue_pool,
+                    &state.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
@@ -395,6 +478,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
 
             Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
                 (),
+
+            Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
+                async_tree.dec_parent_reqs(&block_ref, 1);
+            },
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
@@ -413,18 +500,19 @@ struct AsyncBlock {
 
 enum AsyncBlockState {
     Awaiting {
-        requests_queue: task::RequestsQueue,
+        lookup_requests_queue: task::LookupRequestsQueue,
+        iter_requests_queue: task::IterRequestsQueue,
     },
     Ready {
         block_bytes: Bytes,
         children_reqs: usize,
-        barrier: Barrier,
+        search_barrier: SearchBarrier,
     },
 }
 
-enum Barrier {
+enum SearchBarrier {
     Opened,
-    SearchInProgress { requests_queue: task::RequestsQueue, },
+    InProgress { lookup_requests_queue: task::LookupRequestsQueue, },
 }
 
 impl AsyncTree {
@@ -436,10 +524,11 @@ impl AsyncTree {
 
     fn apply_lookup_request(
         &mut self,
-        lookup_request: task::Lookup,
+        lookup_request: task::LookupRequest,
         block_ref: BlockRef,
         blocks_pool: &BytesPool,
-        requests_queue_pool: &pool::Pool<task::RequestsQueueType>,
+        lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
+        iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
         outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
         wheels_pid: &wheels::Pid,
     )
@@ -448,33 +537,109 @@ impl AsyncTree {
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
                 match oe.get_mut() {
-                    AsyncBlock { state: AsyncBlockState::Awaiting { requests_queue, }, .. } |
-                    AsyncBlock { state: AsyncBlockState::Ready { barrier: Barrier::SearchInProgress { requests_queue, }, .. }, .. } => {
-                        requests_queue.push(lookup_request);
+                    AsyncBlock { state: AsyncBlockState::Awaiting { lookup_requests_queue, .. }, .. } |
+                    AsyncBlock { state: AsyncBlockState::Ready { search_barrier: SearchBarrier::InProgress { lookup_requests_queue, }, .. }, .. } => {
+                        lookup_requests_queue.push(lookup_request);
                         None
                     },
-                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, barrier: barrier @ Barrier::Opened, .. }, .. } => {
-                        *barrier = Barrier::SearchInProgress { requests_queue: requests_queue_pool.lend(BinaryHeap::new), };
-                        let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                        requests_queue.push(lookup_request);
+                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, search_barrier: search_barrier @ SearchBarrier::Opened, .. }, .. } => {
+                        let mut lookup_requests_queue =
+                            lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
+                        lookup_requests_queue.clear();
+                        *search_barrier = SearchBarrier::InProgress { lookup_requests_queue, };
+                        let mut lookup_requests_queue =
+                            lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
+                        lookup_requests_queue.clear();
+                        lookup_requests_queue.push(lookup_request);
+                        let mut outcomes = outcomes_pool.lend(Vec::new);
+                        outcomes.clear();
                         Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                             block_ref,
                             blocks_pool: blocks_pool.clone(),
                             block_bytes: block_bytes.clone(),
-                            requests_queue,
-                            outcomes: outcomes_pool.lend(Vec::new),
+                            lookup_requests_queue,
+                            outcomes,
                         }))
                     },
                 },
 
             hash_map::Entry::Vacant(ve) => {
-                let mut requests_queue = requests_queue_pool.lend(BinaryHeap::new);
-                requests_queue.push(lookup_request);
+                let mut lookup_requests_queue =
+                    lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
+                lookup_requests_queue.clear();
+                lookup_requests_queue.push(lookup_request);
+                let mut iter_requests_queue =
+                    iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
+                iter_requests_queue.clear();
                 ve.insert(AsyncBlock {
                     parent: None,
-                    state: AsyncBlockState::Awaiting { requests_queue, },
+                    state: AsyncBlockState::Awaiting {
+                        lookup_requests_queue,
+                        iter_requests_queue,
+                    },
                 });
-                Some(task::TaskArgs::LoadBlockLookup(task::load_block_lookup::Args {
+                Some(task::TaskArgs::LoadBlock(task::load_block::Args {
+                    block_ref,
+                    wheels_pid: wheels_pid.clone(),
+                }))
+            },
+        }
+    }
+
+    fn apply_iter_request(
+        &mut self,
+        iter_request: task::IterRequest,
+        blocks_pool: &BytesPool,
+        lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
+        iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
+        iters_pool: &pool::Pool<Vec<SearchTreeIterTx>>,
+        wheels_pid: &wheels::Pid,
+        iter_rec_tx: &mpsc::Sender<task::IterRequest>,
+    )
+        -> Option<task::TaskArgs>
+    {
+        let block_ref = iter_request.block_ref.clone();
+        match self.tree.entry(block_ref.clone()) {
+            hash_map::Entry::Occupied(mut oe) =>
+                match oe.get_mut() {
+                    AsyncBlock { state: AsyncBlockState::Awaiting { iter_requests_queue, .. }, .. } => {
+                        iter_requests_queue.push(iter_request);
+                        None
+                    },
+                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, .. }, .. } => {
+                        let mut iter_requests_queue =
+                            iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
+                        iter_requests_queue.clear();
+                        iter_requests_queue.push(iter_request);
+                        let mut iters_tx = iters_pool.lend(Vec::new);
+                        iters_tx.clear();
+                        Some(task::TaskArgs::IterBlock(task::iter_block::Args {
+                            block_ref,
+                            blocks_pool: blocks_pool.clone(),
+                            block_bytes: block_bytes.clone(),
+                            iters_tx,
+                            iter_rec_tx: iter_rec_tx.clone(),
+                            iter_requests_queue,
+                        }))
+                    },
+                },
+
+            hash_map::Entry::Vacant(ve) => {
+                let mut iter_requests_queue =
+                    iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
+                iter_requests_queue.clear();
+                iter_requests_queue.push(iter_request);
+                let mut lookup_requests_queue =
+                    lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
+                lookup_requests_queue.clear();
+                ve.insert(AsyncBlock {
+                    parent: None,
+                    state: AsyncBlockState::Awaiting {
+                        lookup_requests_queue,
+                        iter_requests_queue,
+                    },
+                });
+                Some(task::TaskArgs::LoadBlock(task::load_block::Args {
                     block_ref,
                     wheels_pid: wheels_pid.clone(),
                 }))
@@ -486,7 +651,7 @@ impl AsyncTree {
         &mut self,
         block_ref: &BlockRef,
         blocks_pool: &BytesPool,
-        requests_queue_pool: &pool::Pool<task::RequestsQueueType>,
+        lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
     )
         -> Option<task::TaskArgs>
@@ -494,21 +659,21 @@ impl AsyncTree {
         match self.tree.get_mut(block_ref) {
             None | Some(AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. }) =>
                 unreachable!(),
-            Some(AsyncBlock { state: AsyncBlockState::Ready { block_bytes, barrier, .. }, .. }) =>
-                match mem::replace(barrier, Barrier::Opened) {
-                    Barrier::Opened =>
+            Some(AsyncBlock { state: AsyncBlockState::Ready { block_bytes, search_barrier, .. }, .. }) =>
+                match mem::replace(search_barrier, SearchBarrier::Opened) {
+                    SearchBarrier::Opened =>
                         unreachable!(),
-                    Barrier::SearchInProgress { requests_queue, } if requests_queue.is_empty() =>
+                    SearchBarrier::InProgress { lookup_requests_queue, } if lookup_requests_queue.is_empty() =>
                         None,
-                    Barrier::SearchInProgress { requests_queue, } => {
-                        *barrier = Barrier::SearchInProgress {
-                            requests_queue: requests_queue_pool.lend(BinaryHeap::new),
+                    SearchBarrier::InProgress { lookup_requests_queue, } => {
+                        *search_barrier = SearchBarrier::InProgress {
+                            lookup_requests_queue: lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new),
                         };
                         Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                             block_ref: block_ref.clone(),
                             blocks_pool: blocks_pool.clone(),
                             block_bytes: block_bytes.clone(),
-                            requests_queue,
+                            lookup_requests_queue,
                             outcomes: outcomes_pool.lend(Vec::new),
                         }))
                     },
@@ -529,11 +694,11 @@ impl AsyncTree {
         let mut maybe_dec = None;
         let mut maybe_block_ref = Some(block_ref.clone());
         while let Some(block_ref) = maybe_block_ref {
-            let (parent, children_reqs, barrier) = match self.tree.get_mut(&block_ref).unwrap() {
+            let (parent, children_reqs, search_barrier) = match self.tree.get_mut(&block_ref).unwrap() {
                 AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. } =>
                     unreachable!(),
-                AsyncBlock { parent, state: AsyncBlockState::Ready { children_reqs, barrier, .. }, .. } =>
-                    (parent, children_reqs, barrier),
+                AsyncBlock { parent, state: AsyncBlockState::Ready { children_reqs, search_barrier, .. }, .. } =>
+                    (parent, children_reqs, search_barrier),
             };
             if let Some(dec) = maybe_dec {
                 assert!(*children_reqs >= dec);
@@ -542,10 +707,10 @@ impl AsyncTree {
             maybe_block_ref = parent.clone();
             maybe_dec = Some(dec);
 
-            let is_trash_block = match barrier {
-                Barrier::Opened =>
+            let is_trash_block = match search_barrier {
+                SearchBarrier::Opened =>
                     *children_reqs == 0,
-                Barrier::SearchInProgress { .. } =>
+                SearchBarrier::InProgress { .. } =>
                     false,
             };
             if is_trash_block {
