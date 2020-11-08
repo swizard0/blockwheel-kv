@@ -17,12 +17,7 @@ use futures::{
     SinkExt,
 };
 
-use o1::{
-    set::{
-        Ref,
-        Set,
-    },
-};
+use o1::set::Set;
 
 use ero::{
     restart,
@@ -46,6 +41,8 @@ use crate::{
     },
     RequestLookup,
 };
+
+mod task;
 
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -179,8 +176,7 @@ impl Pid {
 
 #[derive(Debug)]
 enum Error {
-    ButcherLookup(ero::NoProcError),
-    SearchTreeLookup(search_tree::LookupError),
+    Task(task::Error),
 }
 
 struct LookupRequest {
@@ -203,7 +199,7 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
 async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut search_trees = Set::new();
     let mut lookup_requests = Set::new();
-    let mut lookup_tasks = FuturesUnordered::new();
+    let mut tasks = FuturesUnordered::new();
 
     let search_tree_lookup_requests_queue_pool = pool::Pool::new();
     let search_tree_iter_requests_queue_pool = pool::Pool::new();
@@ -211,22 +207,22 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
     let search_tree_iters_pool = pool::Pool::new();
 
     loop {
-        enum Event<R, L> {
+        enum Event<R, T> {
             Request(Option<R>),
-            LookupTask(L),
+            Task(T),
         }
 
-        let event = if lookup_tasks.is_empty() {
+        let event = if tasks.is_empty() {
             Event::Request(state.fused_request_rx.next().await)
         } else {
             select! {
                 result = state.fused_request_rx.next() =>
                     Event::Request(result),
-                result = lookup_tasks.next() => match result {
+                result = tasks.next() => match result {
                     None =>
                         unreachable!(),
-                    Some(lookup_task) =>
-                        Event::LookupTask(lookup_task),
+                    Some(task) =>
+                        Event::Task(task),
                 },
             }
         };
@@ -262,25 +258,26 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     pending_count: 1 + search_trees.len(),
                     found_fold: None,
                 });
-                lookup_tasks.push(run_lookup_task(LookupTaskArg {
-                    key: key.clone(),
-                    request_ref: request_ref.clone(),
-                    kind: LookupTaskArgKind::Butcher(ButcherLookupTaskArg {
-                        butcher_pid: state.butcher_pid.clone(),
-                    }),
-                }));
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-                    lookup_tasks.push(run_lookup_task(LookupTaskArg {
+                tasks.push(task::run_args(task::TaskArgs::LookupButcher(
+                    task::lookup_butcher::Args {
                         key: key.clone(),
                         request_ref: request_ref.clone(),
-                        kind: LookupTaskArgKind::SearchTree(SearchTreeLookupTaskArg {
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                )));
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                    tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
+                        task::lookup_search_tree::Args {
+                            key: key.clone(),
+                            request_ref: request_ref.clone(),
                             search_tree_pid: search_tree_pid.clone(),
-                        }),
-                    }));
+                        },
+                    )));
                 }
             },
 
-            Event::LookupTask(Ok(LookupTaskDone { request_ref, found, })) => {
+            Event::Task(Ok(task::TaskDone::LookupButcher(task::lookup_butcher::Done { request_ref, found, }))) |
+            Event::Task(Ok(task::TaskDone::LookupSearchTree(task::lookup_search_tree::Done { request_ref, found, }))) => {
                 let lookup_request = lookup_requests.get_mut(request_ref).unwrap();
                 assert!(lookup_request.pending_count > 0);
                 lookup_request.pending_count -= 1;
@@ -296,71 +293,8 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 }
             },
 
-            Event::LookupTask(Err(error)) =>
-                return Err(ErrorSeverity::Fatal(error)),
+            Event::Task(Err(error)) =>
+                return Err(ErrorSeverity::Fatal(Error::Task(error))),
         }
     }
-}
-
-struct LookupTaskArg {
-    key: kv::Key,
-    request_ref: Ref,
-    kind: LookupTaskArgKind,
-}
-
-enum LookupTaskArgKind {
-    Butcher(ButcherLookupTaskArg),
-    SearchTree(SearchTreeLookupTaskArg),
-}
-
-struct ButcherLookupTaskArg {
-    butcher_pid: butcher::Pid,
-}
-
-struct SearchTreeLookupTaskArg {
-    search_tree_pid: search_tree::Pid,
-}
-
-struct LookupTaskDone {
-    request_ref: Ref,
-    found: Option<kv::ValueCell>,
-}
-
-async fn run_lookup_task(arg: LookupTaskArg) -> Result<LookupTaskDone, Error> {
-    match arg {
-        LookupTaskArg { key, request_ref, kind: LookupTaskArgKind::Butcher(args), } =>
-            run_lookup_task_butcher(request_ref, key, args).await,
-        LookupTaskArg { key, request_ref, kind: LookupTaskArgKind::SearchTree(args), } =>
-            run_lookup_task_search_tree(request_ref, key, args).await,
-    }
-}
-
-async fn run_lookup_task_butcher(
-    request_ref: Ref,
-    key: kv::Key,
-    mut args: ButcherLookupTaskArg,
-)
-    -> Result<LookupTaskDone, Error>
-{
-    let maybe_value_cell = args.butcher_pid.lookup(key).await
-        .map_err(Error::ButcherLookup)?;
-    Ok(LookupTaskDone {
-        request_ref,
-        found: maybe_value_cell,
-    })
-}
-
-async fn run_lookup_task_search_tree(
-    request_ref: Ref,
-    key: kv::Key,
-    mut args: SearchTreeLookupTaskArg,
-)
-    -> Result<LookupTaskDone, Error>
-{
-    let search_tree_found = args.search_tree_pid.lookup(key).await
-        .map_err(Error::SearchTreeLookup)?;
-    Ok(LookupTaskDone {
-        request_ref,
-        found: search_tree_found,
-    })
 }
