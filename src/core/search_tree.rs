@@ -92,7 +92,7 @@ impl GenServer {
         }
     }
 
-    pub async fn run_cache_bootstrap(
+    pub async fn run(
         self,
         parent_supervisor: SupervisorPid,
         blocks_pool: BytesPool,
@@ -102,7 +102,7 @@ impl GenServer {
         iters_pool: pool::Pool<Vec<SearchTreeIterTx>>,
         wheels_pid: wheels::Pid,
         params: Params,
-        cache: Arc<MemCache>,
+        mode: Mode,
     )
     {
         run(State {
@@ -115,7 +115,7 @@ impl GenServer {
             iters_pool,
             wheels_pid,
             params,
-            mode: Mode::CacheBootstrap { cache, },
+            mode,
         }).await
     }
 }
@@ -190,7 +190,7 @@ struct State {
     mode: Mode,
 }
 
-enum Mode {
+pub enum Mode {
     CacheBootstrap {
         cache: Arc<MemCache>,
     },

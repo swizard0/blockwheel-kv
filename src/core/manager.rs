@@ -1,6 +1,8 @@
 use std::{
     sync::Arc,
+    cmp::Reverse,
     time::Duration,
+    collections::BinaryHeap,
 };
 
 use futures::{
@@ -17,7 +19,10 @@ use futures::{
     SinkExt,
 };
 
-use o1::set::Set;
+use o1::set::{
+    Set,
+    Ref,
+};
 
 use ero::{
     restart,
@@ -48,6 +53,7 @@ mod task;
 pub struct Params {
     pub task_restart_sec: usize,
     pub search_tree_params: search_tree::Params,
+    pub standalone_search_trees_count: usize,
 }
 
 impl Default for Params {
@@ -55,6 +61,7 @@ impl Default for Params {
         Params {
             task_restart_sec: 4,
             search_tree_params: Default::default(),
+            standalone_search_trees_count: 2,
         }
     }
 }
@@ -198,6 +205,8 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
 
 async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut search_trees = Set::new();
+    let mut search_tree_refs = BinaryHeap::new();
+
     let mut lookup_requests = Set::new();
     let mut tasks = FuturesUnordered::new();
 
@@ -234,10 +243,11 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
             },
 
             Event::Request(Some(Request::ButcherFlush { cache, })) => {
+                let items_count = cache.len();
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();
                 child_supervisor_pid.spawn_link_temporary(
-                    search_tree_gen_server.run_cache_bootstrap(
+                    search_tree_gen_server.run(
                         child_supervisor_pid.clone(),
                         state.blocks_pool.clone(),
                         search_tree_lookup_requests_queue_pool.clone(),
@@ -246,10 +256,20 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         search_tree_iters_pool.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
-                        cache,
+                        search_tree::Mode::CacheBootstrap { cache, },
                     ),
                 );
-                search_trees.insert(search_tree_pid);
+                let search_tree_ref = search_trees.insert(search_tree_pid);
+                let maybe_task_args = push_search_tree_refs(
+                    &mut search_tree_refs,
+                    SearchTreeRef { search_tree_ref, items_count, },
+                    state.params.standalone_search_trees_count,
+                    &search_trees,
+                    &state.wheels_pid,
+                );
+                if let Some(task_args) = maybe_task_args {
+                    tasks.push(task::run_args(task_args));
+                }
             },
 
             Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
@@ -293,8 +313,74 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 }
             },
 
+            Event::Task(Ok(task::TaskDone::MergeSearchTrees(done))) => {
+                search_trees.remove(done.search_tree_a_ref).unwrap();
+                search_trees.remove(done.search_tree_b_ref).unwrap();
+                let search_tree_gen_server = search_tree::GenServer::new();
+                let search_tree_pid = search_tree_gen_server.pid();
+                child_supervisor_pid.spawn_link_temporary(
+                    search_tree_gen_server.run(
+                        child_supervisor_pid.clone(),
+                        state.blocks_pool.clone(),
+                        search_tree_lookup_requests_queue_pool.clone(),
+                        search_tree_iter_requests_queue_pool.clone(),
+                        search_tree_outcomes_pool.clone(),
+                        search_tree_iters_pool.clone(),
+                        state.wheels_pid.clone(),
+                        state.params.search_tree_params.clone(),
+                        search_tree::Mode::Regular { root_block: done.root_block, },
+                    ),
+                );
+                let search_tree_ref = search_trees.insert(search_tree_pid);
+                let maybe_task_args = push_search_tree_refs(
+                    &mut search_tree_refs,
+                    SearchTreeRef { search_tree_ref, items_count: done.items_count, },
+                    state.params.standalone_search_trees_count,
+                    &search_trees,
+                    &state.wheels_pid,
+                );
+                if let Some(task_args) = maybe_task_args {
+                    tasks.push(task::run_args(task_args));
+                }
+            },
+
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
         }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct SearchTreeRef {
+    items_count: usize,
+    search_tree_ref: Ref,
+}
+
+fn push_search_tree_refs(
+    search_tree_refs: &mut BinaryHeap<Reverse<SearchTreeRef>>,
+    search_tree_ref: SearchTreeRef,
+    standalone_search_trees_count: usize,
+    search_trees: &Set<search_tree::Pid>,
+    wheels_pid: &wheels::Pid,
+)
+    -> Option<task::TaskArgs>
+{
+    search_tree_refs.push(Reverse(search_tree_ref));
+    if search_tree_refs.len() <= standalone_search_trees_count {
+        None
+    } else {
+        let Reverse(SearchTreeRef { search_tree_ref: search_tree_a_ref, .. }) = search_tree_refs.pop().unwrap();
+        let Reverse(SearchTreeRef { search_tree_ref: search_tree_b_ref, .. }) = search_tree_refs.pop().unwrap();
+        let search_tree_a_pid = search_trees.get(search_tree_a_ref).unwrap().clone();
+        let search_tree_b_pid = search_trees.get(search_tree_b_ref).unwrap().clone();
+        Some(task::TaskArgs::MergeSearchTrees(
+            task::merge_search_trees::Args {
+                search_tree_a_ref,
+                search_tree_b_ref,
+                search_tree_a_pid,
+                search_tree_b_pid,
+                wheels_pid: wheels_pid.clone(),
+            },
+        ))
     }
 }

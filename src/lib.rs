@@ -41,6 +41,7 @@ pub struct Params {
     pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
+    pub standalone_search_trees_count: usize,
 }
 
 impl Default for Params {
@@ -52,6 +53,7 @@ impl Default for Params {
             butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
+            standalone_search_trees_count: 2,
         }
     }
 }
@@ -121,6 +123,7 @@ impl GenServer {
                         task_restart_sec: state.params.search_tree_task_restart_sec,
                         tree_block_size: state.params.tree_block_size,
                     },
+                    standalone_search_trees_count: state.params.standalone_search_trees_count,
                 };
 
                 let child_supervisor_gen_server = state.parent_supervisor.child_supevisor();
