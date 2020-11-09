@@ -40,11 +40,33 @@ use crate as blockwheel_kv;
 fn stress() {
     env_logger::init();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
+
+    let limits = Limits {
+        active_tasks: 128,
+        actions: 1024,
+        key_size_bytes: 32,
+        value_size_bytes: 4096,
+    };
+
     let work_block_size_bytes = 16 * 1024;
-    let init_wheel_size_bytes = 4 * 1024 * 1024;
+    let init_wheel_size_bytes = 2 * 1024 * 1024;
+
+    // let runtime = tokio::runtime::Builder::new_multi_thread()
+    //     .build()
+    //     .unwrap();
+
+    // let limits = Limits {
+    //     active_tasks: 256,
+    //     actions: 16384,
+    //     key_size_bytes: 32,
+    //     value_size_bytes: 4096,
+    // };
+
+    // let work_block_size_bytes = 16 * 1024;
+    // let init_wheel_size_bytes = 16 * 1024 * 1024;
 
     let params = Params {
         wheel_a: blockwheel::Params {
@@ -63,13 +85,6 @@ fn stress() {
             defrag_parallel_tasks_limit: 8,
             ..Default::default()
         },
-    };
-
-    let limits = Limits {
-        active_tasks: 128,
-        actions: 1024,
-        key_size_bytes: 32,
-        value_size_bytes: 4096,
     };
 
     let version_provider = version::Provider::new();
