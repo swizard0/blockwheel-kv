@@ -64,9 +64,7 @@ pub enum Error {
     WheelsGone,
     WheelsEmpty,
     BuildTree(fold::Error),
-    BuildTreeUnexpectedChildRefOnVisitLevel,
     BuildTreeUnexpectedLevelSeedOnVisitBlockStart,
-    BuildTreeUnexpectedChildRefOnVisitBlockStart,
     BuildTreeUnexpectedLevelSeedOnVisitItem,
     BuildTreeUnexpectedSerializeDoneOnVisitItem,
     BuildTreeUnexpectedLevelSeedOnVisitBlockFinish,
@@ -131,26 +129,21 @@ pub async fn run(
     let root_block = loop {
         let kont_step = kont.step_rec(&mut fold_ctx)
             .map_err(Error::BuildTree)?;
-        kont = match (kont_step, child_ref.take()) {
+        kont = match kont_step {
             // VisitLevel
-            (fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, .. })), None) => {
+            fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, .. })) => {
                 next.level_ready(LevelSeed::Empty, &mut fold_ctx)
                     .map_err(Error::BuildTree)?
             },
-            (fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { .. })), Some(..)) =>
-                return Err(Error::BuildTreeUnexpectedChildRefOnVisitLevel),
 
             // VisitBlockStart
-            (
-                fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart {
-                    level_seed: LevelSeed::Empty,
-                    level_index,
-                    items_count,
-                    next,
-                    ..
-                })),
-                None,
-            ) => {
+            fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart {
+                level_seed: LevelSeed::Empty,
+                level_index,
+                items_count,
+                next,
+                ..
+            })) => {
                 let wheel_ref = wheels_pid.acquire().await
                     .map_err(|ero::NoProcError| Error::WheelsGone)?
                     .ok_or(Error::WheelsEmpty)?;
@@ -169,26 +162,21 @@ pub async fn run(
                 next.block_ready(level_seed, &mut fold_ctx)
                     .map_err(Error::BuildTree)?
             },
-            (fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })), None) =>
+            fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })) =>
                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockStart),
-            (fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })), Some(..)) =>
-                return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockStart),
 
             // VisitItem
-            (
-                fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
-                    level_seed: LevelSeed::BlockInProgress {
-                        block_serializer_kont: storage::BlockSerializerContinue::More(block_serializer),
-                        wheel_ref,
-                    },
-                    next,
-                    ..
-                })),
-                block_child_ref,
-            ) => {
+            fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
+                level_seed: LevelSeed::BlockInProgress {
+                    block_serializer_kont: storage::BlockSerializerContinue::More(block_serializer),
+                    wheel_ref,
+                },
+                next,
+                ..
+            })) => {
                 let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await
                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
-                let jump_ref = match &block_child_ref {
+                let jump_ref = match &child_ref {
                     None =>
                         storage::JumpRef::None,
                     Some(BlockRef { blockwheel_filename, block_id, }) if blockwheel_filename == &wheel_ref.blockwheel_filename =>
@@ -214,32 +202,30 @@ pub async fn run(
                 next.item_ready(level_seed, &mut fold_ctx)
                     .map_err(Error::BuildTree)?
             },
-            (fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem { level_seed: LevelSeed::Empty, .. })), _) =>
+            fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem { level_seed: LevelSeed::Empty, .. })) =>
                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitItem),
-            (
-                fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
-                    level_seed: LevelSeed::BlockInProgress {
-                        block_serializer_kont: storage::BlockSerializerContinue::Done(..),
-                        ..
-                    },
+            fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
+                level_seed: LevelSeed::BlockInProgress {
+                    block_serializer_kont: storage::BlockSerializerContinue::Done(..),
                     ..
-                })),
-                _,
-            ) =>
+                },
+                ..
+            })) =>
                 return Err(Error::BuildTreeUnexpectedSerializeDoneOnVisitItem),
 
             // VisitBlockFinish
-            (
-                fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
-                    level_seed: LevelSeed::BlockInProgress {
-                        block_serializer_kont: storage::BlockSerializerContinue::Done(block_bytes),
-                        mut wheel_ref,
-                    },
-                    next,
-                    ..
-                })),
-                None,
-            ) => {
+            fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
+                level_seed: LevelSeed::BlockInProgress {
+                    block_serializer_kont: storage::BlockSerializerContinue::Done(block_bytes),
+                    mut wheel_ref,
+                },
+                next,
+                ..
+            })) => {
+                if let Some(..) = child_ref {
+                    return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish);
+                }
+
                 let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes.freeze()).await
                     .map_err(Error::WriteBlock)?;
                 child_ref = Some(BlockRef {
@@ -250,27 +236,25 @@ pub async fn run(
                 next.block_flushed(level_seed, &mut fold_ctx)
                     .map_err(Error::BuildTree)?
             },
-            (fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { level_seed: LevelSeed::Empty, .. })), _) =>
+            fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { level_seed: LevelSeed::Empty, .. })) =>
                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockFinish),
-            (
-                fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
-                    level_seed: LevelSeed::BlockInProgress {
-                        block_serializer_kont: storage::BlockSerializerContinue::More(..),
-                        ..
-                    },
+            fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
+                level_seed: LevelSeed::BlockInProgress {
+                    block_serializer_kont: storage::BlockSerializerContinue::More(..),
                     ..
-                })),
-                _,
-            )=>
+                },
+                ..
+            })) =>
                 return Err(Error::BuildTreeUnexpectedSerializeContinueOnVisitBlockFinish),
-            (fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { .. })), Some(..)) =>
-                return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish),
 
             // Done
-            (fold::Instruction::Done, Some(root_block_ref)) =>
-                break root_block_ref,
-            (fold::Instruction::Done, None) =>
-                return Err(Error::BuildTreeUnexpectedEmptyTree),
+            fold::Instruction::Done =>
+                match child_ref {
+                    Some(root_block_ref) =>
+                        break root_block_ref,
+                    None =>
+                        return Err(Error::BuildTreeUnexpectedEmptyTree),
+                },
         };
     };
     assert_eq!(merge_iter.next().await, None);

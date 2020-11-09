@@ -108,8 +108,6 @@ pub async fn run(
             while let Some(key_value_pair) = items_rx.next().await {
                 let Broadcasted = broadcast_task(key_value_pair, &mut iters_tx).await;
             }
-
-            unimplemented!()
         }
 
         let mut key_bytes = blocks_pool.lend();
