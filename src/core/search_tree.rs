@@ -361,7 +361,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
                 if let Some(AsyncBlock { parent: Some(parent_block_ref), .. }) = async_tree.get(&block_ref) {
                     let parent_block_ref = parent_block_ref.clone();
-                    async_tree.inc_children_reqs(&parent_block_ref, 1);
+                    async_tree.inc_reqs(&parent_block_ref, 1);
                 }
             },
 
@@ -388,7 +388,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             parent,
                             state: AsyncBlockState::Ready {
                                 block_bytes: block_bytes.clone(),
-                                children_reqs: 0,
+                                reqs: lookup_requests_queue.len() + iter_requests_queue.len(),
                                 search_barrier,
                             },
                         });
@@ -472,15 +472,15 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
                 }
-                async_tree.inc_children_reqs(&block_ref, jumps_count);
-                async_tree.dec_parent_reqs(&block_ref, dones_count);
+                async_tree.inc_reqs(&block_ref, jumps_count);
+                async_tree.dec_reqs(&block_ref, dones_count, true);
             },
 
             Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
                 (),
 
             Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
-                async_tree.dec_parent_reqs(&block_ref, 1);
+                async_tree.dec_reqs(&block_ref, 1, false);
             },
 
             Event::Task(Err(error)) =>
@@ -505,7 +505,7 @@ enum AsyncBlockState {
     },
     Ready {
         block_bytes: Bytes,
-        children_reqs: usize,
+        reqs: usize,
         search_barrier: SearchBarrier,
     },
 }
@@ -537,12 +537,26 @@ impl AsyncTree {
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
                 match oe.get_mut() {
-                    AsyncBlock { state: AsyncBlockState::Awaiting { lookup_requests_queue, .. }, .. } |
-                    AsyncBlock { state: AsyncBlockState::Ready { search_barrier: SearchBarrier::InProgress { lookup_requests_queue, }, .. }, .. } => {
+                    AsyncBlock { state: AsyncBlockState::Awaiting { lookup_requests_queue, .. }, .. } => {
                         lookup_requests_queue.push(lookup_request);
                         None
                     },
-                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, search_barrier: search_barrier @ SearchBarrier::Opened, .. }, .. } => {
+                    AsyncBlock {
+                        state: AsyncBlockState::Ready {
+                            reqs,
+                            search_barrier: SearchBarrier::InProgress { lookup_requests_queue, },
+                            ..
+                        },
+                        ..
+                    } => {
+                        lookup_requests_queue.push(lookup_request);
+                        *reqs += 1;
+                        None
+                    },
+                    AsyncBlock {
+                        state: AsyncBlockState::Ready { reqs, block_bytes, search_barrier: search_barrier @ SearchBarrier::Opened, .. },
+                        ..
+                    } => {
                         let mut lookup_requests_queue =
                             lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                         lookup_requests_queue.clear();
@@ -553,6 +567,7 @@ impl AsyncTree {
                         lookup_requests_queue.push(lookup_request);
                         let mut outcomes = outcomes_pool.lend(Vec::new);
                         outcomes.clear();
+                        *reqs += 1;
                         Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                             block_ref,
                             blocks_pool: blocks_pool.clone(),
@@ -606,13 +621,14 @@ impl AsyncTree {
                         iter_requests_queue.push(iter_request);
                         None
                     },
-                    AsyncBlock { state: AsyncBlockState::Ready { block_bytes, .. }, .. } => {
+                    AsyncBlock { state: AsyncBlockState::Ready { reqs, block_bytes, .. }, .. } => {
                         let mut iter_requests_queue =
                             iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                         iter_requests_queue.clear();
                         iter_requests_queue.push(iter_request);
                         let mut iters_tx = iters_pool.lend(Vec::new);
                         iters_tx.clear();
+                        *reqs += 1;
                         Some(task::TaskArgs::IterBlock(task::iter_block::Args {
                             block_ref,
                             blocks_pool: blocks_pool.clone(),
@@ -681,40 +697,32 @@ impl AsyncTree {
         }
     }
 
-    fn inc_children_reqs(&mut self, block_ref: &BlockRef, inc: usize) {
+    fn inc_reqs(&mut self, block_ref: &BlockRef, inc: usize) {
         match self.tree.get_mut(&block_ref) {
             None | Some(AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. }) =>
                 unreachable!(),
-            Some(AsyncBlock { state: AsyncBlockState::Ready { children_reqs, .. }, ..}) =>
-                *children_reqs += inc,
+            Some(AsyncBlock { state: AsyncBlockState::Ready { reqs, .. }, ..}) =>
+                *reqs += inc,
         }
     }
 
-    fn dec_parent_reqs(&mut self, block_ref: &BlockRef, dec: usize) {
-        let mut maybe_dec = None;
+    fn dec_reqs(&mut self, block_ref: &BlockRef, dec: usize, is_recursive: bool) {
         let mut maybe_block_ref = Some(block_ref.clone());
         while let Some(block_ref) = maybe_block_ref {
-            let (parent, children_reqs, search_barrier) = match self.tree.get_mut(&block_ref).unwrap() {
+            let (parent, reqs) = match self.tree.get_mut(&block_ref).unwrap() {
                 AsyncBlock { state: AsyncBlockState::Awaiting { .. }, .. } =>
                     unreachable!(),
-                AsyncBlock { parent, state: AsyncBlockState::Ready { children_reqs, search_barrier, .. }, .. } =>
-                    (parent, children_reqs, search_barrier),
+                AsyncBlock { parent, state: AsyncBlockState::Ready { reqs, .. }, .. } =>
+                    (parent, reqs),
             };
-            if let Some(dec) = maybe_dec {
-                assert!(*children_reqs >= dec);
-                *children_reqs -= dec;
-            }
+            assert!(*reqs >= dec);
+            *reqs -= dec;
             maybe_block_ref = parent.clone();
-            maybe_dec = Some(dec);
-
-            let is_trash_block = match search_barrier {
-                SearchBarrier::Opened =>
-                    *children_reqs == 0,
-                SearchBarrier::InProgress { .. } =>
-                    false,
-            };
-            if is_trash_block {
+            if *reqs == 0 {
                 self.tree.remove(&block_ref);
+            }
+            if !is_recursive {
+                break;
             }
         }
     }
