@@ -15,9 +15,23 @@ use futures::{
 
 use o1::set::Ref;
 
+use bntree::{
+    sketch,
+    writer::{
+        plan,
+        fold,
+    },
+};
+
+use alloc_pool::bytes::{
+    BytesPool,
+};
+
 use crate::{
     kv,
     wheels,
+    storage,
+    blockwheel,
     core::{
         search_tree,
         BlockRef,
@@ -29,7 +43,9 @@ pub struct Args {
     pub search_tree_b_ref: Ref,
     pub search_tree_a_pid: search_tree::Pid,
     pub search_tree_b_pid: search_tree::Pid,
+    pub blocks_pool: BytesPool,
     pub wheels_pid: wheels::Pid,
+    pub tree_block_size: usize,
 }
 
 pub struct Done {
@@ -45,6 +61,22 @@ pub enum Error {
         search_tree_ref: Ref,
         error: search_tree::IterError,
     },
+    WheelsGone,
+    WheelsEmpty,
+    BuildTree(fold::Error),
+    BuildTreeUnexpectedChildRefOnVisitLevel,
+    BuildTreeUnexpectedLevelSeedOnVisitBlockStart,
+    BuildTreeUnexpectedChildRefOnVisitBlockStart,
+    BuildTreeUnexpectedLevelSeedOnVisitItem,
+    BuildTreeUnexpectedSerializeDoneOnVisitItem,
+    BuildTreeUnexpectedLevelSeedOnVisitBlockFinish,
+    BuildTreeUnexpectedSerializeContinueOnVisitBlockFinish,
+    BuildTreeUnexpectedChildRefOnVisitBlockFinish,
+    BuildTreeUnexpectedEmptyTree,
+    BuildTreeMergeIterDepleted,
+    BlockSerializerStart(storage::Error),
+    BlockSerializerEntry(storage::Error),
+    WriteBlock(blockwheel::WriteBlockError),
 }
 
 pub async fn run(
@@ -53,7 +85,9 @@ pub async fn run(
         search_tree_b_ref,
         mut search_tree_a_pid,
         mut search_tree_b_pid,
-        wheels_pid,
+        blocks_pool,
+        mut wheels_pid,
+        tree_block_size,
     }: Args,
 )
     -> Result<Done, Error>
@@ -65,18 +99,187 @@ pub async fn run(
         &mut search_tree_b_pid,
     ).await?;
 
-    let mut items_count = 0;
+    let mut tree_items_count = 0;
     while let Some(..) = merge_iter.next().await {
-        items_count += 1;
+        tree_items_count += 1;
     }
 
-    let root_block = unimplemented!();
+    let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
+    let mut fold_ctx = fold::Context::new(
+        plan::Context::new(&sketch),
+        &sketch,
+    );
+
+    enum LevelSeed<B> {
+        Empty,
+        BlockInProgress {
+            block_serializer_kont: storage::BlockSerializerContinue<B>,
+            wheel_ref: wheels::WheelRef,
+        },
+    }
+
+    let mut merge_iter = MergeIter::new(
+        search_tree_a_ref,
+        search_tree_b_ref,
+        &mut search_tree_a_pid,
+        &mut search_tree_b_pid,
+    ).await?;
+
+    let mut child_ref = None;
+
+    let mut kont = fold::Script::boot();
+    let root_block = loop {
+        let kont_step = kont.step_rec(&mut fold_ctx)
+            .map_err(Error::BuildTree)?;
+        kont = match (kont_step, child_ref.take()) {
+            // VisitLevel
+            (fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, .. })), None) => {
+                next.level_ready(LevelSeed::Empty, &mut fold_ctx)
+                    .map_err(Error::BuildTree)?
+            },
+            (fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { .. })), Some(..)) =>
+                return Err(Error::BuildTreeUnexpectedChildRefOnVisitLevel),
+
+            // VisitBlockStart
+            (
+                fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart {
+                    level_seed: LevelSeed::Empty,
+                    level_index,
+                    items_count,
+                    next,
+                    ..
+                })),
+                None,
+            ) => {
+                let wheel_ref = wheels_pid.acquire().await
+                    .map_err(|ero::NoProcError| Error::WheelsGone)?
+                    .ok_or(Error::WheelsEmpty)?;
+                let node_type = if level_index == 0 {
+                    storage::NodeType::Root
+                } else {
+                    storage::NodeType::Leaf
+                };
+                let block_bytes = blocks_pool.lend();
+                let block_serializer_kont = storage::BlockSerializer::start(node_type, items_count, block_bytes)
+                    .map_err(Error::BlockSerializerStart)?;
+                let level_seed = LevelSeed::BlockInProgress {
+                    block_serializer_kont,
+                    wheel_ref,
+                };
+                next.block_ready(level_seed, &mut fold_ctx)
+                    .map_err(Error::BuildTree)?
+            },
+            (fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })), None) =>
+                return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockStart),
+            (fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })), Some(..)) =>
+                return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockStart),
+
+            // VisitItem
+            (
+                fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
+                    level_seed: LevelSeed::BlockInProgress {
+                        block_serializer_kont: storage::BlockSerializerContinue::More(block_serializer),
+                        wheel_ref,
+                    },
+                    next,
+                    ..
+                })),
+                block_child_ref,
+            ) => {
+                let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await
+                    .ok_or(Error::BuildTreeMergeIterDepleted)?;
+                let jump_ref = match &block_child_ref {
+                    None =>
+                        storage::JumpRef::None,
+                    Some(BlockRef { blockwheel_filename, block_id, }) if blockwheel_filename == &wheel_ref.blockwheel_filename =>
+                        storage::JumpRef::Local(storage::LocalJumpRef { block_id: block_id.clone(), }),
+                    Some(BlockRef { blockwheel_filename, block_id, }) =>
+                        storage::JumpRef::External(storage::ExternalJumpRef {
+                            filename: blockwheel_filename,
+                            block_id: block_id.clone(),
+                        }),
+                };
+                let block_serializer_kont =
+                    block_serializer.entry(
+                        &key.key_bytes,
+                        value_cell.into(),
+                        jump_ref,
+                    )
+                    .map_err(Error::BlockSerializerEntry)?;
+                let level_seed = LevelSeed::BlockInProgress {
+                    block_serializer_kont,
+                    wheel_ref,
+                };
+                child_ref = None;
+                next.item_ready(level_seed, &mut fold_ctx)
+                    .map_err(Error::BuildTree)?
+            },
+            (fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem { level_seed: LevelSeed::Empty, .. })), _) =>
+                return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitItem),
+            (
+                fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
+                    level_seed: LevelSeed::BlockInProgress {
+                        block_serializer_kont: storage::BlockSerializerContinue::Done(..),
+                        ..
+                    },
+                    ..
+                })),
+                _,
+            ) =>
+                return Err(Error::BuildTreeUnexpectedSerializeDoneOnVisitItem),
+
+            // VisitBlockFinish
+            (
+                fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
+                    level_seed: LevelSeed::BlockInProgress {
+                        block_serializer_kont: storage::BlockSerializerContinue::Done(block_bytes),
+                        mut wheel_ref,
+                    },
+                    next,
+                    ..
+                })),
+                None,
+            ) => {
+                let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes.freeze()).await
+                    .map_err(Error::WriteBlock)?;
+                child_ref = Some(BlockRef {
+                    blockwheel_filename: wheel_ref.blockwheel_filename,
+                    block_id,
+                });
+                let level_seed = LevelSeed::Empty;
+                next.block_flushed(level_seed, &mut fold_ctx)
+                    .map_err(Error::BuildTree)?
+            },
+            (fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { level_seed: LevelSeed::Empty, .. })), _) =>
+                return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockFinish),
+            (
+                fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
+                    level_seed: LevelSeed::BlockInProgress {
+                        block_serializer_kont: storage::BlockSerializerContinue::More(..),
+                        ..
+                    },
+                    ..
+                })),
+                _,
+            )=>
+                return Err(Error::BuildTreeUnexpectedSerializeContinueOnVisitBlockFinish),
+            (fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { .. })), Some(..)) =>
+                return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish),
+
+            // Done
+            (fold::Instruction::Done, Some(root_block_ref)) =>
+                break root_block_ref,
+            (fold::Instruction::Done, None) =>
+                return Err(Error::BuildTreeUnexpectedEmptyTree),
+        };
+    };
+    assert_eq!(merge_iter.next().await, None);
 
     Ok(Done {
         search_tree_a_ref,
         search_tree_b_ref,
         root_block,
-        items_count,
+        items_count: tree_items_count,
     })
 }
 

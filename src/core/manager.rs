@@ -265,7 +265,9 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     SearchTreeRef { search_tree_ref, items_count, },
                     state.params.standalone_search_trees_count,
                     &search_trees,
+                    &state.blocks_pool,
                     &state.wheels_pid,
+                    state.params.search_tree_params.tree_block_size,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
@@ -337,7 +339,9 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     SearchTreeRef { search_tree_ref, items_count: done.items_count, },
                     state.params.standalone_search_trees_count,
                     &search_trees,
+                    &state.blocks_pool,
                     &state.wheels_pid,
+                    state.params.search_tree_params.tree_block_size,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
@@ -361,7 +365,9 @@ fn push_search_tree_refs(
     search_tree_ref: SearchTreeRef,
     standalone_search_trees_count: usize,
     search_trees: &Set<search_tree::Pid>,
+    blocks_pool: &BytesPool,
     wheels_pid: &wheels::Pid,
+    tree_block_size: usize,
 )
     -> Option<task::TaskArgs>
 {
@@ -379,7 +385,9 @@ fn push_search_tree_refs(
                 search_tree_b_ref,
                 search_tree_a_pid,
                 search_tree_b_pid,
+                blocks_pool: blocks_pool.clone(),
                 wheels_pid: wheels_pid.clone(),
+                tree_block_size,
             },
         ))
     }

@@ -12,7 +12,8 @@ use serde_derive::{
 
 use bincode::Options;
 
-use super::{
+use crate::{
+    kv,
     blockwheel::block,
 };
 
@@ -64,6 +65,17 @@ pub struct LocalJumpRef {
 pub struct ExternalJumpRef<'a> {
     pub filename: &'a str,
     pub block_id: block::Id,
+}
+
+impl<'a> From<&'a kv::ValueCell> for ValueCell<'a> {
+    fn from(value_cell: &'a kv::ValueCell) -> ValueCell<'a> {
+        match value_cell {
+            &kv::ValueCell { version, cell: kv::Cell::Value(ref value), } =>
+                ValueCell { version, cell: Cell::Value { value: &value.value_bytes, }, },
+            &kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
+                ValueCell { version, cell: Cell::Tombstone, },
+        }
+    }
 }
 
 #[derive(Debug)]

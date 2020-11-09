@@ -1,6 +1,7 @@
 use std::{
     path,
     sync::Arc,
+    ops::Deref,
     time::Duration,
     collections::{
         HashMap,
@@ -56,6 +57,14 @@ impl From<path::PathBuf> for WheelFilename {
         WheelFilename {
             filename: Arc::new(filename.to_string_lossy().to_string()),
         }
+    }
+}
+
+impl Deref for WheelFilename {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.filename
     }
 }
 
