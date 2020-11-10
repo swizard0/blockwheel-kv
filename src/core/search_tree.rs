@@ -700,7 +700,7 @@ impl AsyncTree {
             hash_map::Entry::Occupied(mut oe) =>
                 match oe.get_mut() {
                     AsyncBlock::Awaiting { .. } =>
-                        unreachable!(),
+                        None,
                     AsyncBlock::Ready { block_bytes, more_lookup_requests, } =>
                         match more_lookup_requests.take() {
                             None => {
