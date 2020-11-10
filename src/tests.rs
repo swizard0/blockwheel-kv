@@ -45,7 +45,7 @@ fn stress() {
         .unwrap();
 
     let limits = Limits {
-        active_tasks: 128,
+        active_tasks: 1,
         actions: 1024,
         key_size_bytes: 32,
         value_size_bytes: 4096,
@@ -216,7 +216,10 @@ async fn stress_loop(
             blocks_pool.clone(),
             version_provider.clone(),
             wheels_pid.clone(),
-            blockwheel_kv::Params::default(),
+            blockwheel_kv::Params {
+                standalone_search_trees_count: 1,
+                ..Default::default()
+            },
         ),
     );
 

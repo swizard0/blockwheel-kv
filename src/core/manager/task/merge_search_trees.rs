@@ -97,10 +97,14 @@ pub async fn run(
         &mut search_tree_b_pid,
     ).await?;
 
+    log::debug!(" == MERGE search trees: counting items");
+
     let mut tree_items_count = 0;
     while let Some(..) = merge_iter.next().await {
         tree_items_count += 1;
     }
+
+    log::debug!(" == MERGE search trees: items counted = {}, performing merge", tree_items_count);
 
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(
@@ -258,6 +262,8 @@ pub async fn run(
         };
     };
     assert_eq!(merge_iter.next().await, None);
+
+    log::debug!(" == MERGE search trees: DONE for items count = {}", tree_items_count);
 
     Ok(Done {
         search_tree_a_ref,

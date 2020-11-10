@@ -50,6 +50,9 @@ pub enum Error {
     ReadBlockStorage { block_ref: BlockRef, error: storage::Error, },
 }
 
+pub static RUN_ID: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub async fn run(
     Args {
         block_ref,
@@ -62,9 +65,15 @@ pub async fn run(
 )
     -> Result<Done, Error>
 {
+    let run_id = RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    log::debug!(" ++ {} | iter_block start for {} consumers", run_id, iter_requests_queue.len());
+
     for IterRequest { block_ref: request_block_ref, reply_tx, } in iter_requests_queue.drain(..) {
         assert_eq!(request_block_ref, block_ref);
         let (items_tx, items_rx) = mpsc::channel(0);
+
+        log::debug!(" ++ {} | sending iter rx", run_id);
         if let Err(_send_error) = reply_tx.send(SearchTreeIterRx { items_rx, }) {
             log::warn!("client canceled iter request");
         } else {
@@ -92,11 +101,13 @@ pub async fn run(
                 }),
         };
         if let Some(jump_block_ref) = maybe_jump_block_ref {
+            log::debug!(" ++ {} | requesting iter rec", run_id);
             let (reply_tx, reply_rx) = oneshot::channel();
             if let Err(_send_error) = iter_rec_tx.send(IterRequest { block_ref: jump_block_ref, reply_tx, }).await {
                 log::warn!("search_tree has gone, terminating iter task");
                 break;
             }
+            log::debug!(" ++ {} | waiting for items rx", run_id);
             let mut items_rx = match reply_rx.await {
                 Ok(SearchTreeIterRx { items_rx }) =>
                     items_rx,
@@ -105,6 +116,7 @@ pub async fn run(
                     break;
                 },
             };
+            log::debug!(" ++ {} | broadcasting rec items", run_id);
             while let Some(key_value_pair) = items_rx.next().await {
                 let Broadcasted = broadcast_task(key_value_pair, &mut iters_tx).await;
             }
@@ -124,9 +136,12 @@ pub async fn run(
                 kv::ValueCell { version, cell: kv::Cell::Tombstone, },
         };
 
+        log::debug!(" ++ {} | broadcasting items", run_id);
         let Broadcasted = broadcast_task(kv::KeyValuePair { key, value_cell, }, &mut iters_tx).await;
     }
 
+    iters_tx.clear();
+    log::debug!(" ++ {} | iter done", run_id);
     Ok(Done { block_ref, })
 }
 

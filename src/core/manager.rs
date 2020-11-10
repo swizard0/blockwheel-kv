@@ -316,8 +316,12 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
             },
 
             Event::Task(Ok(task::TaskDone::MergeSearchTrees(done))) => {
+
+                log::debug!("   ;; merge search request done, removing two search_tree and started new on {:?}", done.root_block);
+
                 search_trees.remove(done.search_tree_a_ref).unwrap();
                 search_trees.remove(done.search_tree_b_ref).unwrap();
+
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();
                 child_supervisor_pid.spawn_link_temporary(
@@ -372,6 +376,9 @@ fn push_search_tree_refs(
     -> Option<task::TaskArgs>
 {
     search_tree_refs.push(Reverse(search_tree_ref));
+
+    log::debug!(" ** push_search_tree_refs: {} refs now", search_tree_refs.len());
+
     if search_tree_refs.len() <= standalone_search_trees_count {
         None
     } else {
@@ -379,6 +386,9 @@ fn push_search_tree_refs(
         let Reverse(SearchTreeRef { search_tree_ref: search_tree_b_ref, .. }) = search_tree_refs.pop().unwrap();
         let search_tree_a_pid = search_trees.get(search_tree_a_ref).unwrap().clone();
         let search_tree_b_pid = search_trees.get(search_tree_b_ref).unwrap().clone();
+
+        log::debug!(" ** push_search_tree_refs: MERGING 2 refs, {} refs now", search_tree_refs.len());
+
         Some(task::TaskArgs::MergeSearchTrees(
             task::merge_search_trees::Args {
                 search_tree_a_ref,
