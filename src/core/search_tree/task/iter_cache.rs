@@ -13,14 +13,14 @@ use crate::{
     core::{
         MemCache,
         search_tree::{
-            SearchTreeIterRx,
+            SearchTreeIterItemsRx,
         },
     },
 };
 
 pub struct Args {
     pub cache: Arc<MemCache>,
-    pub reply_tx: oneshot::Sender<SearchTreeIterRx>,
+    pub reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
 }
 
 pub struct Done;
@@ -31,7 +31,7 @@ pub enum Error {
 
 pub async fn run(Args { cache, reply_tx, }: Args) -> Result<Done, Error> {
     let (mut iter_tx, iter_rx) = mpsc::channel(0);
-    let iter = SearchTreeIterRx { items_rx: iter_rx, };
+    let iter = SearchTreeIterItemsRx { items_rx: iter_rx, };
     if let Err(_send_error) = reply_tx.send(iter) {
         log::warn!("client canceled iter request");
     } else {

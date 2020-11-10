@@ -99,7 +99,7 @@ impl GenServer {
         lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
         outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
-        iters_pool: pool::Pool<Vec<SearchTreeIterTx>>,
+        iters_pool: pool::Pool<task::SearchTreeIterSinks>,
         wheels_pid: wheels::Pid,
         params: Params,
         mode: Mode,
@@ -125,16 +125,32 @@ pub enum LookupError {
     GenServer(ero::NoProcError),
 }
 
-pub struct SearchTreeIterTx {
+pub struct SearchTreeIterItemsTx {
     pub items_tx: mpsc::Sender<kv::KeyValuePair>,
 }
 
-pub struct SearchTreeIterRx {
+pub struct SearchTreeIterItemsRx {
     pub items_rx: mpsc::Receiver<kv::KeyValuePair>,
+}
+
+pub struct SearchTreeIterBlockRefsTx {
+    pub block_refs_tx: mpsc::Sender<BlockRef>,
+}
+
+pub struct SearchTreeIterBlockRefsRx {
+    pub block_refs_rx: mpsc::Receiver<BlockRef>,
 }
 
 #[derive(Debug)]
 pub enum IterError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Demolished;
+
+#[derive(Debug)]
+pub enum DemolishError {
     GenServer(ero::NoProcError),
 }
 
@@ -161,7 +177,7 @@ impl Pid {
         }
     }
 
-    pub async fn iter(&mut self) -> Result<SearchTreeIterRx, IterError> {
+    pub async fn iter(&mut self) -> Result<SearchTreeIterItemsRx, IterError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx.send(Request::Iter { reply_tx, }).await
@@ -170,6 +186,21 @@ impl Pid {
             match reply_rx.await {
                 Ok(iter) =>
                     return Ok(iter),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn demolish(&mut self) -> Result<Demolished, DemolishError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Demolish { reply_tx, }).await
+                .map_err(|_send_error| DemolishError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Demolished) =>
+                    return Ok(Demolished),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -184,7 +215,7 @@ struct State {
     lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
     iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
     outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
-    iters_pool: pool::Pool<Vec<SearchTreeIterTx>>,
+    iters_pool: pool::Pool<task::SearchTreeIterSinks>,
     wheels_pid: wheels::Pid,
     params: Params,
     mode: Mode,
@@ -225,7 +256,8 @@ async fn run(state: State) {
 
 enum Request {
     Lookup(task::LookupRequest),
-    Iter { reply_tx: oneshot::Sender<SearchTreeIterRx>, },
+    Iter { reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
+    Demolish { reply_tx: oneshot::Sender<Demolished>, },
 }
 
 #[derive(Debug)]
@@ -237,6 +269,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
+    let mut demolish_reply_tx = None;
 
     let (iter_rec_tx, mut iter_rec_rx) = mpsc::channel(0);
 
@@ -338,7 +371,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     },
                     Mode::Regular { root_block, } => {
                         let maybe_task_args = async_tree.apply_iter_request(
-                            task::IterRequest { block_ref: root_block.clone(), reply_tx, },
+                            task::IterRequest {
+                                block_ref: root_block.clone(),
+                                kind: task::IterRequestKind::Items { reply_tx, },
+                            },
                             &state.blocks_pool,
                             &state.lookup_requests_queue_pool,
                             &state.iter_requests_queue_pool,
@@ -352,6 +388,16 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         }
                     }
                 },
+
+            Event::Request(Some(Request::Demolish { reply_tx, })) =>
+                match &state.mode {
+                    Mode::CacheBootstrap { .. } => {
+                        assert!(demolish_reply_tx.is_none());
+                        demolish_reply_tx = Some(reply_tx);
+                    },
+                    Mode::Regular { .. } =>
+                        (),
+                }
 
             Event::IterRec(iter_request) => {
                 match &state.mode {
@@ -410,7 +456,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             tasks_count += 1;
                         }
                         if !iter_requests_queue.is_empty() {
-                            let mut iters_tx = state.iters_pool.lend(Vec::new);
+                            let mut iters_tx = state.iters_pool.lend(task::SearchTreeIterSinks::default);
                             iters_tx.clear();
                             tasks.push(
                                 task::run_args(
@@ -567,7 +613,7 @@ impl AsyncTree {
         blocks_pool: &BytesPool,
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
-        iters_pool: &pool::Pool<Vec<SearchTreeIterTx>>,
+        iters_pool: &pool::Pool<task::SearchTreeIterSinks>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
     )
@@ -586,7 +632,7 @@ impl AsyncTree {
                             iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                         iter_requests_queue.clear();
                         iter_requests_queue.push(iter_request);
-                        let mut iters_tx = iters_pool.lend(Vec::new);
+                        let mut iters_tx = iters_pool.lend(task::SearchTreeIterSinks::default);
                         iters_tx.clear();
                         Some(task::TaskArgs::IterBlock(task::iter_block::Args {
                             block_ref,

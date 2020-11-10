@@ -52,7 +52,7 @@ fn stress() {
     };
 
     let work_block_size_bytes = 16 * 1024;
-    let init_wheel_size_bytes = 2 * 1024 * 1024;
+    let init_wheel_size_bytes = 4 * 1024 * 1024;
 
     // let runtime = tokio::runtime::Builder::new_multi_thread()
     //     .build()

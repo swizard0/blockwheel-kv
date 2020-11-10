@@ -25,9 +25,12 @@ use crate::{
                 ItersTx,
                 IterRequest,
                 IterRequestsQueue,
+                IterRequestKind,
             },
-            SearchTreeIterTx,
-            SearchTreeIterRx,
+            SearchTreeIterItemsTx,
+            SearchTreeIterItemsRx,
+            SearchTreeIterBlockRefsTx,
+            SearchTreeIterBlockRefsRx,
         },
     },
 };
@@ -62,13 +65,25 @@ pub async fn run(
 )
     -> Result<Done, Error>
 {
-    for IterRequest { block_ref: request_block_ref, reply_tx, } in iter_requests_queue.drain(..) {
+    for IterRequest { block_ref: request_block_ref, kind, } in iter_requests_queue.drain(..) {
         assert_eq!(request_block_ref, block_ref);
-        let (items_tx, items_rx) = mpsc::channel(0);
-        if let Err(_send_error) = reply_tx.send(SearchTreeIterRx { items_rx, }) {
-            log::warn!("client canceled iter request");
-        } else {
-            iters_tx.push(SearchTreeIterTx { items_tx, });
+        match kind {
+            IterRequestKind::Items { reply_tx, } => {
+                let (items_tx, items_rx) = mpsc::channel(0);
+                if let Err(_send_error) = reply_tx.send(SearchTreeIterItemsRx { items_rx, }) {
+                    log::warn!("client canceled iter items request");
+                } else {
+                    iters_tx.items_txs.push(SearchTreeIterItemsTx { items_tx, });
+                }
+            },
+            IterRequestKind::BlockRefs { reply_tx, } => {
+                let (block_refs_tx, block_refs_rx) = mpsc::channel(0);
+                if let Err(_send_error) = reply_tx.send(SearchTreeIterBlockRefsRx { block_refs_rx, }) {
+                    log::warn!("client canceled iter block refs request");
+                } else {
+                    iters_tx.block_refs_txs.push(SearchTreeIterBlockRefsTx { block_refs_tx, });
+                }
+            },
         }
     }
 
@@ -92,39 +107,59 @@ pub async fn run(
                 }),
         };
         if let Some(jump_block_ref) = maybe_jump_block_ref {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            if let Err(_send_error) = iter_rec_tx.send(IterRequest { block_ref: jump_block_ref, reply_tx, }).await {
-                log::warn!("search_tree has gone, terminating iter task");
-                break;
-            }
-            let mut items_rx = match reply_rx.await {
-                Ok(SearchTreeIterRx { items_rx }) =>
-                    items_rx,
-                Err(oneshot::Canceled) => {
+            let items_txs = &mut iters_tx.items_txs;
+            // let block_refs_txs = &mut iters_tx.block_refs_txs;
+
+            let forward_items_task = async {
+                if items_txs.is_empty() {
+                    return false;
+                }
+                let (reply_tx, reply_rx) = oneshot::channel();
+                let send_result = iter_rec_tx.send(IterRequest {
+                    block_ref: jump_block_ref,
+                    kind: IterRequestKind::Items {  reply_tx, },
+                }).await;
+                if let Err(_send_error) = send_result {
                     log::warn!("search_tree has gone, terminating iter task");
-                    break;
-                },
+                    return true;
+                }
+                let mut items_rx = match reply_rx.await {
+                    Ok(SearchTreeIterItemsRx { items_rx }) =>
+                        items_rx,
+                    Err(oneshot::Canceled) => {
+                        log::warn!("search_tree has gone, terminating iter task");
+                        return true;
+                    },
+                };
+                while let Some(key_value_pair) = items_rx.next().await {
+                    let Broadcasted = broadcast_items_task(key_value_pair, items_txs).await;
+                }
+                false
             };
-            while let Some(key_value_pair) = items_rx.next().await {
-                let Broadcasted = broadcast_task(key_value_pair, &mut iters_tx).await;
+
+            let force_break = forward_items_task.await;
+            if force_break {
+                break;
             }
         }
 
-        let mut key_bytes = blocks_pool.lend();
-        key_bytes.extend_from_slice(entry.key);
-        let key = kv::Key { key_bytes: key_bytes.freeze(), };
+        if !iters_tx.items_txs.is_empty() {
+            let mut key_bytes = blocks_pool.lend();
+            key_bytes.extend_from_slice(entry.key);
+            let key = kv::Key { key_bytes: key_bytes.freeze(), };
 
-        let value_cell = match entry.value_cell {
-            storage::ValueCell { version, cell: storage::Cell::Value { value, }, } => {
-                let mut value_bytes = blocks_pool.lend();
-                value_bytes.extend_from_slice(value);
-                kv::ValueCell { version, cell: kv::Cell::Value(kv::Value { value_bytes: value_bytes.freeze(), }), }
-            },
-            storage::ValueCell { version, cell: storage::Cell::Tombstone, } =>
-                kv::ValueCell { version, cell: kv::Cell::Tombstone, },
-        };
+            let value_cell = match entry.value_cell {
+                storage::ValueCell { version, cell: storage::Cell::Value { value, }, } => {
+                    let mut value_bytes = blocks_pool.lend();
+                    value_bytes.extend_from_slice(value);
+                    kv::ValueCell { version, cell: kv::Cell::Value(kv::Value { value_bytes: value_bytes.freeze(), }), }
+                },
+                storage::ValueCell { version, cell: storage::Cell::Tombstone, } =>
+                    kv::ValueCell { version, cell: kv::Cell::Tombstone, },
+            };
 
-        let Broadcasted = broadcast_task(kv::KeyValuePair { key, value_cell, }, &mut iters_tx).await;
+            let Broadcasted = broadcast_items_task(kv::KeyValuePair { key, value_cell, }, &mut iters_tx.items_txs).await;
+        }
     }
 
     iters_tx.clear();
@@ -133,10 +168,10 @@ pub async fn run(
 
 struct Broadcasted;
 
-async fn broadcast_task(key_value_pair: kv::KeyValuePair, iters_tx: &mut ItersTx) -> Broadcasted {
+async fn broadcast_items_task(key_value_pair: kv::KeyValuePair, items_txs: &mut [SearchTreeIterItemsTx]) -> Broadcasted {
     let task = future::join_all(
-        iters_tx.iter_mut()
-            .map(|SearchTreeIterTx { items_tx, }| {
+        items_txs.iter_mut()
+            .map(|SearchTreeIterItemsTx { items_tx, }| {
                 let key_value_pair = key_value_pair.clone();
                 async move {
                     items_tx.send(key_value_pair).await.ok();

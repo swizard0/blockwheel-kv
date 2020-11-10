@@ -16,8 +16,10 @@ use crate::{
     core::{
         BlockRef,
         search_tree::{
-            SearchTreeIterTx,
-            SearchTreeIterRx,
+            SearchTreeIterItemsTx,
+            SearchTreeIterItemsRx,
+            SearchTreeIterBlockRefsTx,
+            SearchTreeIterBlockRefsRx,
         },
     },
 };
@@ -50,11 +52,29 @@ pub struct LookupRequest {
 
 pub type IterRequestsQueueType = Vec<IterRequest>;
 pub type IterRequestsQueue = Unique<IterRequestsQueueType>;
-pub type ItersTx = Unique<Vec<SearchTreeIterTx>>;
+pub type ItersTx = Unique<SearchTreeIterSinks>;
+
+#[derive(Default)]
+pub struct SearchTreeIterSinks {
+    pub items_txs: Vec<SearchTreeIterItemsTx>,
+    pub block_refs_txs: Vec<SearchTreeIterBlockRefsTx>,
+}
+
+impl SearchTreeIterSinks {
+    pub fn clear(&mut self) {
+        self.items_txs.clear();
+        self.block_refs_txs.clear();
+    }
+}
 
 pub struct IterRequest {
     pub block_ref: BlockRef,
-    pub reply_tx: oneshot::Sender<SearchTreeIterRx>,
+    pub kind: IterRequestKind,
+}
+
+pub enum IterRequestKind {
+    Items { reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
+    BlockRefs { reply_tx: oneshot::Sender<SearchTreeIterBlockRefsRx>, },
 }
 
 #[derive(Debug)]

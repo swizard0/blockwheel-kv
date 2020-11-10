@@ -354,7 +354,7 @@ async fn iter_and_fetch(
 )
     -> Result<(mpsc::Receiver<kv::KeyValuePair>, Option<kv::KeyValuePair>), Error>
 {
-    let search_tree::SearchTreeIterRx { mut items_rx, } = search_tree_pid.iter().await
+    let search_tree::SearchTreeIterItemsRx { mut items_rx, } = search_tree_pid.iter().await
         .map_err(|error| Error::SearchTreeIter { search_tree_ref, error, })?;
     let maybe_item = items_rx.next().await;
     Ok((items_rx, maybe_item))
