@@ -233,13 +233,7 @@ enum Error {
     Task(task::Error),
 }
 
-pub static RUN_ID: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-
-    let run_id = RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
@@ -269,9 +263,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Task(T),
             IterRec(I),
         }
-
-        log::debug!(" -- {} | waiting for event on FuturesUnordered.len() = {}... ", run_id, tasks_count);
-
         let event = if tasks_count == 0 {
             select! {
                 result = state.fused_request_rx.next() =>
@@ -304,26 +295,15 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             }
         };
 
-        log::debug!(" -- {} | EVENT GOT: {}", run_id, match event {
-            Event::Request(..) => "request",
-            Event::Task(..) => "task",
-            Event::IterRec(..) => "iter_rec",
-        }
-        );
-
         match event {
             Event::Request(None) => {
                 log::info!("requests sink channel depleted: terminating");
                 return Ok(());
             },
 
-            Event::Request(Some(Request::Lookup(lookup_request))) => {
-
+            Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-
-                        log::debug!(" -- {} | LOOKUP request @ CACHE", run_id);
-
                         let result = cache.get(&**lookup_request.key.key_bytes)
                             .cloned();
                         if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result)) {
@@ -331,9 +311,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         }
                     },
                     Mode::Regular { root_block, } => {
-
-                        log::debug!(" -- {} | LOOKUP request @ {:?}", run_id, root_block);
-
                         let maybe_task_args = async_tree.apply_lookup_request(
                             lookup_request,
                             root_block.clone(),
@@ -346,16 +323,11 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             tasks_count += 1;
                         }
                     },
-                }
-            },
+                },
 
-            Event::Request(Some(Request::Iter { reply_tx, })) => {
-
+            Event::Request(Some(Request::Iter { reply_tx, })) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-
-                        log::debug!(" -- {} | ITER request! @ CACHE", run_id);
-
                         tasks.push(task::run_args(task::TaskArgs::IterCache(
                             task::iter_cache::Args {
                                 cache: cache.clone(),
@@ -365,9 +337,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         tasks_count += 1;
                     },
                     Mode::Regular { root_block, } => {
-
-                        log::debug!(" -- {} | ITER request! @ {:?}", run_id, root_block);
-
                         let maybe_task_args = async_tree.apply_iter_request(
                             task::IterRequest { block_ref: root_block.clone(), reply_tx, },
                             &state.blocks_pool,
@@ -382,14 +351,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             tasks_count += 1;
                         }
                     }
-                }
-            },
+                },
 
             Event::IterRec(iter_request) => {
-
-                log::debug!(" -- {} | ITER_REC request! @ {:?}",
-                            run_id, match &state.mode { Mode::Regular { root_block, } => root_block, _ => unreachable!(), });
-
                 match &state.mode {
                     Mode::CacheBootstrap { .. } =>
                         unreachable!(),
@@ -411,23 +375,15 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) => {
-
-                log::debug!(" -- {} | BOOTSTRAP task! @ {:?}", run_id, root_block);
-
+            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
                 match mem::replace(&mut state.mode, Mode::Regular { root_block, }) {
                     Mode::CacheBootstrap { .. } =>
                         (),
                     Mode::Regular { .. } =>
                         unreachable!(),
-                }
-            },
+                },
 
             Event::Task(Ok(task::TaskDone::LoadBlock(task::load_block::Done { block_ref, block_bytes, }))) => {
-
-                log::debug!(" -- {} | LOAD_BLOCK task! @ {:?}",
-                            run_id, match &state.mode { Mode::Regular { root_block, } => root_block, _ => unreachable!(), });
-
                 let async_block = async_tree.get_mut(&block_ref).unwrap();
                 let prev_async_block = mem::replace(async_block, AsyncBlock::Ready {
                     block_bytes: block_bytes.clone(),
@@ -437,10 +393,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     AsyncBlock::Ready { .. } =>
                         unreachable!(),
                     AsyncBlock::Awaiting { lookup_requests_queue, iter_requests_queue, } => {
-
-                        log::debug!(" -- {} | LOAD_BLOCK lookup_requests_queue = {}, iter_requests_queue = {}",
-                                    run_id, lookup_requests_queue.len(), iter_requests_queue.len());
-
                         if !lookup_requests_queue.is_empty() {
                             let mut outcomes = state.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
@@ -479,10 +431,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             },
 
             Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, mut outcomes, }))) => {
-
-                log::debug!(" -- {} | SEARCH_BLOCK task! @ {:?}",
-                            run_id, match &state.mode { Mode::Regular { root_block, } => root_block, _ => unreachable!(), });
-
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
                     match outcome {
                         task::Outcome::Found { value_cell, } => {
@@ -522,18 +470,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) => {
-
-                log::debug!(" -- {} | ITER_CACHE task!", run_id);
-
-                ()
-            },
+            Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
-
-                log::debug!(" -- {} | ITER_BLOCK task! @ {:?}",
-                            run_id, match &state.mode { Mode::Regular { root_block, } => root_block, _ => unreachable!(), });
-
                 let maybe_task_args = async_tree.drop_or_search_more(
                     &block_ref,
                     &state.blocks_pool,
@@ -638,16 +578,10 @@ impl AsyncTree {
             hash_map::Entry::Occupied(mut oe) =>
                 match oe.get_mut() {
                     AsyncBlock::Awaiting { iter_requests_queue, .. } => {
-
-                        log::debug!("   ;; iter request hits AsyncBlock::Awaiting on {:?}", block_ref);
-
                         iter_requests_queue.push(iter_request);
                         None
                     },
                     AsyncBlock::Ready { block_bytes, .. } => {
-
-                        log::debug!("   ;; iter request hits AsyncBlock::Ready on {:?}", block_ref);
-
                         let mut iter_requests_queue =
                             iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                         iter_requests_queue.clear();
@@ -666,9 +600,6 @@ impl AsyncTree {
                 },
 
             hash_map::Entry::Vacant(ve) => {
-
-                log::debug!("   ;; iter request hits EMPTY slot for async block on {:?}", block_ref);
-
                 let mut iter_requests_queue =
                     iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                 iter_requests_queue.clear();
@@ -704,24 +635,17 @@ impl AsyncTree {
                     AsyncBlock::Ready { block_bytes, more_lookup_requests, } =>
                         match more_lookup_requests.take() {
                             None => {
-
-                                log::debug!("   ;;;; dropping block {:?}", block_ref);
-
                                 oe.remove();
                                 None
                             },
-                            Some(lookup_requests_queue) => {
-
-                                log::debug!("   ;;;; restarting search on block {:?} with {} requests", block_ref, lookup_requests_queue.len());
-
+                            Some(lookup_requests_queue) =>
                                 Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                                     block_ref: block_ref.clone(),
                                     blocks_pool: blocks_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     lookup_requests_queue,
                                     outcomes: outcomes_pool.lend(Vec::new),
-                                }))
-                            },
+                                })),
                         },
                 },
 

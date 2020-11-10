@@ -80,9 +80,6 @@ pub enum Error {
     WriteBlock(blockwheel::WriteBlockError),
 }
 
-pub static RUN_ID: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 pub async fn run(
     Args {
         search_tree_a_ref,
@@ -96,8 +93,6 @@ pub async fn run(
 )
     -> Result<Done, Error>
 {
-    let run_id = RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
     let mut merge_iter = MergeIter::new(
         search_tree_a_ref,
         search_tree_b_ref,
@@ -105,14 +100,10 @@ pub async fn run(
         &mut search_tree_b_pid,
     ).await?;
 
-    log::debug!(" == {} | MERGE search trees: counting items", run_id);
-
     let mut tree_items_count = 0;
     while let Some(..) = merge_iter.next().await {
         tree_items_count += 1;
     }
-
-    log::debug!(" == {} | MERGE search trees: items counted = {}, performing merge", run_id, tree_items_count);
 
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(
@@ -143,10 +134,7 @@ pub async fn run(
             .map_err(Error::BuildTree)?;
         kont = match kont_step {
             // VisitLevel
-            fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, level_index, .. })) => {
-
-                log::debug!(" == {} | VisitLevel level_index = {}", run_id, level_index);
-
+            fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, .. })) => {
                 next.level_ready(LevelSeed::Empty, &mut fold_ctx)
                     .map_err(Error::BuildTree)?
             },
@@ -155,20 +143,10 @@ pub async fn run(
             fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart {
                 level_seed: LevelSeed::Empty,
                 level_index,
-                block_index,
                 items_count,
                 next,
                 ..
             })) => {
-
-                log::debug!(
-                    " == {} | VisitBlockStart level_index = {} block_index = {} items_count = {}",
-                    run_id,
-                    level_index,
-                    block_index,
-                    items_count,
-                );
-
                 let wheel_ref = wheels_pid.acquire().await
                     .map_err(|ero::NoProcError| Error::WheelsGone)?
                     .ok_or(Error::WheelsEmpty)?;
@@ -196,21 +174,9 @@ pub async fn run(
                     block_serializer_kont: storage::BlockSerializerContinue::More(block_serializer),
                     wheel_ref,
                 },
-                level_index,
-                block_index,
-                block_item_index,
                 next,
                 ..
             })) => {
-
-                log::debug!(
-                    " == {} | VisitItem, level_index = {}, block_index = {}, item_index = {}",
-                    run_id,
-                    level_index,
-                    block_index,
-                    block_item_index,
-                );
-
                 let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await
                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
                 let child_ref_taken = child_ref.take();
@@ -261,13 +227,7 @@ pub async fn run(
                 next,
                 ..
             })) => {
-
-                log::debug!(" == {} | VisitBlockFinish level_index = {}, block_index = {}", run_id, level_index, block_index);
-
                 if let Some(..) = child_ref {
-
-                    log::error!(" == {} | sketch = {:?}", run_id, sketch.levels());
-
                     return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index, block_index, });
                 }
 
@@ -303,8 +263,6 @@ pub async fn run(
         };
     };
     assert_eq!(merge_iter.next().await, None);
-
-    log::debug!(" == MERGE search trees: DONE for items count = {}", tree_items_count);
 
     Ok(Done {
         search_tree_a_ref,
