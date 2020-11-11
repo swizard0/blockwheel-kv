@@ -316,8 +316,19 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
             },
 
             Event::Task(Ok(task::TaskDone::MergeSearchTrees(done))) => {
-                search_trees.remove(done.search_tree_a_ref).unwrap();
-                search_trees.remove(done.search_tree_b_ref).unwrap();
+                let search_tree_a_pid = search_trees.remove(done.search_tree_a_ref).unwrap();
+                tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
+                    task::demolish_search_tree::Args {
+                        search_tree_pid: search_tree_a_pid,
+                    },
+                )));
+
+                let search_tree_b_pid = search_trees.remove(done.search_tree_b_ref).unwrap();
+                tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
+                    task::demolish_search_tree::Args {
+                        search_tree_pid: search_tree_b_pid,
+                    },
+                )));
 
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();
@@ -348,6 +359,9 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     tasks.push(task::run_args(task_args));
                 }
             },
+
+            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) =>
+                (),
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),

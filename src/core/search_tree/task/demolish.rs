@@ -98,8 +98,7 @@ pub async fn run(Args { block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, 
             Event::RemoveTask(status) => {
                 let () = status?;
                 blocks_deleted += 1;
-                if remove_tasks_count == 0 {
-                    assert!(fused_block_refs_rx.is_terminated());
+                if remove_tasks_count == 0 && fused_block_refs_rx.is_terminated() {
                     return Ok(Done { blocks_deleted, });
                 }
             },
