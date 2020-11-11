@@ -438,3 +438,10 @@ impl AddAssign for Info {
         self.tombstones_count += rhs.tombstones_count;
     }
 }
+
+impl Info {
+    pub fn reset(&mut self) {
+        self.alive_cells_count = 0;
+        self.tombstones_count = 0;
+    }
+}

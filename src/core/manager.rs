@@ -284,7 +284,7 @@ enum Error {
 struct InfoRequest {
     reply_tx: oneshot::Sender<Info>,
     pending_count: usize,
-    info_fold: Option<Info>,
+    info_fold: Info,
 }
 
 struct LookupRequest {
@@ -393,7 +393,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 let request_ref = info_requests.insert(InfoRequest {
                     reply_tx,
                     pending_count: 1 + search_trees.len(),
-                    info_fold: None,
+                    info_fold: Info::default(),
                 });
                 tasks.push(task::run_args(task::TaskArgs::InfoButcher(
                     task::info_butcher::Args {
@@ -468,8 +468,17 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
 
             Event::Task(Ok(task::TaskDone::InfoButcher(task::info_butcher::Done { request_ref, info, }))) |
             Event::Task(Ok(task::TaskDone::InfoSearchTree(task::info_search_tree::Done { request_ref, info, }))) => {
-
-                unimplemented!()
+                let info_request = info_requests.get_mut(request_ref).unwrap();
+                assert!(info_request.pending_count > 0);
+                info_request.pending_count -= 1;
+                info_request.info_fold += info;
+                if info_request.pending_count == 0 {
+                    let info_request = info_requests.remove(request_ref).unwrap();
+                    let info = info_request.info_fold;
+                    if let Err(_send_error) = info_request.reply_tx.send(info) {
+                        log::warn!("client canceled info request");
+                    }
+                }
             },
 
             Event::Task(Ok(task::TaskDone::InsertButcher(task::insert_butcher::Done))) =>

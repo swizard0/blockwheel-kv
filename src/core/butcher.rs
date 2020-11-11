@@ -197,12 +197,12 @@ enum Error {
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let mut memcache = MemCache::new();
+    let mut current_info = Info::default();
 
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
             Request::Info(RequestInfo { reply_tx, }) => {
-                let info = Info::default();
-                if let Err(_send_error) = reply_tx.send(info) {
+                if let Err(_send_error) = reply_tx.send(current_info) {
                     log::warn!("client canceled info request");
                 }
             },
@@ -215,11 +215,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     cell: kv::Cell::Value(value),
                 };
                 let maybe_prev = memcache.insert(ord_key.clone(), value_cell);
+                if maybe_prev.is_none() {
+                    current_info.alive_cells_count += 1;
+                }
                 if let Err(_send_error) = reply_tx.send(Inserted { version, }) {
                     log::warn!("client canceled insert request");
                     match maybe_prev {
                         None => {
                             memcache.remove(&ord_key);
+                            current_info.alive_cells_count -= 1;
                         },
                         Some(prev_value_cell) => {
                             memcache.insert(ord_key, prev_value_cell);
@@ -228,6 +232,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
+                    current_info.reset();
                     if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
                         log::warn!("manager has gone during flush, terminating");
                         break;
@@ -251,11 +256,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     cell: kv::Cell::Tombstone,
                 };
                 let maybe_prev = memcache.insert(ord_key.clone(), value_cell);
+                if maybe_prev.is_none() {
+                    current_info.tombstones_count += 1;
+                }
                 if let Err(_send_error) = reply_tx.send(Removed { version, }) {
                     log::warn!("client canceled remove request");
                     match maybe_prev {
                         None => {
                             memcache.remove(&ord_key);
+                            current_info.tombstones_count -= 1;
                         },
                         Some(prev_value_cell) => {
                             memcache.insert(ord_key, prev_value_cell);
@@ -264,6 +273,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 } else if memcache.len() >= state.params.tree_block_size {
                     // flush tree block
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
+                    current_info.reset();
                     if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
                         log::warn!("manager has gone during flush, terminating");
                         break;
@@ -272,10 +282,16 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             Request::Flush(RequestFlush { reply_tx, }) => {
-                let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
-                if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
-                    log::warn!("manager has gone during flush, terminating");
-                    break;
+                if !memcache.is_empty() {
+                    let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
+                    current_info.reset();
+                    if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
+                        log::warn!("manager has gone during flush, terminating");
+                        break;
+                    }
+                }
+                if let Err(_send_error) = reply_tx.send(Flushed) {
+                    log::warn!("client canceled flush request");
                 }
             },
         }
