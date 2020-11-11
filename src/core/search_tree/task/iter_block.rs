@@ -107,39 +107,50 @@ pub async fn run(
                 }),
         };
         if let Some(jump_block_ref) = maybe_jump_block_ref {
-            let items_txs = &mut iters_tx.items_txs;
-            // let block_refs_txs = &mut iters_tx.block_refs_txs;
-
-            let forward_items_task = async {
-                if items_txs.is_empty() {
-                    return false;
-                }
+            if !iters_tx.items_txs.is_empty() {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let send_result = iter_rec_tx.send(IterRequest {
-                    block_ref: jump_block_ref,
-                    kind: IterRequestKind::Items {  reply_tx, },
+                    block_ref: jump_block_ref.clone(),
+                    kind: IterRequestKind::Items { reply_tx, },
                 }).await;
                 if let Err(_send_error) = send_result {
                     log::warn!("search_tree has gone, terminating iter task");
-                    return true;
+                    break;
                 }
                 let mut items_rx = match reply_rx.await {
                     Ok(SearchTreeIterItemsRx { items_rx }) =>
                         items_rx,
                     Err(oneshot::Canceled) => {
                         log::warn!("search_tree has gone, terminating iter task");
-                        return true;
+                        break;
                     },
                 };
                 while let Some(key_value_pair) = items_rx.next().await {
-                    let Broadcasted = broadcast_items_task(key_value_pair, items_txs).await;
+                    let Broadcasted = broadcast_items_task(key_value_pair, &mut iters_tx.items_txs).await;
                 }
-                false
-            };
+            }
 
-            let force_break = forward_items_task.await;
-            if force_break {
-                break;
+            if !iters_tx.block_refs_txs.is_empty() {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                let send_result = iter_rec_tx.send(IterRequest {
+                    block_ref: jump_block_ref.clone(),
+                    kind: IterRequestKind::BlockRefs { reply_tx, },
+                }).await;
+                if let Err(_send_error) = send_result {
+                    log::warn!("search_tree has gone, terminating iter task");
+                    break;
+                }
+                let mut block_refs_rx = match reply_rx.await {
+                    Ok(SearchTreeIterBlockRefsRx { block_refs_rx }) =>
+                        block_refs_rx,
+                    Err(oneshot::Canceled) => {
+                        log::warn!("search_tree has gone, terminating iter task");
+                        break;
+                    },
+                };
+                while let Some(block_ref) = block_refs_rx.next().await {
+                    let Broadcasted = broadcast_block_refs_task(block_ref, &mut iters_tx.block_refs_txs).await;
+                }
             }
         }
 
@@ -162,6 +173,10 @@ pub async fn run(
         }
     }
 
+    if !iters_tx.block_refs_txs.is_empty() {
+        let Broadcasted = broadcast_block_refs_task(block_ref.clone(), &mut iters_tx.block_refs_txs).await;
+    }
+
     iters_tx.clear();
     Ok(Done { block_ref, })
 }
@@ -175,6 +190,20 @@ async fn broadcast_items_task(key_value_pair: kv::KeyValuePair, items_txs: &mut 
                 let key_value_pair = key_value_pair.clone();
                 async move {
                     items_tx.send(key_value_pair).await.ok();
+                }
+            }),
+    );
+    let _vec: Vec<()> = task.await;
+    Broadcasted
+}
+
+async fn broadcast_block_refs_task(block_ref: BlockRef, block_refs_txs: &mut [SearchTreeIterBlockRefsTx]) -> Broadcasted {
+    let task = future::join_all(
+        block_refs_txs.iter_mut()
+            .map(|SearchTreeIterBlockRefsTx { block_refs_tx, }| {
+                let block_ref = block_ref.clone();
+                async move {
+                    block_refs_tx.send(block_ref).await.ok();
                 }
             }),
     );
