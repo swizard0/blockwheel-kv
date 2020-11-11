@@ -175,6 +175,11 @@ pub enum RemoveError {
     GenServer(ero::NoProcError),
 }
 
+#[derive(Debug)]
+pub enum FlushError {
+    GenServer(ero::NoProcError),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Inserted {
     pub version: u64,
@@ -184,6 +189,9 @@ pub struct Inserted {
 pub struct Removed {
     pub version: u64,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Flushed;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
@@ -264,6 +272,21 @@ impl Pid {
             }
         }
     }
+
+    pub async fn flush(&mut self) -> Result<Flushed, FlushError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Flush(RequestFlush { reply_tx, })).await
+                .map_err(|_send_error| FlushError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(result) =>
+                    return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 struct State {
@@ -281,6 +304,7 @@ pub enum Request {
     Insert(RequestInsert),
     Lookup(RequestLookup),
     Remove(RequestRemove),
+    Flush(RequestFlush),
 }
 
 #[derive(Debug)]
@@ -305,6 +329,11 @@ pub struct RequestLookup {
 pub struct RequestRemove {
     pub key: kv::Key,
     pub reply_tx: oneshot::Sender<Removed>,
+}
+
+#[derive(Debug)]
+pub struct RequestFlush {
+    pub reply_tx: oneshot::Sender<Flushed>,
 }
 
 
@@ -378,6 +407,20 @@ async fn busyloop(
                 };
                 if let Err(_send_error) = reply_tx.send(status) {
                     log::warn!("client canceled remove request");
+                }
+            },
+
+            Request::Flush(RequestFlush { reply_tx, }) => {
+                let status = match manager_pid.flush_all().await {
+                    Ok(Flushed) =>
+                        Flushed,
+                    Err(core::manager::FlushError::GenServer(ero::NoProcError)) => {
+                        log::warn!("manager has gone during flush, terminating");
+                        break;
+                    },
+                };
+                if let Err(_send_error) = reply_tx.send(status) {
+                    log::warn!("client canceled flush request");
                 }
             },
         }

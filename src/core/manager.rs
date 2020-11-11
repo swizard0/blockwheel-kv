@@ -45,6 +45,8 @@ use crate::{
         MemCache,
     },
     RequestLookup,
+    RequestFlush,
+    Flushed,
 };
 
 mod task;
@@ -143,13 +145,16 @@ struct State {
 enum Request {
     ButcherFlush { cache: Arc<MemCache>, },
     Lookup(RequestLookup),
+    FlushAll(RequestFlush),
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Flushed;
 
 #[derive(Debug)]
 pub enum LookupError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
+pub enum FlushError {
     GenServer(ero::NoProcError),
 }
 
@@ -174,6 +179,22 @@ impl Pid {
             match reply_rx.await {
                 Ok(result) =>
                     return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn flush_all(&mut self) -> Result<Flushed, FlushError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::FlushAll(RequestFlush { reply_tx, })).await
+                .map_err(|_send_error| FlushError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Flushed) =>
+                    return Ok(Flushed),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -296,6 +317,11 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         },
                     )));
                 }
+            },
+
+            Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx, }))) => {
+
+                unimplemented!()
             },
 
             Event::Task(Ok(task::TaskDone::LookupButcher(task::lookup_butcher::Done { request_ref, found, }))) |

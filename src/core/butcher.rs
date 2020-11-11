@@ -32,10 +32,12 @@ use crate::{
     Request,
     Inserted,
     Removed,
+    Flushed,
     RequestInfo,
     RequestInsert,
     RequestLookup,
     RequestRemove,
+    RequestFlush,
 };
 
 #[derive(Clone, Debug)]
@@ -252,6 +254,11 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                         break;
                     }
                 }
+            },
+
+            Request::Flush(RequestFlush { reply_tx, }) => {
+
+                unimplemented!()
             },
         }
     }
