@@ -201,7 +201,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
             Request::Info(RequestInfo { reply_tx, }) => {
-                let info = Info { };
+                let info = Info::default();
                 if let Err(_send_error) = reply_tx.send(info) {
                     log::warn!("client canceled info request");
                 }
@@ -272,8 +272,11 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             Request::Flush(RequestFlush { reply_tx, }) => {
-
-                unimplemented!()
+                let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
+                if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
+                    log::warn!("manager has gone during flush, terminating");
+                    break;
+                }
             },
         }
     }

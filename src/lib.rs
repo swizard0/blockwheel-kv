@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
-use std::time::Duration;
+use std::{
+    ops::AddAssign,
+    time::Duration,
+};
 
 use futures::{
     stream,
@@ -198,6 +201,8 @@ pub struct Flushed;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
+    pub alive_cells_count: usize,
+    pub tombstones_count: usize,
 }
 
 impl Pid {
@@ -425,4 +430,11 @@ async fn busyloop(
         }
     }
     Ok(())
+}
+
+impl AddAssign for Info {
+    fn add_assign(&mut self, rhs: Info) {
+        self.alive_cells_count += rhs.alive_cells_count;
+        self.tombstones_count += rhs.tombstones_count;
+    }
 }
