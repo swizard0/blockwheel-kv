@@ -29,6 +29,7 @@ pub mod load_block;
 pub mod search_block;
 pub mod iter_cache;
 pub mod iter_block;
+pub mod demolish;
 
 pub type LookupRequestsQueueType = BinaryHeap<LookupRequest>;
 pub type LookupRequestsQueue = Unique<LookupRequestsQueueType>;
@@ -87,6 +88,7 @@ pub enum TaskArgs {
     SearchBlock(search_block::Args),
     IterCache(iter_cache::Args),
     IterBlock(iter_block::Args),
+    Demolish(demolish::Args),
 }
 
 pub enum TaskDone {
@@ -95,6 +97,7 @@ pub enum TaskDone {
     SearchBlock(search_block::Done),
     IterCache(iter_cache::Done),
     IterBlock(iter_block::Done),
+    Demolish(demolish::Done),
 }
 
 #[derive(Debug)]
@@ -104,6 +107,7 @@ pub enum Error {
     SearchBlock(search_block::Error),
     IterCache(iter_cache::Error),
     IterBlock(iter_block::Error),
+    Demolish(demolish::Error),
 }
 
 pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
@@ -132,6 +136,11 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
             TaskDone::IterBlock(
                 iter_block::run(args).await
                     .map_err(Error::IterBlock)?,
+            ),
+        TaskArgs::Demolish(args) =>
+            TaskDone::Demolish(
+                demolish::run(args).await
+                    .map_err(Error::Demolish)?,
             ),
     })
 }

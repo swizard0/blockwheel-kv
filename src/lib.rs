@@ -41,6 +41,7 @@ pub struct Params {
     pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
+    pub search_tree_remove_tasks_limit: usize,
     pub standalone_search_trees_count: usize,
 }
 
@@ -53,6 +54,7 @@ impl Default for Params {
             butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
+            search_tree_remove_tasks_limit: 64,
             standalone_search_trees_count: 2,
         }
     }
@@ -122,6 +124,7 @@ impl GenServer {
                     search_tree_params: core::search_tree::Params {
                         task_restart_sec: state.params.search_tree_task_restart_sec,
                         tree_block_size: state.params.tree_block_size,
+                        remove_tasks_limit: state.params.search_tree_remove_tasks_limit,
                     },
                     standalone_search_trees_count: state.params.standalone_search_trees_count,
                 };

@@ -56,6 +56,7 @@ mod task;
 pub struct Params {
     pub task_restart_sec: usize,
     pub tree_block_size: usize,
+    pub remove_tasks_limit: usize,
 }
 
 impl Default for Params {
@@ -63,6 +64,7 @@ impl Default for Params {
         Params {
             task_restart_sec: 1,
             tree_block_size: 32,
+            remove_tasks_limit: 64,
         }
     }
 }
@@ -389,15 +391,38 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     }
                 },
 
-            Event::Request(Some(Request::Demolish { reply_tx, })) =>
+            Event::Request(Some(Request::Demolish { reply_tx, })) => {
+                assert!(demolish_reply_tx.is_none());
+                demolish_reply_tx = Some(reply_tx);
                 match &state.mode {
-                    Mode::CacheBootstrap { .. } => {
-                        assert!(demolish_reply_tx.is_none());
-                        demolish_reply_tx = Some(reply_tx);
-                    },
-                    Mode::Regular { .. } =>
+                    Mode::CacheBootstrap { .. } =>
                         (),
+                    Mode::Regular { root_block, } => {
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        let maybe_task_args = async_tree.apply_iter_request(
+                            task::IterRequest {
+                                block_ref: root_block.clone(),
+                                kind: task::IterRequestKind::BlockRefs { reply_tx, },
+                            },
+                            &state.blocks_pool,
+                            &state.lookup_requests_queue_pool,
+                            &state.iter_requests_queue_pool,
+                            &state.iters_pool,
+                            &state.wheels_pid,
+                            &iter_rec_tx,
+                        );
+                        if let Some(task_args) = maybe_task_args {
+                            tasks.push(task::run_args(task_args));
+                            tasks_count += 1;
+                        }
+                        tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
+                            block_refs_rx_reply_rx: reply_rx,
+                            wheels_pid: state.wheels_pid.clone(),
+                            remove_tasks_limit: state.params.remove_tasks_limit,
+                        })));
+                    },
                 }
+            },
 
             Event::IterRec(iter_request) => {
                 match &state.mode {
@@ -421,13 +446,38 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
-                match mem::replace(&mut state.mode, Mode::Regular { root_block, }) {
+            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) => {
+                match mem::replace(&mut state.mode, Mode::Regular { root_block: root_block.clone(), }) {
                     Mode::CacheBootstrap { .. } =>
                         (),
                     Mode::Regular { .. } =>
                         unreachable!(),
-                },
+                }
+                if demolish_reply_tx.is_some() {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    let maybe_task_args = async_tree.apply_iter_request(
+                        task::IterRequest {
+                            block_ref: root_block.clone(),
+                            kind: task::IterRequestKind::BlockRefs { reply_tx, },
+                        },
+                        &state.blocks_pool,
+                        &state.lookup_requests_queue_pool,
+                        &state.iter_requests_queue_pool,
+                        &state.iters_pool,
+                        &state.wheels_pid,
+                        &iter_rec_tx,
+                    );
+                    if let Some(task_args) = maybe_task_args {
+                        tasks.push(task::run_args(task_args));
+                        tasks_count += 1;
+                    }
+                    tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
+                        block_refs_rx_reply_rx: reply_rx,
+                        wheels_pid: state.wheels_pid.clone(),
+                        remove_tasks_limit: state.params.remove_tasks_limit,
+                    })));
+                }
+            },
 
             Event::Task(Ok(task::TaskDone::LoadBlock(task::load_block::Done { block_ref, block_bytes, }))) => {
                 let async_block = async_tree.get_mut(&block_ref).unwrap();
@@ -529,6 +579,15 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     tasks.push(task::run_args(task_args));
                     tasks_count += 1;
                 }
+            },
+
+            Event::Task(Ok(task::TaskDone::Demolish(task::demolish::Done { blocks_deleted, }))) => {
+                log::debug!("demolished, {} blocks actually deleted", blocks_deleted);
+                let reply_tx = demolish_reply_tx.unwrap();
+                if let Err(_send_error) = reply_tx.send(Demolished) {
+                    log::warn!("client canceled demolish request");
+                }
+                return Ok(());
             },
 
             Event::Task(Err(error)) =>
