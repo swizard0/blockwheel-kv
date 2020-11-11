@@ -42,6 +42,7 @@ pub struct Args {
     pub block_bytes: Bytes,
     pub iter_rec_tx: mpsc::Sender<IterRequest>,
     pub iter_requests_queue: IterRequestsQueue,
+    pub iter_send_buffer: usize,
 }
 
 pub struct Done {
@@ -61,6 +62,7 @@ pub async fn run(
         block_bytes,
         mut iter_rec_tx,
         mut iter_requests_queue,
+        iter_send_buffer,
     }: Args,
 )
     -> Result<Done, Error>
@@ -69,7 +71,7 @@ pub async fn run(
         assert_eq!(request_block_ref, block_ref);
         match kind {
             IterRequestKind::Items { reply_tx, } => {
-                let (items_tx, items_rx) = mpsc::channel(0);
+                let (items_tx, items_rx) = mpsc::channel(iter_send_buffer);
                 if let Err(_send_error) = reply_tx.send(SearchTreeIterItemsRx { items_rx, }) {
                     log::warn!("client canceled iter items request");
                 } else {
@@ -77,7 +79,7 @@ pub async fn run(
                 }
             },
             IterRequestKind::BlockRefs { reply_tx, } => {
-                let (block_refs_tx, block_refs_rx) = mpsc::channel(0);
+                let (block_refs_tx, block_refs_rx) = mpsc::channel(iter_send_buffer);
                 if let Err(_send_error) = reply_tx.send(SearchTreeIterBlockRefsRx { block_refs_rx, }) {
                     log::warn!("client canceled iter block refs request");
                 } else {

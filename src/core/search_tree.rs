@@ -48,6 +48,8 @@ use crate::{
         BlockRef,
         MemCache,
     },
+    Info,
+    Flushed,
 };
 
 mod task;
@@ -57,6 +59,7 @@ pub struct Params {
     pub task_restart_sec: usize,
     pub tree_block_size: usize,
     pub remove_tasks_limit: usize,
+    pub iter_send_buffer: usize,
 }
 
 impl Default for Params {
@@ -65,6 +68,7 @@ impl Default for Params {
             task_restart_sec: 1,
             tree_block_size: 32,
             remove_tasks_limit: 64,
+            iter_send_buffer: 4,
         }
     }
 }
@@ -127,6 +131,24 @@ pub enum LookupError {
     GenServer(ero::NoProcError),
 }
 
+#[derive(Debug)]
+pub enum FlushError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
+pub enum IterError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Demolished;
+
+#[derive(Debug)]
+pub enum DemolishError {
+    GenServer(ero::NoProcError),
+}
+
 pub struct SearchTreeIterItemsTx {
     pub items_tx: mpsc::Sender<kv::KeyValuePair>,
 }
@@ -143,20 +165,21 @@ pub struct SearchTreeIterBlockRefsRx {
     pub block_refs_rx: mpsc::Receiver<BlockRef>,
 }
 
-#[derive(Debug)]
-pub enum IterError {
-    GenServer(ero::NoProcError),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Demolished;
-
-#[derive(Debug)]
-pub enum DemolishError {
-    GenServer(ero::NoProcError),
-}
-
 impl Pid {
+    pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Info { reply_tx, }).await
+                .map_err(|_send_error| ero::NoProcError)?;
+            match reply_rx.await {
+                Ok(info) =>
+                    return Ok(info),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -188,6 +211,21 @@ impl Pid {
             match reply_rx.await {
                 Ok(iter) =>
                     return Ok(iter),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn flush(&mut self) -> Result<Flushed, FlushError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Flush { reply_tx, }).await
+                .map_err(|_send_error| FlushError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(Flushed) =>
+                    return Ok(Flushed),
                 Err(oneshot::Canceled) =>
                     (),
             }
@@ -257,8 +295,10 @@ async fn run(state: State) {
 }
 
 enum Request {
+    Info { reply_tx: oneshot::Sender<Info>, },
     Lookup(task::LookupRequest),
     Iter { reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
+    Flush { reply_tx: oneshot::Sender<Flushed>, },
     Demolish { reply_tx: oneshot::Sender<Demolished>, },
 }
 
@@ -336,6 +376,11 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 return Ok(());
             },
 
+            Event::Request(Some(Request::Info { reply_tx, })) => {
+
+                unimplemented!()
+            },
+
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
@@ -383,6 +428,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             &state.iters_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
+                            state.params.iter_send_buffer,
                         );
                         if let Some(task_args) = maybe_task_args {
                             tasks.push(task::run_args(task_args));
@@ -390,6 +436,11 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         }
                     }
                 },
+
+            Event::Request(Some(Request::Flush { reply_tx, })) => {
+
+                unimplemented!()
+            },
 
             Event::Request(Some(Request::Demolish { reply_tx, })) => {
                 assert!(demolish_reply_tx.is_none());
@@ -410,6 +461,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             &state.iters_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
+                            state.params.iter_send_buffer,
                         );
                         if let Some(task_args) = maybe_task_args {
                             tasks.push(task::run_args(task_args));
@@ -439,6 +491,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     &state.iters_pool,
                     &state.wheels_pid,
                     &iter_rec_tx,
+                    state.params.iter_send_buffer,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
@@ -466,6 +519,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         &state.iters_pool,
                         &state.wheels_pid,
                         &iter_rec_tx,
+                        state.params.iter_send_buffer,
                     );
                     if let Some(task_args) = maybe_task_args {
                         tasks.push(task::run_args(task_args));
@@ -517,6 +571,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                         iters_tx,
                                         iter_rec_tx: iter_rec_tx.clone(),
                                         iter_requests_queue,
+                                        iter_send_buffer: state.params.iter_send_buffer,
                                     }),
                                 ),
                             );
@@ -675,6 +730,7 @@ impl AsyncTree {
         iters_pool: &pool::Pool<task::SearchTreeIterSinks>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
+        iter_send_buffer: usize,
     )
         -> Option<task::TaskArgs>
     {
@@ -700,6 +756,7 @@ impl AsyncTree {
                             iters_tx,
                             iter_rec_tx: iter_rec_tx.clone(),
                             iter_requests_queue,
+                            iter_send_buffer,
                         }))
                     },
                 },

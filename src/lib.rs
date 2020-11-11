@@ -42,6 +42,7 @@ pub struct Params {
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
+    pub search_tree_iter_send_buffer: usize,
     pub standalone_search_trees_count: usize,
 }
 
@@ -55,6 +56,7 @@ impl Default for Params {
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
+            search_tree_iter_send_buffer: 4,
             standalone_search_trees_count: 2,
         }
     }
@@ -125,6 +127,7 @@ impl GenServer {
                         task_restart_sec: state.params.search_tree_task_restart_sec,
                         tree_block_size: state.params.tree_block_size,
                         remove_tasks_limit: state.params.search_tree_remove_tasks_limit,
+                        iter_send_buffer: state.params.search_tree_iter_send_buffer,
                     },
                     standalone_search_trees_count: state.params.standalone_search_trees_count,
                 };
@@ -145,13 +148,13 @@ impl GenServer {
                     manager_gen_server.run(
                         child_supervisor_pid.clone(),
                         state.blocks_pool.clone(),
-                        butcher_pid.clone(),
+                        butcher_pid,
                         state.wheels_pid.clone(),
                         manager_params,
                     ),
                 );
 
-                busyloop(child_supervisor_pid, butcher_pid, manager_pid, state).await
+                busyloop(child_supervisor_pid, manager_pid, state).await
             },
         ).await;
         if let Err(error) = terminate_result {
@@ -343,7 +346,6 @@ enum Error {
 
 async fn busyloop(
     _child_supervisor_pid: SupervisorPid,
-    mut butcher_pid: core::butcher::Pid,
     mut manager_pid: core::manager::Pid,
     mut state: State,
 )
@@ -352,28 +354,25 @@ async fn busyloop(
     while let Some(request) = state.fused_request_rx.next().await {
         match request {
             Request::Info(RequestInfo { reply_tx, }) => {
-                let info = match butcher_pid.info().await {
+                let info = match manager_pid.info().await {
                     Ok(info) =>
                         info,
                     Err(ero::NoProcError) => {
-                        log::warn!("butcher has gone during info, terminating");
+                        log::warn!("manager has gone during info, terminating");
                         break;
                     },
                 };
                 if let Err(_send_error) = reply_tx.send(info) {
                     log::warn!("client canceled info request");
                 }
-
-                // more info from manager?
-                unimplemented!()
             },
 
             Request::Insert(RequestInsert { key, value, reply_tx, }) => {
-                let status = match butcher_pid.insert(key, value).await {
+                let status = match manager_pid.insert(key, value).await {
                     Ok(inserted) =>
                         inserted,
-                    Err(ero::NoProcError) => {
-                        log::warn!("butcher has gone during insert, terminating");
+                    Err(core::manager::InsertError::GenServer(ero::NoProcError)) => {
+                        log::warn!("manager has gone during insert, terminating");
                         break;
                     },
                 };
@@ -397,11 +396,11 @@ async fn busyloop(
             },
 
             Request::Remove(RequestRemove { key, reply_tx, }) => {
-                let status = match butcher_pid.remove(key).await {
+                let status = match manager_pid.remove(key).await {
                     Ok(removed) =>
                         removed,
-                    Err(ero::NoProcError) => {
-                        log::warn!("butcher has gone during remove, terminating");
+                    Err(core::manager::RemoveError::GenServer(ero::NoProcError)) => {
+                        log::warn!("manager has gone during remove, terminating");
                         break;
                     },
                 };

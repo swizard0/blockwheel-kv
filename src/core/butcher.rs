@@ -167,6 +167,21 @@ impl Pid {
             }
         }
     }
+
+    pub async fn flush(&mut self) -> Result<Flushed, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Flush(RequestFlush { reply_tx, })).await
+                .map_err(|_send_error| ero::NoProcError)?;
+
+            match reply_rx.await {
+                Ok(Flushed) =>
+                    return Ok(Flushed),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 struct State {

@@ -44,9 +44,15 @@ use crate::{
         search_tree,
         MemCache,
     },
-    RequestLookup,
-    RequestFlush,
+    Info,
     Flushed,
+    Removed,
+    Inserted,
+    RequestInfo,
+    RequestInsert,
+    RequestLookup,
+    RequestRemove,
+    RequestFlush,
 };
 
 mod task;
@@ -144,12 +150,25 @@ struct State {
 
 enum Request {
     ButcherFlush { cache: Arc<MemCache>, },
+    Info(RequestInfo),
+    Insert(RequestInsert),
     Lookup(RequestLookup),
+    Remove(RequestRemove),
     FlushAll(RequestFlush),
 }
 
 #[derive(Debug)]
+pub enum InsertError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
 pub enum LookupError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
+pub enum RemoveError {
     GenServer(ero::NoProcError),
 }
 
@@ -165,6 +184,41 @@ impl Pid {
         Ok(Flushed)
     }
 
+    pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::Info(RequestInfo { reply_tx, })).await
+                .map_err(|_send_error| ero::NoProcError)?;
+            match reply_rx.await {
+                Ok(info) =>
+                    return Ok(info),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn insert(&mut self, key: kv::Key, value: kv::Value) -> Result<Inserted, InsertError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::Insert(RequestInsert {
+                    key: key.clone(),
+                    value: value.clone(),
+                    reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| InsertError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(inserted) =>
+                    return Ok(inserted),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -175,6 +229,26 @@ impl Pid {
                 }))
                 .await
                 .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
+
+            match reply_rx.await {
+                Ok(result) =>
+                    return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
+    pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::Remove(RequestRemove {
+                    key: key.clone(),
+                    reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| RemoveError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
                 Ok(result) =>
@@ -207,10 +281,22 @@ enum Error {
     Task(task::Error),
 }
 
+struct InfoRequest {
+    reply_tx: oneshot::Sender<Info>,
+    pending_count: usize,
+    info_fold: Option<Info>,
+}
+
 struct LookupRequest {
     reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
     pending_count: usize,
     found_fold: Option<kv::ValueCell>,
+}
+
+struct FlushRequest {
+    reply_tx: oneshot::Sender<Flushed>,
+    butcher_done: bool,
+    search_trees_pending_count: usize,
 }
 
 fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::ValueCell>) -> bool {
@@ -228,7 +314,9 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
     let mut search_trees = Set::new();
     let mut search_tree_refs = BinaryHeap::new();
 
+    let mut info_requests = Set::new();
     let mut lookup_requests = Set::new();
+    let mut flush_requests = Set::new();
     let mut tasks = FuturesUnordered::new();
 
     let search_tree_lookup_requests_queue_pool = pool::Pool::new();
@@ -236,25 +324,31 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
     let search_tree_outcomes_pool = pool::Pool::new();
     let search_tree_iters_pool = pool::Pool::new();
 
+    enum Mode { Regular, Flushing, };
+    let mut current_mode = Mode::Regular;
+
     loop {
         enum Event<R, T> {
             Request(Option<R>),
             Task(T),
         }
 
-        let event = if tasks.is_empty() {
-            Event::Request(state.fused_request_rx.next().await)
-        } else {
-            select! {
-                result = state.fused_request_rx.next() =>
-                    Event::Request(result),
-                result = tasks.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(task) =>
-                        Event::Task(task),
+        let event = match current_mode {
+            Mode::Regular if tasks.is_empty() =>
+                Event::Request(state.fused_request_rx.next().await),
+            Mode::Regular =>
+                select! {
+                    result = state.fused_request_rx.next() =>
+                        Event::Request(result),
+                    result = tasks.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(task) =>
+                            Event::Task(task),
+                    },
                 },
-            }
+            Mode::Flushing =>
+                Event::Task(tasks.next().await.unwrap()),
         };
 
         match event {
@@ -295,6 +389,36 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 }
             },
 
+            Event::Request(Some(Request::Info(RequestInfo { reply_tx, }))) => {
+                let request_ref = info_requests.insert(InfoRequest {
+                    reply_tx,
+                    pending_count: 1 + search_trees.len(),
+                    info_fold: None,
+                });
+                tasks.push(task::run_args(task::TaskArgs::InfoButcher(
+                    task::info_butcher::Args {
+                        request_ref: request_ref.clone(),
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                )));
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                    tasks.push(task::run_args(task::TaskArgs::InfoSearchTree(
+                        task::info_search_tree::Args {
+                            request_ref: request_ref.clone(),
+                            search_tree_pid: search_tree_pid.clone(),
+                        },
+                    )));
+                }
+            },
+
+            Event::Request(Some(Request::Insert(request))) =>
+                tasks.push(task::run_args(task::TaskArgs::InsertButcher(
+                    task::insert_butcher::Args {
+                        request,
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                ))),
+
             Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
                     reply_tx,
@@ -319,10 +443,37 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 }
             },
 
+            Event::Request(Some(Request::Remove(request))) =>
+                tasks.push(task::run_args(task::TaskArgs::RemoveButcher(
+                    task::remove_butcher::Args {
+                        request,
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                ))),
+
             Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx, }))) => {
+                let request_ref = flush_requests.insert(FlushRequest {
+                    reply_tx,
+                    butcher_done: false,
+                    search_trees_pending_count: search_trees.len(),
+                });
+                tasks.push(task::run_args(task::TaskArgs::FlushButcher(
+                    task::flush_butcher::Args {
+                        request_ref,
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                )));
+                current_mode = Mode::Flushing;
+            },
+
+            Event::Task(Ok(task::TaskDone::InfoButcher(task::info_butcher::Done { request_ref, info, }))) |
+            Event::Task(Ok(task::TaskDone::InfoSearchTree(task::info_search_tree::Done { request_ref, info, }))) => {
 
                 unimplemented!()
             },
+
+            Event::Task(Ok(task::TaskDone::InsertButcher(task::insert_butcher::Done))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::LookupButcher(task::lookup_butcher::Done { request_ref, found, }))) |
             Event::Task(Ok(task::TaskDone::LookupSearchTree(task::lookup_search_tree::Done { request_ref, found, }))) => {
@@ -338,6 +489,39 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                     if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
                         log::warn!("client canceled lookup request");
                     }
+                }
+            },
+
+            Event::Task(Ok(task::TaskDone::RemoveButcher(task::remove_butcher::Done))) =>
+                (),
+
+            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { request_ref, }))) => {
+                assert!(matches!(current_mode, Mode::Flushing));
+                let flush_request = flush_requests.get_mut(request_ref).unwrap();
+                assert!(!flush_request.butcher_done);
+                flush_request.butcher_done = true;
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                    tasks.push(task::run_args(task::TaskArgs::FlushSearchTree(
+                        task::flush_search_tree::Args {
+                            request_ref: request_ref.clone(),
+                            search_tree_pid: search_tree_pid.clone(),
+                        },
+                    )));
+                }
+            },
+
+            Event::Task(Ok(task::TaskDone::FlushSearchTree(task::flush_search_tree::Done { request_ref, }))) => {
+                assert!(matches!(current_mode, Mode::Flushing));
+                let flush_request = flush_requests.get_mut(request_ref).unwrap();
+                assert!(flush_request.butcher_done);
+                assert!(flush_request.search_trees_pending_count > 0);
+                flush_request.search_trees_pending_count -= 1;
+                if flush_request.search_trees_pending_count == 0 {
+                    let flush_request = flush_requests.remove(request_ref).unwrap();
+                    if let Err(_send_error) = flush_request.reply_tx.send(Flushed) {
+                        log::warn!("client canceled lookup request");
+                    }
+                    current_mode = Mode::Regular;
                 }
             },
 
