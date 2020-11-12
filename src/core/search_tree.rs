@@ -332,42 +332,74 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             (),
     };
 
+    enum FlushMode {
+        NoFlush,
+        InProgress { done_reply_tx: oneshot::Sender<Flushed>, },
+    };
+    let mut flush_mode = FlushMode::NoFlush;
+
     loop {
         enum Event<R, T, I> {
             Request(Option<R>),
             Task(T),
             IterRec(I),
         }
-        let event = if tasks_count == 0 {
-            select! {
-                result = state.fused_request_rx.next() =>
-                    Event::Request(result),
-                result = iter_rec_rx.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(iter_rec_request) =>
-                        Event::IterRec(iter_rec_request),
-                },
-            }
-        } else {
-            select! {
-                result = state.fused_request_rx.next() =>
-                    Event::Request(result),
-                result = tasks.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(task) => {
-                        tasks_count -= 1;
-                        Event::Task(task)
+        let event = match mem::replace(&mut flush_mode, FlushMode::NoFlush) {
+            FlushMode::NoFlush if tasks_count == 0 =>
+                select! {
+                    result = state.fused_request_rx.next() =>
+                        Event::Request(result),
+                    result = iter_rec_rx.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(iter_rec_request) =>
+                            Event::IterRec(iter_rec_request),
                     },
                 },
-                result = iter_rec_rx.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(iter_rec_request) =>
-                        Event::IterRec(iter_rec_request),
+            FlushMode::NoFlush =>
+                select! {
+                    result = state.fused_request_rx.next() =>
+                        Event::Request(result),
+                    result = tasks.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(task) => {
+                            tasks_count -= 1;
+                            Event::Task(task)
+                        },
+                    },
+                    result = iter_rec_rx.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(iter_rec_request) =>
+                            Event::IterRec(iter_rec_request),
+                    },
                 },
-            }
+            FlushMode::InProgress { done_reply_tx, } if tasks_count == 0 => {
+                if let Err(_send_error) = done_reply_tx.send(Flushed) {
+                    log::warn!("client canceled flush request");
+                }
+                continue;
+            },
+            FlushMode::InProgress { done_reply_tx, } => {
+                flush_mode = FlushMode::InProgress { done_reply_tx, };
+                select! {
+                    result = tasks.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(task) => {
+                            tasks_count -= 1;
+                            Event::Task(task)
+                        },
+                    },
+                    result = iter_rec_rx.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(iter_rec_request) =>
+                            Event::IterRec(iter_rec_request),
+                    },
+                }
+            },
         };
 
         match event {
@@ -377,6 +409,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             },
 
             Event::Request(Some(Request::Info { reply_tx, })) => {
+                let info = Info::default();
+                if let Err(_send_error) = reply_tx.send(info) {
+                    log::warn!("client canceled info request");
+                }
 
                 unimplemented!()
             },
@@ -438,8 +474,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 },
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
-
-                unimplemented!()
+                flush_mode = FlushMode::InProgress { done_reply_tx: reply_tx, };
             },
 
             Event::Request(Some(Request::Demolish { reply_tx, })) => {

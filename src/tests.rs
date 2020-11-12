@@ -147,6 +147,7 @@ enum Error {
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
     Remove(blockwheel_kv::RemoveError),
+    Flush(blockwheel_kv::FlushError),
     ExpectedValueNotFound {
         key: kv::Key,
         value_cell: kv::ValueCell,
@@ -209,7 +210,7 @@ async fn stress_loop(
     assert_eq!(has_added, Ok(true));
 
     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
-    let wheel_kv_pid = wheel_kv_gen_server.pid();
+    let mut wheel_kv_pid = wheel_kv_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
         wheel_kv_gen_server.run(
             supervisor_pid.clone(),
@@ -467,6 +468,8 @@ async fn stress_loop(
 
     assert!(done_rx.next().await.is_none());
 
+    let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
+        .map_err(Error::Flush)?;
     let wheels::Flushed = wheels_pid.flush().await
         .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
 
