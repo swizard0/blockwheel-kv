@@ -606,7 +606,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         search_tree_pid: search_tree_a_pid,
                     },
                 )));
-                // tasks_count += 1;
+                tasks_count += 1;
 
                 let search_tree_b_pid = search_trees.remove(done.search_tree_b_ref).unwrap();
                 tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
@@ -614,7 +614,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         search_tree_pid: search_tree_b_pid,
                     },
                 )));
-                // tasks_count += 1;
+                tasks_count += 1;
 
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();

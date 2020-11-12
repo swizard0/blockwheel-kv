@@ -41,6 +41,8 @@ pub enum Error {
 }
 
 pub async fn run(Args { block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
+    log::debug!("spawned task with remove_tasks_limit = {:?}", remove_tasks_limit);
+
     let SearchTreeIterBlockRefsRx { block_refs_rx, } = block_refs_rx_reply_rx.await
         .map_err(|oneshot::Canceled| Error::IterPeerDisconnected)?;
     let mut fused_block_refs_rx = block_refs_rx.fuse();

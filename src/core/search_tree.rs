@@ -487,6 +487,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     Mode::CacheBootstrap { .. } =>
                         (),
                     Mode::Regular { root_block, } => {
+                        log::debug!("starting demolish on root_block = {:?}", root_block);
                         let (reply_tx, reply_rx) = oneshot::channel();
                         let maybe_task_args = async_tree.apply_iter_request(
                             task::IterRequest {
@@ -510,6 +511,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             wheels_pid: state.wheels_pid.clone(),
                             remove_tasks_limit: state.params.remove_tasks_limit,
                         })));
+                        tasks_count += 1;
                     },
                 }
             },
@@ -545,6 +547,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                 }
                 if demolish_reply_tx.is_some() {
+                    log::debug!("starting demolish on root_block = {:?}", root_block);
                     let (reply_tx, reply_rx) = oneshot::channel();
                     let maybe_task_args = async_tree.apply_iter_request(
                         task::IterRequest {
@@ -568,6 +571,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         wheels_pid: state.wheels_pid.clone(),
                         remove_tasks_limit: state.params.remove_tasks_limit,
                     })));
+                    tasks_count += 1;
                 }
             },
 
