@@ -283,12 +283,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
             Request::Flush(RequestFlush { reply_tx, }) => {
                 if !memcache.is_empty() {
+                    log::debug!("Request::Flush: actually performing flush_cache");
                     let cache = Arc::new(mem::replace(&mut memcache, MemCache::new()));
                     current_info.reset();
                     if let Err(ero::NoProcError) = state.manager_pid.flush_cache(cache).await {
                         log::warn!("manager has gone during flush, terminating");
                         break;
                     }
+                } else {
+                    log::debug!("Request::Flush: no need to perform flush_cache");
                 }
                 if let Err(_send_error) = reply_tx.send(Flushed) {
                     log::warn!("client canceled flush request");

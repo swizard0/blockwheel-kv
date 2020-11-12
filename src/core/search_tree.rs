@@ -376,12 +376,14 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     },
                 },
             FlushMode::InProgress { done_reply_tx, } if tasks_count == 0 => {
+                log::debug!("FlushMode::InProgress: all tasks finished, responding Flushed and switching mode");
                 if let Err(_send_error) = done_reply_tx.send(Flushed) {
                     log::warn!("client canceled flush request");
                 }
                 continue;
             },
             FlushMode::InProgress { done_reply_tx, } => {
+                log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
                 flush_mode = FlushMode::InProgress { done_reply_tx, };
                 select! {
                     result = tasks.next() => match result {
@@ -474,6 +476,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 },
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
+                log::debug!("Request::Flush received: waiting for tasks to finish");
                 flush_mode = FlushMode::InProgress { done_reply_tx: reply_tx, };
             },
 

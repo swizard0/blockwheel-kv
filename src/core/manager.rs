@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::Arc,
     cmp::Reverse,
     time::Duration,
@@ -77,25 +78,32 @@ impl Default for Params {
 pub struct GenServer {
     request_tx: mpsc::Sender<Request>,
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    flush_cache_tx: mpsc::Sender<ButcherFlush>,
+    fused_flush_cache_rx: stream::Fuse<mpsc::Receiver<ButcherFlush>>,
 }
 
 #[derive(Clone)]
 pub struct Pid {
     request_tx: mpsc::Sender<Request>,
+    flush_cache_tx: mpsc::Sender<ButcherFlush>,
 }
 
 impl GenServer {
     pub fn new() -> GenServer {
         let (request_tx, request_rx) = mpsc::channel(0);
+        let (flush_cache_tx, flush_cache_rx) = mpsc::channel(0);
         GenServer {
             request_tx,
             fused_request_rx: request_rx.fuse(),
+            flush_cache_tx,
+            fused_flush_cache_rx: flush_cache_rx.fuse(),
         }
     }
 
     pub fn pid(&self) -> Pid {
         Pid {
             request_tx: self.request_tx.clone(),
+            flush_cache_tx: self.flush_cache_tx.clone(),
         }
     }
 
@@ -117,6 +125,7 @@ impl GenServer {
             },
             State {
                 fused_request_rx: self.fused_request_rx,
+                fused_flush_cache_rx: self.fused_flush_cache_rx,
                 parent_supervisor,
                 blocks_pool,
                 butcher_pid,
@@ -141,6 +150,7 @@ impl GenServer {
 
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
+    fused_flush_cache_rx: stream::Fuse<mpsc::Receiver<ButcherFlush>>,
     parent_supervisor: SupervisorPid,
     blocks_pool: BytesPool,
     butcher_pid: butcher::Pid,
@@ -149,12 +159,15 @@ struct State {
 }
 
 enum Request {
-    ButcherFlush { cache: Arc<MemCache>, },
     Info(RequestInfo),
     Insert(RequestInsert),
     Lookup(RequestLookup),
     Remove(RequestRemove),
     FlushAll(RequestFlush),
+}
+
+struct ButcherFlush {
+    cache: Arc<MemCache>,
 }
 
 #[derive(Debug)]
@@ -179,7 +192,7 @@ pub enum FlushError {
 
 impl Pid {
     pub async fn flush_cache(&mut self, cache: Arc<MemCache>) -> Result<Flushed, ero::NoProcError> {
-        self.request_tx.send(Request::ButcherFlush { cache: cache.clone(), }).await
+        self.flush_cache_tx.send(ButcherFlush { cache: cache.clone(), }).await
             .map_err(|_send_error| ero::NoProcError)?;
         Ok(Flushed)
     }
@@ -294,7 +307,6 @@ struct LookupRequest {
 }
 
 struct FlushRequest {
-    reply_tx: oneshot::Sender<Flushed>,
     butcher_done: bool,
     search_trees_pending_count: usize,
 }
@@ -318,46 +330,82 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
     let mut lookup_requests = Set::new();
     let mut flush_requests = Set::new();
     let mut tasks = FuturesUnordered::new();
+    let mut tasks_count = 0;
 
     let search_tree_lookup_requests_queue_pool = pool::Pool::new();
     let search_tree_iter_requests_queue_pool = pool::Pool::new();
     let search_tree_outcomes_pool = pool::Pool::new();
     let search_tree_iters_pool = pool::Pool::new();
 
-    enum Mode { Regular, Flushing, };
+    enum Mode {
+        Regular,
+        Flushing { done_reply_tx: oneshot::Sender<Flushed>, },
+    };
+
     let mut current_mode = Mode::Regular;
 
     loop {
-        enum Event<R, T> {
+        enum Event<R, F, T> {
             Request(Option<R>),
+            FlushCache(Option<F>),
             Task(T),
         }
 
-        let event = match current_mode {
-            Mode::Regular if tasks.is_empty() =>
-                Event::Request(state.fused_request_rx.next().await),
+        let event = match mem::replace(&mut current_mode, Mode::Regular) {
+            Mode::Regular if tasks_count == 0 =>
+                select! {
+                    result = state.fused_request_rx.next() =>
+                        Event::Request(result),
+                    result = state.fused_flush_cache_rx.next() =>
+                        Event::FlushCache(result),
+                },
             Mode::Regular =>
                 select! {
                     result = state.fused_request_rx.next() =>
                         Event::Request(result),
+                    result = state.fused_flush_cache_rx.next() =>
+                        Event::FlushCache(result),
                     result = tasks.next() => match result {
                         None =>
                             unreachable!(),
-                        Some(task) =>
-                            Event::Task(task),
+                        Some(task) => {
+                            tasks_count -= 1;
+                            Event::Task(task)
+                        },
                     },
                 },
-            Mode::Flushing =>
-                Event::Task(tasks.next().await.unwrap()),
+            Mode::Flushing { done_reply_tx, } if tasks_count == 0 => {
+                log::debug!("Mode::Flushing: all tasks finished, responding Flushed and switching mode");
+                if let Err(_send_error) = done_reply_tx.send(Flushed) {
+                    log::warn!("client canceled flush request");
+                }
+                continue;
+            },
+            Mode::Flushing { done_reply_tx, } => {
+                log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
+                current_mode = Mode::Flushing { done_reply_tx, };
+                select! {
+                    result = state.fused_flush_cache_rx.next() =>
+                        Event::FlushCache(result),
+                    result = tasks.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(task) => {
+                            tasks_count -= 1;
+                            Event::Task(task)
+                        },
+                    },
+                }
+            },
         };
 
         match event {
-            Event::Request(None) => {
-                log::info!("requests sink channel depleted: terminating");
+            Event::FlushCache(None) => {
+                log::info!("butcher channel depleted: terminating");
                 return Ok(());
             },
 
-            Event::Request(Some(Request::ButcherFlush { cache, })) => {
+            Event::FlushCache(Some(ButcherFlush { cache, })) => {
                 let items_count = cache.len();
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();
@@ -386,7 +434,13 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
+                    tasks_count += 1;
                 }
+            },
+
+            Event::Request(None) => {
+                log::info!("requests sink channel depleted: terminating");
+                return Ok(());
             },
 
             Event::Request(Some(Request::Info(RequestInfo { reply_tx, }))) => {
@@ -401,6 +455,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         butcher_pid: state.butcher_pid.clone(),
                     },
                 )));
+                tasks_count += 1;
                 for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
                     tasks.push(task::run_args(task::TaskArgs::InfoSearchTree(
                         task::info_search_tree::Args {
@@ -408,16 +463,19 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                             search_tree_pid: search_tree_pid.clone(),
                         },
                     )));
+                    tasks_count += 1;
                 }
             },
 
-            Event::Request(Some(Request::Insert(request))) =>
+            Event::Request(Some(Request::Insert(request))) => {
                 tasks.push(task::run_args(task::TaskArgs::InsertButcher(
                     task::insert_butcher::Args {
                         request,
                         butcher_pid: state.butcher_pid.clone(),
                     },
-                ))),
+                )));
+                tasks_count += 1;
+            },
 
             Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
@@ -432,6 +490,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         butcher_pid: state.butcher_pid.clone(),
                     },
                 )));
+                tasks_count += 1;
                 for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
                     tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
                         task::lookup_search_tree::Args {
@@ -440,22 +499,26 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                             search_tree_pid: search_tree_pid.clone(),
                         },
                     )));
+                    tasks_count += 1;
                 }
             },
 
-            Event::Request(Some(Request::Remove(request))) =>
+            Event::Request(Some(Request::Remove(request))) => {
                 tasks.push(task::run_args(task::TaskArgs::RemoveButcher(
                     task::remove_butcher::Args {
                         request,
                         butcher_pid: state.butcher_pid.clone(),
                     },
-                ))),
+                )));
+                tasks_count += 1;
+            },
 
             Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx, }))) => {
+                log::debug!("Request::FlushAll for butcher first");
+
                 let request_ref = flush_requests.insert(FlushRequest {
-                    reply_tx,
                     butcher_done: false,
-                    search_trees_pending_count: search_trees.len(),
+                    search_trees_pending_count: 0,
                 });
                 tasks.push(task::run_args(task::TaskArgs::FlushButcher(
                     task::flush_butcher::Args {
@@ -463,7 +526,8 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         butcher_pid: state.butcher_pid.clone(),
                     },
                 )));
-                current_mode = Mode::Flushing;
+                tasks_count += 1;
+                current_mode = Mode::Flushing { done_reply_tx: reply_tx, };
             },
 
             Event::Task(Ok(task::TaskDone::InfoButcher(task::info_butcher::Done { request_ref, info, }))) |
@@ -505,7 +569,8 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 (),
 
             Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { request_ref, }))) => {
-                assert!(matches!(current_mode, Mode::Flushing));
+                log::debug!("task::TaskDone::FlushButcher received, proceeding with {} search_trees", search_trees.len());
+                assert!(matches!(current_mode, Mode::Flushing { .. }));
                 let flush_request = flush_requests.get_mut(request_ref).unwrap();
                 assert!(!flush_request.butcher_done);
                 flush_request.butcher_done = true;
@@ -516,21 +581,21 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                             search_tree_pid: search_tree_pid.clone(),
                         },
                     )));
+                    tasks_count += 1;
+                    flush_request.search_trees_pending_count += 1;
                 }
             },
 
             Event::Task(Ok(task::TaskDone::FlushSearchTree(task::flush_search_tree::Done { request_ref, }))) => {
-                assert!(matches!(current_mode, Mode::Flushing));
+                assert!(matches!(current_mode, Mode::Flushing { .. }));
                 let flush_request = flush_requests.get_mut(request_ref).unwrap();
                 assert!(flush_request.butcher_done);
                 assert!(flush_request.search_trees_pending_count > 0);
                 flush_request.search_trees_pending_count -= 1;
+                log::debug!("task::TaskDone::FlushSearchTree received ({} left)", flush_request.search_trees_pending_count);
                 if flush_request.search_trees_pending_count == 0 {
-                    let flush_request = flush_requests.remove(request_ref).unwrap();
-                    if let Err(_send_error) = flush_request.reply_tx.send(Flushed) {
-                        log::warn!("client canceled lookup request");
-                    }
-                    current_mode = Mode::Regular;
+                    log::debug!("task::TaskDone::FlushSearchTree finished, waiting for all tasks to be done");
+                    flush_requests.remove(request_ref).unwrap();
                 }
             },
 
@@ -541,6 +606,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         search_tree_pid: search_tree_a_pid,
                     },
                 )));
+                // tasks_count += 1;
 
                 let search_tree_b_pid = search_trees.remove(done.search_tree_b_ref).unwrap();
                 tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
@@ -548,6 +614,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                         search_tree_pid: search_tree_b_pid,
                     },
                 )));
+                // tasks_count += 1;
 
                 let search_tree_gen_server = search_tree::GenServer::new();
                 let search_tree_pid = search_tree_gen_server.pid();
@@ -576,11 +643,13 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
+                    tasks_count += 1;
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) =>
-                (),
+            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) => {
+                log::debug!("search tree DEMOLISHED");
+            },
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
