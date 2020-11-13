@@ -194,20 +194,20 @@ async fn stress_loop(
     let wheels_gen_server = wheels::GenServer::new();
     let mut wheels_pid = wheels_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
-        wheels_gen_server.run(wheels::Params::default()),
+        wheels_gen_server.run(
+            vec![
+                wheels::WheelRef {
+                    blockwheel_filename: blockwheel_a_filename,
+                    blockwheel_pid: wheel_a_pid.clone(),
+                },
+                wheels::WheelRef {
+                    blockwheel_filename: blockwheel_b_filename,
+                    blockwheel_pid: wheel_b_pid.clone(),
+                },
+            ],
+            wheels::Params::default(),
+        ),
     );
-
-    let has_added = wheels_pid.add(wheels::WheelRef {
-        blockwheel_filename: blockwheel_a_filename,
-        blockwheel_pid: wheel_a_pid.clone(),
-    }).await;
-    assert_eq!(has_added, Ok(true));
-
-    let has_added = wheels_pid.add(wheels::WheelRef {
-        blockwheel_filename: blockwheel_b_filename,
-        blockwheel_pid: wheel_b_pid.clone(),
-    }).await;
-    assert_eq!(has_added, Ok(true));
 
     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
     let mut wheel_kv_pid = wheel_kv_gen_server.pid();

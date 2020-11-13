@@ -23,6 +23,8 @@ use futures::{
 
 use rand::Rng;
 
+use alloc_pool::bytes::Bytes;
+
 use ero::{
     restart,
     ErrorSeverity,
@@ -30,7 +32,10 @@ use ero::{
 };
 
 use super::{
-    blockwheel,
+    blockwheel::{
+        self,
+        block,
+    },
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -74,6 +79,12 @@ pub struct WheelRef {
     pub blockwheel_pid: blockwheel::Pid,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct BlockRef {
+    pub blockwheel_filename: WheelFilename,
+    pub block_id: block::Id,
+}
+
 #[derive(Clone, Debug)]
 pub struct Params {
     pub task_restart_sec: usize,
@@ -109,7 +120,27 @@ impl GenServer {
         }
     }
 
-    pub async fn run(self, params: Params) {
+    pub async fn run<I>(
+        self,
+        wheels_iter: I,
+        params: Params,
+    ) where I: IntoIterator<Item = WheelRef>
+    {
+        let mut wheels = Vec::new();
+        let mut index = HashMap::new();
+        for wheel_ref in wheels_iter {
+            let offset = wheels.len();
+            let filename = wheel_ref.blockwheel_filename.clone();
+            match index.entry(filename.clone()) {
+                hash_map::Entry::Vacant(ve) => {
+                    ve.insert(offset);
+                    wheels.push(wheel_ref);
+                },
+                hash_map::Entry::Occupied(..) =>
+                    (),
+            }
+        }
+
         let terminate_result = restart::restartable(
             ero::Params {
                 name: "ero-blockwheel-kv wheels task",
@@ -119,6 +150,8 @@ impl GenServer {
             },
             State {
                 request_rx: self.request_rx,
+                wheels,
+                index,
             },
             |state| busyloop(state),
         ).await;
@@ -130,26 +163,28 @@ impl GenServer {
 
 struct State {
     request_rx: mpsc::Receiver<Request>,
+    wheels: Vec<WheelRef>,
+    index: HashMap<WheelFilename, usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Flushed;
 
-impl Pid {
-    pub async fn add(&mut self, wheel_ref: WheelRef) -> Result<bool, ero::NoProcError> {
-        loop {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Add { wheel_ref: wheel_ref.clone(), reply_tx, }).await
-                .map_err(|_send_error| ero::NoProcError)?;
-            match reply_rx.await {
-                Ok(has_added) =>
-                    return Ok(has_added),
-                Err(oneshot::Canceled) =>
-                    (),
-            }
-        }
-    }
+#[derive(Debug)]
+pub enum IterBlocksError {
+    GenServer(ero::NoProcError),
+}
 
+pub struct IterBlocks {
+    pub block_refs_rx: mpsc::Receiver<IterBlocksItem>,
+}
+
+pub enum IterBlocksItem {
+    Block { block_ref: BlockRef, block_bytes: Bytes, },
+    NoMoreBlocks,
+}
+
+impl Pid {
     pub async fn acquire(&mut self) -> Result<Option<WheelRef>, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -191,52 +226,53 @@ impl Pid {
             }
         }
     }
+
+    pub async fn iter_blocks(&mut self) -> Result<IterBlocks, IterBlocksError> {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::IterBlocks { reply_tx, }).await
+                .map_err(|_send_error| IterBlocksError::GenServer(ero::NoProcError))?;
+            match reply_rx.await {
+                Ok(iter_blocks) =>
+                    return Ok(iter_blocks),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
 }
 
 enum Request {
-    Add { wheel_ref: WheelRef, reply_tx: oneshot::Sender<bool>, },
     Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, },
     Get { blockwheel_filename: WheelFilename, reply_tx: oneshot::Sender<Option<WheelRef>>, },
     Flush { reply_tx: oneshot::Sender<Flushed>, },
+    IterBlocks { reply_tx: oneshot::Sender<IterBlocks>, },
 }
 
 #[derive(Debug)]
 enum Error {
-    WheelGoneDuringFlush { blockwheel_filename: WheelFilename, },
+    WheelGoneDuringFlush {
+        blockwheel_filename: WheelFilename,
+    },
+    WheelIterBlocks {
+        blockwheel_filename: WheelFilename,
+        error: blockwheel::IterBlocksError,
+    },
+    WheelIterBlocksRxDropped {
+        blockwheel_filename: WheelFilename,
+    },
 }
 
 async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    let mut wheels = Vec::new();
-    let mut index = HashMap::new();
-
     while let Some(request) = state.request_rx.next().await {
         match request {
-            Request::Add { wheel_ref, reply_tx, } => {
-                let offset = wheels.len();
-                let filename = wheel_ref.blockwheel_filename.clone();
-                let has_added = match index.entry(filename.clone()) {
-                    hash_map::Entry::Vacant(ve) => {
-                        ve.insert(offset);
-                        wheels.push(wheel_ref);
-                        true
-                    },
-                    hash_map::Entry::Occupied(..) =>
-                        false,
-                };
-                if let Err(_send_error) = reply_tx.send(has_added) {
-                    log::warn!("client canceled add request");
-                    index.remove(&filename);
-                    wheels.pop();
-                }
-            },
-
             Request::Acquire { reply_tx, } => {
-                let maybe_wheel_ref = if wheels.is_empty() {
+                let maybe_wheel_ref = if state.wheels.is_empty() {
                     None
                 } else {
                     let mut rng = rand::thread_rng();
-                    let offset = rng.gen_range(0, wheels.len());
-                    Some(wheels[offset].clone())
+                    let offset = rng.gen_range(0, state.wheels.len());
+                    Some(state.wheels[offset].clone())
                 };
                 if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
                     log::warn!("client canceled add request");
@@ -244,8 +280,8 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             Request::Get { blockwheel_filename, reply_tx, } => {
-                let maybe_wheel_ref = index.get(&blockwheel_filename)
-                    .map(|&offset| wheels[offset].clone());
+                let maybe_wheel_ref = state.index.get(&blockwheel_filename)
+                    .map(|&offset| state.wheels[offset].clone());
                 if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
                     log::warn!("client canceled get request");
                 }
@@ -253,7 +289,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
 
             Request::Flush { reply_tx, } => {
                 let mut flush_tasks = FuturesUnordered::new();
-                for WheelRef { blockwheel_pid, blockwheel_filename, } in &wheels {
+                for WheelRef { blockwheel_pid, blockwheel_filename, } in &state.wheels {
                     let mut blockwheel_pid = blockwheel_pid.clone();
                     let blockwheel_filename = blockwheel_filename.clone();
                     flush_tasks.push(async move {
@@ -271,6 +307,68 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 }
                 if let Err(_send_error) = reply_tx.send(Flushed) {
                     log::warn!("client canceled flush request");
+                }
+            },
+
+            Request::IterBlocks { reply_tx, } => {
+                let (mut block_refs_tx, block_refs_rx) = mpsc::channel(0);
+                if let Err(_send_error) = reply_tx.send(IterBlocks { block_refs_rx, }) {
+                    log::warn!("client canceled iter request");
+                    continue;
+                }
+
+                enum TaskDone { Finished, Canceled, }
+                let mut iter_tasks = FuturesUnordered::new();
+                for WheelRef { blockwheel_pid, blockwheel_filename, } in &state.wheels {
+                    let mut blockwheel_pid = blockwheel_pid.clone();
+                    let blockwheel_filename = blockwheel_filename.clone();
+                    let mut block_refs_tx = block_refs_tx.clone();
+                    iter_tasks.push(async move {
+                        let mut iter_blocks = blockwheel_pid.iter_blocks().await
+                            .map_err(|error| Error::WheelIterBlocks {
+                                blockwheel_filename: blockwheel_filename.clone(),
+                                error,
+                            })?;
+                        loop {
+                            match iter_blocks.blocks_rx.next().await {
+                                None =>
+                                    return Err(Error::WheelIterBlocksRxDropped {
+                                        blockwheel_filename,
+                                    }),
+                                Some(blockwheel::IterBlocksItem::Block { block_id, block_bytes, }) => {
+                                    let block_ref = BlockRef {
+                                        blockwheel_filename: blockwheel_filename.clone(),
+                                        block_id,
+                                    };
+                                    let item = IterBlocksItem::Block { block_ref, block_bytes, };
+                                    if let Err(_send_error) = block_refs_tx.send(item).await {
+                                        return Ok(TaskDone::Canceled);
+                                    }
+                                },
+                                Some(blockwheel::IterBlocksItem::NoMoreBlocks) =>
+                                    break,
+                            }
+                        }
+                        Ok(TaskDone::Finished)
+                    });
+                }
+                loop {
+                    match iter_tasks.next().await {
+                        None => {
+                            if let Err(_send_error) = block_refs_tx.send(IterBlocksItem::NoMoreBlocks).await {
+                                log::warn!("client canceled iter request");
+                            }
+                            break;
+                        },
+                        Some(Err(error)) =>
+                            return Err(ErrorSeverity::Fatal(error)),
+                        Some(Ok(TaskDone::Canceled)) => {
+                            log::warn!("client canceled iter request");
+                            break;
+                        },
+                        Some(Ok(TaskDone::Finished)) =>
+                            (),
+                    }
                 }
             },
         }

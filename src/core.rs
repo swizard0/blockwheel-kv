@@ -8,22 +8,13 @@ use std::{
 use super::{
     kv,
     wheels::{
-        WheelFilename,
-    },
-    blockwheel::{
-        block,
+        BlockRef,
     },
 };
 
 pub mod manager;
 pub mod butcher;
 pub mod search_tree;
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct BlockRef {
-    blockwheel_filename: WheelFilename,
-    block_id: block::Id,
-}
 
 pub type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
 
