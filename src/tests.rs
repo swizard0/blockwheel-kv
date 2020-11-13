@@ -31,6 +31,7 @@ use super::{
     kv,
     wheels,
     version,
+    storage,
     blockwheel,
 };
 
@@ -160,6 +161,10 @@ enum Error {
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
     WheelsGoneDuringFlush,
+    WheelsIterBlocks(wheels::IterBlocksError),
+    WheelsIterBlocksRxDropped,
+    Storage(storage::Error),
+    BackwardIterKeyNotFound,
 }
 
 async fn stress_loop(
@@ -473,5 +478,36 @@ async fn stress_loop(
     let wheels::Flushed = wheels_pid.flush().await
         .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
 
+    // backwards check with iterator
+    let mut checked_blocks = 0;
+    let mut checked_entries = 0;
+    let mut iter_blocks = wheels_pid.iter_blocks().await
+        .map_err(Error::WheelsIterBlocks)?;
+    loop {
+        match iter_blocks.block_refs_rx.next().await {
+            None =>
+                return Err(Error::WheelsIterBlocksRxDropped),
+            Some(wheels::IterBlocksItem::Block { block_bytes, .. }) => {
+                checked_blocks += 1;
+                let deserializer = storage::block_deserialize_iter(&block_bytes)
+                    .map_err(Error::Storage)?;
+                for maybe_entry in deserializer {
+                    let entry = maybe_entry
+                        .map_err(Error::Storage)?;
+                    checked_entries += 1;
+                    match data.index.get(entry.key) {
+                        None =>
+                            return Err(Error::BackwardIterKeyNotFound),
+                        Some(..) =>
+                            (),
+                    }
+                }
+            },
+            Some(wheels::IterBlocksItem::NoMoreBlocks) =>
+                break,
+        }
+    }
+
+    log::info!("FINISHED: blocks checked = {}, entries = {} | {:?}", checked_blocks, checked_entries, counter);
     Ok::<_, Error>(())
 }
