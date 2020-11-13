@@ -33,13 +33,13 @@ use ero::{
 };
 
 use alloc_pool::{
-    pool,
     bytes::BytesPool,
 };
 
 use crate::{
     kv,
     wheels,
+    storage,
     core::{
         butcher,
         search_tree,
@@ -139,7 +139,7 @@ impl GenServer {
                     child_supervisor_gen_server.run(),
                 );
 
-                busyloop(child_supervisor_pid, state).await
+                load(child_supervisor_pid, state).await
             },
         ).await;
         if let Err(error) = terminate_result {
@@ -292,6 +292,12 @@ impl Pid {
 #[derive(Debug)]
 enum Error {
     Task(task::Error),
+    WheelsIterBlocks(wheels::IterBlocksError),
+    WheelsIterBlocksRxDropped,
+    DeserializeBlock {
+        block_ref: wheels::BlockRef,
+        error: storage::Error,
+    },
 }
 
 struct InfoRequest {
@@ -322,20 +328,83 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
     }
 }
 
-async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+    let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
     let mut search_trees = Set::new();
     let mut search_tree_refs = BinaryHeap::new();
+    let mut blocks_total = 0;
 
+    log::info!("loading search_tree roots from wheels");
+
+    let mut iter_blocks = state.wheels_pid.iter_blocks().await
+        .map_err(Error::WheelsIterBlocks)
+        .map_err(ErrorSeverity::Fatal)?;
+
+    loop {
+        match iter_blocks.block_refs_rx.next().await {
+            None =>
+                return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
+            Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
+                blocks_total += 1;
+                let deserializer = storage::block_deserialize_iter(&block_bytes)
+                    .map_err(|error| ErrorSeverity::Fatal(Error::DeserializeBlock {
+                        block_ref: block_ref.clone(),
+                        error,
+                    }))?;
+                match deserializer.block_header().node_type {
+                    storage::NodeType::Root { tree_entries_count, } => {
+                        log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
+                        let search_tree_gen_server = search_tree::GenServer::new();
+                        let search_tree_pid = search_tree_gen_server.pid();
+                        child_supervisor_pid.spawn_link_temporary(
+                            search_tree_gen_server.run(
+                                child_supervisor_pid.clone(),
+                                search_tree_pools.clone(),
+                                state.wheels_pid.clone(),
+                                state.params.search_tree_params.clone(),
+                                search_tree::Mode::Regular { root_block: block_ref, },
+                            ),
+                        );
+                        let search_tree_ref = search_trees.insert(search_tree_pid);
+                        search_tree_refs.push(Reverse(SearchTreeRef {
+                            search_tree_ref,
+                            items_count: tree_entries_count,
+                        }));
+                    },
+                    storage::NodeType::Leaf =>
+                        (),
+                }
+            },
+            Some(wheels::IterBlocksItem::NoMoreBlocks) =>
+                break,
+        }
+    }
+
+    log::info!("loading done, {} search_trees restored within {} blocks", search_trees.len(), blocks_total);
+
+    busyloop(
+        child_supervisor_pid,
+        search_trees,
+        search_tree_refs,
+        search_tree_pools,
+        state,
+    ).await
+}
+
+async fn busyloop(
+    mut child_supervisor_pid: SupervisorPid,
+    mut search_trees: Set<search_tree::Pid>,
+    mut search_tree_refs: BinaryHeap<Reverse<SearchTreeRef>>,
+    search_tree_pools: search_tree::Pools,
+    mut state: State,
+)
+    -> Result<(), ErrorSeverity<State, Error>>
+{
     let mut info_requests = Set::new();
     let mut lookup_requests = Set::new();
     let mut flush_requests = Set::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
-
-    let search_tree_lookup_requests_queue_pool = pool::Pool::new();
-    let search_tree_iter_requests_queue_pool = pool::Pool::new();
-    let search_tree_outcomes_pool = pool::Pool::new();
-    let search_tree_iters_pool = pool::Pool::new();
 
     enum Mode {
         Regular,
@@ -412,11 +481,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 child_supervisor_pid.spawn_link_temporary(
                     search_tree_gen_server.run(
                         child_supervisor_pid.clone(),
-                        state.blocks_pool.clone(),
-                        search_tree_lookup_requests_queue_pool.clone(),
-                        search_tree_iter_requests_queue_pool.clone(),
-                        search_tree_outcomes_pool.clone(),
-                        search_tree_iters_pool.clone(),
+                        search_tree_pools.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
                         search_tree::Mode::CacheBootstrap { cache, },
@@ -621,11 +686,7 @@ async fn busyloop(mut child_supervisor_pid: SupervisorPid, mut state: State) -> 
                 child_supervisor_pid.spawn_link_temporary(
                     search_tree_gen_server.run(
                         child_supervisor_pid.clone(),
-                        state.blocks_pool.clone(),
-                        search_tree_lookup_requests_queue_pool.clone(),
-                        search_tree_iter_requests_queue_pool.clone(),
-                        search_tree_outcomes_pool.clone(),
-                        search_tree_iters_pool.clone(),
+                        search_tree_pools.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
                         search_tree::Mode::Regular { root_block: done.root_block, },

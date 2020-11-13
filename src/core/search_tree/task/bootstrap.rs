@@ -35,7 +35,7 @@ pub async fn run(Args { cache, blocks_pool, mut wheels_pid, }: Args) -> Result<D
     let block_bytes = blocks_pool.lend();
     let serialize_task = tokio::task::spawn_blocking(move || {
         let mut kont = storage::BlockSerializer::start(
-            storage::NodeType::Root,
+            storage::NodeType::Root { tree_entries_count: cache.len(), },
             cache.len(),
             block_bytes,
         )?;

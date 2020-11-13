@@ -151,7 +151,7 @@ pub async fn run(
                     .map_err(|ero::NoProcError| Error::WheelsGone)?
                     .ok_or(Error::WheelsEmpty)?;
                 let node_type = if level_index == 0 {
-                    storage::NodeType::Root
+                    storage::NodeType::Root { tree_entries_count: tree_items_count, }
                 } else {
                     storage::NodeType::Leaf
                 };

@@ -73,6 +73,27 @@ impl Default for Params {
     }
 }
 
+#[derive(Clone)]
+pub struct Pools {
+    blocks_pool: BytesPool,
+    lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
+    iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
+    outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
+    iters_pool: pool::Pool<task::SearchTreeIterSinks>,
+}
+
+impl Pools {
+    pub fn new(blocks_pool: BytesPool) -> Pools {
+        Pools {
+            blocks_pool,
+            lookup_requests_queue_pool: pool::Pool::new(),
+            iter_requests_queue_pool: pool::Pool::new(),
+            outcomes_pool: pool::Pool::new(),
+            iters_pool: pool::Pool::new(),
+        }
+    }
+}
+
 pub struct GenServer {
     request_tx: mpsc::Sender<Request>,
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
@@ -101,11 +122,7 @@ impl GenServer {
     pub async fn run(
         self,
         parent_supervisor: SupervisorPid,
-        blocks_pool: BytesPool,
-        lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
-        iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
-        outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
-        iters_pool: pool::Pool<task::SearchTreeIterSinks>,
+        pools: Pools,
         wheels_pid: wheels::Pid,
         params: Params,
         mode: Mode,
@@ -114,11 +131,7 @@ impl GenServer {
         run(State {
             fused_request_rx: self.fused_request_rx,
             parent_supervisor,
-            blocks_pool,
-            lookup_requests_queue_pool,
-            iter_requests_queue_pool,
-            outcomes_pool,
-            iters_pool,
+            pools,
             wheels_pid,
             params,
             mode,
@@ -251,11 +264,7 @@ impl Pid {
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
-    blocks_pool: BytesPool,
-    lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
-    iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
-    outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
-    iters_pool: pool::Pool<task::SearchTreeIterSinks>,
+    pools: Pools,
     wheels_pid: wheels::Pid,
     params: Params,
     mode: Mode,
@@ -321,7 +330,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 task::run_args(
                     task::TaskArgs::Bootstrap(task::bootstrap::Args {
                         cache: cache.clone(),
-                        blocks_pool: state.blocks_pool.clone(),
+                        blocks_pool: state.pools.blocks_pool.clone(),
                         wheels_pid: state.wheels_pid.clone(),
                     }),
                 ),
@@ -432,8 +441,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         let maybe_task_args = async_tree.apply_lookup_request(
                             lookup_request,
                             root_block.clone(),
-                            &state.lookup_requests_queue_pool,
-                            &state.iter_requests_queue_pool,
+                            &state.pools.lookup_requests_queue_pool,
+                            &state.pools.iter_requests_queue_pool,
                             &state.wheels_pid,
                         );
                         if let Some(task_args) = maybe_task_args {
@@ -460,10 +469,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 block_ref: root_block.clone(),
                                 kind: task::IterRequestKind::Items { reply_tx, },
                             },
-                            &state.blocks_pool,
-                            &state.lookup_requests_queue_pool,
-                            &state.iter_requests_queue_pool,
-                            &state.iters_pool,
+                            &state.pools.blocks_pool,
+                            &state.pools.lookup_requests_queue_pool,
+                            &state.pools.iter_requests_queue_pool,
+                            &state.pools.iters_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
                             state.params.iter_send_buffer,
@@ -494,10 +503,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 block_ref: root_block.clone(),
                                 kind: task::IterRequestKind::BlockRefs { reply_tx, },
                             },
-                            &state.blocks_pool,
-                            &state.lookup_requests_queue_pool,
-                            &state.iter_requests_queue_pool,
-                            &state.iters_pool,
+                            &state.pools.blocks_pool,
+                            &state.pools.lookup_requests_queue_pool,
+                            &state.pools.iter_requests_queue_pool,
+                            &state.pools.iters_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
                             state.params.iter_send_buffer,
@@ -525,10 +534,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
                 let maybe_task_args = async_tree.apply_iter_request(
                     iter_request,
-                    &state.blocks_pool,
-                    &state.lookup_requests_queue_pool,
-                    &state.iter_requests_queue_pool,
-                    &state.iters_pool,
+                    &state.pools.blocks_pool,
+                    &state.pools.lookup_requests_queue_pool,
+                    &state.pools.iter_requests_queue_pool,
+                    &state.pools.iters_pool,
                     &state.wheels_pid,
                     &iter_rec_tx,
                     state.params.iter_send_buffer,
@@ -554,10 +563,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             block_ref: root_block.clone(),
                             kind: task::IterRequestKind::BlockRefs { reply_tx, },
                         },
-                        &state.blocks_pool,
-                        &state.lookup_requests_queue_pool,
-                        &state.iter_requests_queue_pool,
-                        &state.iters_pool,
+                        &state.pools.blocks_pool,
+                        &state.pools.lookup_requests_queue_pool,
+                        &state.pools.iter_requests_queue_pool,
+                        &state.pools.iters_pool,
                         &state.wheels_pid,
                         &iter_rec_tx,
                         state.params.iter_send_buffer,
@@ -586,13 +595,13 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         unreachable!(),
                     AsyncBlock::Awaiting { lookup_requests_queue, iter_requests_queue, } => {
                         if !lookup_requests_queue.is_empty() {
-                            let mut outcomes = state.outcomes_pool.lend(Vec::new);
+                            let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
                             tasks.push(
                                 task::run_args(
                                     task::TaskArgs::SearchBlock(task::search_block::Args {
                                         block_ref: block_ref.clone(),
-                                        blocks_pool: state.blocks_pool.clone(),
+                                        blocks_pool: state.pools.blocks_pool.clone(),
                                         block_bytes: block_bytes.clone(),
                                         lookup_requests_queue,
                                         outcomes,
@@ -602,13 +611,13 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             tasks_count += 1;
                         }
                         if !iter_requests_queue.is_empty() {
-                            let mut iters_tx = state.iters_pool.lend(task::SearchTreeIterSinks::default);
+                            let mut iters_tx = state.pools.iters_pool.lend(task::SearchTreeIterSinks::default);
                             iters_tx.clear();
                             tasks.push(
                                 task::run_args(
                                     task::TaskArgs::IterBlock(task::iter_block::Args {
                                         block_ref,
-                                        blocks_pool: state.blocks_pool.clone(),
+                                        blocks_pool: state.pools.blocks_pool.clone(),
                                         block_bytes: block_bytes,
                                         iters_tx,
                                         iter_rec_tx: iter_rec_tx.clone(),
@@ -641,8 +650,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             let maybe_task_args = async_tree.apply_lookup_request(
                                 lookup_request,
                                 jump_block_ref,
-                                &state.lookup_requests_queue_pool,
-                                &state.iter_requests_queue_pool,
+                                &state.pools.lookup_requests_queue_pool,
+                                &state.pools.iter_requests_queue_pool,
                                 &state.wheels_pid,
                             );
                             if let Some(task_args) = maybe_task_args {
@@ -654,8 +663,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
                 let maybe_task_args = async_tree.drop_or_search_more(
                     &block_ref,
-                    &state.blocks_pool,
-                    &state.outcomes_pool,
+                    &state.pools.blocks_pool,
+                    &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
@@ -669,8 +678,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
                 let maybe_task_args = async_tree.drop_or_search_more(
                     &block_ref,
-                    &state.blocks_pool,
-                    &state.outcomes_pool,
+                    &state.pools.blocks_pool,
+                    &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));

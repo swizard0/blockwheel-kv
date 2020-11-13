@@ -24,7 +24,10 @@ pub struct BlockHeader {
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-pub enum NodeType { Root, Leaf, }
+pub enum NodeType {
+    Root { tree_entries_count: usize, },
+    Leaf,
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Entry<'a> {
@@ -146,7 +149,6 @@ pub fn block_deserialize_iter<'a>(
     })
 }
 
-#[allow(dead_code)]
 impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
