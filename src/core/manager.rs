@@ -50,8 +50,10 @@ use crate::{
         RequestInfo,
         RequestInsert,
         RequestLookup,
+        RequestLookupRange,
         RequestRemove,
         RequestFlush,
+        LookupRangeBounds,
     },
     Info,
     Flushed,
@@ -161,14 +163,6 @@ struct State {
     params: Params,
 }
 
-enum Request {
-    Info(RequestInfo),
-    Insert(RequestInsert),
-    Lookup(RequestLookup),
-    Remove(RequestRemove),
-    FlushAll(RequestFlush),
-}
-
 struct ButcherFlush {
     cache: Arc<MemCache>,
 }
@@ -261,8 +255,24 @@ impl Pid {
     }
 
     pub async fn lookup_range<R>(&mut self, range: R) -> Result<LookupRange, LookupRangeError> where R: RangeBounds<kv::Key> {
+        let bounds: LookupRangeBounds = range.into();
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx
+                .send(Request::LookupRange(RequestLookupRange {
+                    bounds: bounds.clone(),
+                    reply_tx,
+                }))
+                .await
+                .map_err(|_send_error| LookupRangeError::GenServer(ero::NoProcError))?;
 
-        unimplemented!()
+            match reply_rx.await {
+                Ok(result) =>
+                    return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
     }
 
     pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
@@ -300,6 +310,15 @@ impl Pid {
             }
         }
     }
+}
+
+enum Request {
+    Info(RequestInfo),
+    Insert(RequestInsert),
+    Lookup(RequestLookup),
+    LookupRange(RequestLookupRange),
+    Remove(RequestRemove),
+    FlushAll(RequestFlush),
 }
 
 #[derive(Debug)]
@@ -594,6 +613,12 @@ async fn busyloop(
                     )));
                     tasks_count += 1;
                 }
+            },
+
+            Event::Request(Some(Request::LookupRange(RequestLookupRange { bounds, reply_tx, }))) => {
+
+
+                unimplemented!()
             },
 
             Event::Request(Some(Request::Remove(request))) => {

@@ -3,6 +3,7 @@ use std::{
     ops::{
         Deref,
         Bound,
+        RangeBounds,
     },
     borrow::Borrow,
     collections::BTreeMap,
@@ -51,7 +52,7 @@ pub struct RequestLookup {
 }
 
 pub struct RequestLookupRange {
-    range_from: Bound<kv::Key>,
+    bounds: LookupRangeBounds,
     reply_tx: oneshot::Sender<LookupRange>,
 }
 
@@ -65,6 +66,36 @@ pub struct RequestRemove {
 pub struct RequestFlush {
     reply_tx: oneshot::Sender<Flushed>,
 }
+
+#[derive(Clone, Debug)]
+struct LookupRangeBounds {
+    range_from: Bound<kv::Key>,
+    range_to: Bound<kv::Key>,
+}
+
+impl<R> From<R> for LookupRangeBounds where R: RangeBounds<kv::Key> {
+    fn from(range: R) -> LookupRangeBounds {
+        LookupRangeBounds {
+            range_from: match range.start_bound() {
+                Bound::Unbounded =>
+                    Bound::Unbounded,
+                Bound::Included(key) =>
+                    Bound::Included(key.clone()),
+                Bound::Excluded(key) =>
+                    Bound::Excluded(key.clone()),
+            },
+            range_to: match range.end_bound() {
+                Bound::Unbounded =>
+                    Bound::Unbounded,
+                Bound::Included(key) =>
+                    Bound::Included(key.clone()),
+                Bound::Excluded(key) =>
+                    Bound::Excluded(key.clone()),
+            },
+        }
+    }
+}
+
 
 #[derive(Clone, Debug)]
 pub struct OrdKey {
