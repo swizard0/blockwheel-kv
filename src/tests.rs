@@ -67,7 +67,7 @@ fn stress() {
         ..Default::default()
     };
     let work_block_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * kv.tree_block_size;
-    let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions;
+    let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
 
     let params = Params {
         wheel_a: blockwheel::Params {
