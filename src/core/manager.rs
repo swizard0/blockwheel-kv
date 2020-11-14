@@ -414,6 +414,23 @@ async fn busyloop(
     let mut current_mode = Mode::Regular;
 
     loop {
+        let maybe_task_args = maybe_merge_search_trees(
+            &mut search_tree_refs,
+            state.params.standalone_search_trees_count,
+            &search_trees,
+            &state.blocks_pool,
+            &state.wheels_pid,
+            state.params.search_tree_params.tree_block_size,
+        );
+        if let Some(task_args) = maybe_task_args {
+            tasks.push(task::run_args(task_args));
+            tasks_count += 1;
+            continue;
+        }
+        break;
+    }
+
+    loop {
         enum Event<R, F, T> {
             Request(Option<R>),
             FlushCache(Option<F>),
@@ -736,6 +753,26 @@ fn push_search_tree_refs(
     -> Option<task::TaskArgs>
 {
     search_tree_refs.push(Reverse(search_tree_ref));
+    maybe_merge_search_trees(
+        search_tree_refs,
+        standalone_search_trees_count,
+        search_trees,
+        blocks_pool,
+        wheels_pid,
+        tree_block_size,
+    )
+}
+
+fn maybe_merge_search_trees(
+    search_tree_refs: &mut BinaryHeap<Reverse<SearchTreeRef>>,
+    standalone_search_trees_count: usize,
+    search_trees: &Set<search_tree::Pid>,
+    blocks_pool: &BytesPool,
+    wheels_pid: &wheels::Pid,
+    tree_block_size: usize,
+)
+    -> Option<task::TaskArgs>
+{
     if search_tree_refs.len() <= standalone_search_trees_count {
         None
     } else {
