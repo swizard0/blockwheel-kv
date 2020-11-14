@@ -1,8 +1,8 @@
 use crate::{
     core::{
         butcher,
+        RequestRemove,
     },
-    RequestRemove,
 };
 
 pub struct Args {

@@ -27,17 +27,16 @@ use crate::{
         manager,
         OrdKey,
         MemCache,
+        RequestInfo,
+        RequestInsert,
+        RequestLookup,
+        RequestRemove,
+        RequestFlush,
     },
     Info,
-    Request,
     Inserted,
     Removed,
     Flushed,
-    RequestInfo,
-    RequestInsert,
-    RequestLookup,
-    RequestRemove,
-    RequestFlush,
 };
 
 #[derive(Clone, Debug)]
@@ -189,6 +188,15 @@ struct State {
     version_provider: version::Provider,
     manager_pid: manager::Pid,
     params: Params,
+}
+
+#[derive(Debug)]
+enum Request {
+    Info(RequestInfo),
+    Insert(RequestInsert),
+    Lookup(RequestLookup),
+    Remove(RequestRemove),
+    Flush(RequestFlush),
 }
 
 #[derive(Debug)]

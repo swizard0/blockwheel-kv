@@ -1,8 +1,17 @@
 use std::{
     cmp,
-    ops::Deref,
+    ops::{
+        Deref,
+        Bound,
+    },
     borrow::Borrow,
     collections::BTreeMap,
+};
+
+use futures::{
+    channel::{
+        oneshot,
+    },
 };
 
 use super::{
@@ -10,13 +19,52 @@ use super::{
     wheels::{
         BlockRef,
     },
+    Info,
+    Inserted,
+    Removed,
+    Flushed,
+    LookupRange,
 };
 
 pub mod manager;
 pub mod butcher;
 pub mod search_tree;
 
-pub type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
+type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
+
+#[derive(Debug)]
+pub struct RequestInfo {
+    reply_tx: oneshot::Sender<Info>,
+}
+
+#[derive(Debug)]
+pub struct RequestInsert {
+    key: kv::Key,
+    value: kv::Value,
+    reply_tx: oneshot::Sender<Inserted>,
+}
+
+#[derive(Debug)]
+pub struct RequestLookup {
+    key: kv::Key,
+    reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
+}
+
+pub struct RequestLookupRange {
+    range_from: Bound<kv::Key>,
+    reply_tx: oneshot::Sender<LookupRange>,
+}
+
+#[derive(Debug)]
+pub struct RequestRemove {
+    key: kv::Key,
+    reply_tx: oneshot::Sender<Removed>,
+}
+
+#[derive(Debug)]
+pub struct RequestFlush {
+    reply_tx: oneshot::Sender<Flushed>,
+}
 
 #[derive(Clone, Debug)]
 pub struct OrdKey {

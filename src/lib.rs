@@ -1,12 +1,15 @@
 #![forbid(unsafe_code)]
 
 use std::{
-    ops::AddAssign,
+    ops::{
+        AddAssign,
+        RangeBounds,
+    },
 };
 
 use futures::{
     channel::{
-        oneshot,
+        mpsc,
     },
 };
 
@@ -140,6 +143,11 @@ pub enum LookupError {
 }
 
 #[derive(Debug)]
+pub enum LookupRangeError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
 pub enum RemoveError {
     GenServer(ero::NoProcError),
 }
@@ -168,6 +176,15 @@ pub struct Info {
     pub tombstones_count: usize,
 }
 
+pub struct LookupRange {
+    pub key_values_rx: mpsc::Receiver<LookupRangeItem>,
+}
+
+pub enum LookupRangeItem {
+    KeyValue(kv::KeyValuePair),
+    NoMoreItems,
+}
+
 impl Pid {
     pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
         self.manager_pid.info().await
@@ -183,6 +200,11 @@ impl Pid {
             .map_err(|core::manager::LookupError::GenServer(ero::NoProcError)| LookupError::GenServer(ero::NoProcError))
     }
 
+    pub async fn lookup_range<R>(&mut self, range: R) -> Result<LookupRange, LookupRangeError> where R: RangeBounds<kv::Key> {
+        self.manager_pid.lookup_range(range).await
+            .map_err(|core::manager::LookupRangeError::GenServer(ero::NoProcError)| LookupRangeError::GenServer(ero::NoProcError))
+    }
+
     pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
         self.manager_pid.remove(key).await
             .map_err(|core::manager::RemoveError::GenServer(ero::NoProcError)| RemoveError::GenServer(ero::NoProcError))
@@ -192,44 +214,6 @@ impl Pid {
         self.manager_pid.flush_all().await
             .map_err(|core::manager::FlushError::GenServer(ero::NoProcError)| FlushError::GenServer(ero::NoProcError))
     }
-}
-
-#[derive(Debug)]
-pub enum Request {
-    Info(RequestInfo),
-    Insert(RequestInsert),
-    Lookup(RequestLookup),
-    Remove(RequestRemove),
-    Flush(RequestFlush),
-}
-
-#[derive(Debug)]
-pub struct RequestInfo {
-    pub reply_tx: oneshot::Sender<Info>,
-}
-
-#[derive(Debug)]
-pub struct RequestInsert {
-    pub key: kv::Key,
-    pub value: kv::Value,
-    pub reply_tx: oneshot::Sender<Inserted>,
-}
-
-#[derive(Debug)]
-pub struct RequestLookup {
-    pub key: kv::Key,
-    pub reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
-}
-
-#[derive(Debug)]
-pub struct RequestRemove {
-    pub key: kv::Key,
-    pub reply_tx: oneshot::Sender<Removed>,
-}
-
-#[derive(Debug)]
-pub struct RequestFlush {
-    pub reply_tx: oneshot::Sender<Flushed>,
 }
 
 impl AddAssign for Info {

@@ -2,6 +2,7 @@ use std::{
     mem,
     sync::Arc,
     time::Duration,
+    ops::RangeBounds,
     collections::{
         hash_map,
         HashMap,
@@ -46,16 +47,18 @@ use crate::{
         butcher,
         search_tree,
         MemCache,
+        RequestInfo,
+        RequestInsert,
+        RequestLookup,
+        RequestRemove,
+        RequestFlush,
     },
     Info,
     Flushed,
     Removed,
     Inserted,
-    RequestInfo,
-    RequestInsert,
-    RequestLookup,
-    RequestRemove,
-    RequestFlush,
+    LookupRange,
+    LookupRangeItem,
 };
 
 mod task;
@@ -181,6 +184,11 @@ pub enum LookupError {
 }
 
 #[derive(Debug)]
+pub enum LookupRangeError {
+    GenServer(ero::NoProcError),
+}
+
+#[derive(Debug)]
 pub enum RemoveError {
     GenServer(ero::NoProcError),
 }
@@ -250,6 +258,11 @@ impl Pid {
                     (),
             }
         }
+    }
+
+    pub async fn lookup_range<R>(&mut self, range: R) -> Result<LookupRange, LookupRangeError> where R: RangeBounds<kv::Key> {
+
+        unimplemented!()
     }
 
     pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
