@@ -1,9 +1,11 @@
 use std::{
     mem,
     sync::Arc,
-    cmp::Reverse,
     time::Duration,
-    collections::BinaryHeap,
+    collections::{
+        hash_map,
+        HashMap,
+    },
 };
 
 use futures::{
@@ -62,7 +64,6 @@ mod task;
 pub struct Params {
     pub task_restart_sec: usize,
     pub search_tree_params: search_tree::Params,
-    pub standalone_search_trees_count: usize,
 }
 
 impl Default for Params {
@@ -70,7 +71,6 @@ impl Default for Params {
         Params {
             task_restart_sec: 4,
             search_tree_params: Default::default(),
-            standalone_search_trees_count: 2,
         }
     }
 }
@@ -331,7 +331,7 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
 async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
     let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
     let mut search_trees = Set::new();
-    let mut search_tree_refs = BinaryHeap::new();
+    let mut search_tree_refs = BinMerger::new();
     let mut blocks_total = 0;
 
     log::info!("loading search_tree roots from wheels");
@@ -366,10 +366,10 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
                             ),
                         );
                         let search_tree_ref = search_trees.insert(search_tree_pid);
-                        search_tree_refs.push(Reverse(SearchTreeRef {
+                        search_tree_refs.push(SearchTreeRef {
                             search_tree_ref,
                             items_count: tree_entries_count,
-                        }));
+                        });
                     },
                     storage::NodeType::Leaf =>
                         (),
@@ -394,7 +394,7 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
 async fn busyloop(
     mut child_supervisor_pid: SupervisorPid,
     mut search_trees: Set<search_tree::Pid>,
-    mut search_tree_refs: BinaryHeap<Reverse<SearchTreeRef>>,
+    mut search_tree_refs: BinMerger,
     search_tree_pools: search_tree::Pools,
     mut state: State,
 )
@@ -416,7 +416,6 @@ async fn busyloop(
     loop {
         let maybe_task_args = maybe_merge_search_trees(
             &mut search_tree_refs,
-            state.params.standalone_search_trees_count,
             &search_trees,
             &state.blocks_pool,
             &state.wheels_pid,
@@ -505,10 +504,9 @@ async fn busyloop(
                     ),
                 );
                 let search_tree_ref = search_trees.insert(search_tree_pid);
-                let maybe_task_args = push_search_tree_refs(
+                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count, });
+                let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
-                    SearchTreeRef { search_tree_ref, items_count, },
-                    state.params.standalone_search_trees_count,
                     &search_trees,
                     &state.blocks_pool,
                     &state.wheels_pid,
@@ -710,10 +708,9 @@ async fn busyloop(
                     ),
                 );
                 let search_tree_ref = search_trees.insert(search_tree_pid);
-                let maybe_task_args = push_search_tree_refs(
+                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count: done.items_count, });
+                let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
-                    SearchTreeRef { search_tree_ref, items_count: done.items_count, },
-                    state.params.standalone_search_trees_count,
                     &search_trees,
                     &state.blocks_pool,
                     &state.wheels_pid,
@@ -741,31 +738,50 @@ struct SearchTreeRef {
     search_tree_ref: Ref,
 }
 
-fn push_search_tree_refs(
-    search_tree_refs: &mut BinaryHeap<Reverse<SearchTreeRef>>,
-    search_tree_ref: SearchTreeRef,
-    standalone_search_trees_count: usize,
-    search_trees: &Set<search_tree::Pid>,
-    blocks_pool: &BytesPool,
-    wheels_pid: &wheels::Pid,
-    tree_block_size: usize,
-)
-    -> Option<task::TaskArgs>
-{
-    search_tree_refs.push(Reverse(search_tree_ref));
-    maybe_merge_search_trees(
-        search_tree_refs,
-        standalone_search_trees_count,
-        search_trees,
-        blocks_pool,
-        wheels_pid,
-        tree_block_size,
-    )
+
+struct BinMerger {
+    powers: HashMap<usize, Vec<SearchTreeRef>>,
+    need_merge: Vec<usize>,
+}
+
+impl BinMerger {
+    fn new() -> BinMerger {
+        BinMerger {
+            powers: HashMap::new(),
+            need_merge: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, search_tree_ref: SearchTreeRef) {
+        let power_of_2 = search_tree_ref.items_count.next_power_of_two();
+        match self.powers.entry(power_of_2) {
+            hash_map::Entry::Vacant(ve) => {
+                ve.insert(vec![search_tree_ref]);
+            },
+            hash_map::Entry::Occupied(mut oe) => {
+                let powers = oe.get_mut();
+                powers.push(search_tree_ref);
+                if powers.len() >= 2 {
+                    self.need_merge.push(power_of_2);
+                }
+            },
+        }
+    }
+
+    fn pop(&mut self) -> Option<(SearchTreeRef, SearchTreeRef)> {
+        let power_of_2 = self.need_merge.pop()?;
+        let powers = self.powers.get_mut(&power_of_2).unwrap();
+        let search_tree_a_ref = powers.pop().unwrap();
+        let search_tree_b_ref = powers.pop().unwrap();
+        if powers.len() >= 2 {
+            self.need_merge.push(power_of_2);
+        }
+        Some((search_tree_a_ref, search_tree_b_ref))
+    }
 }
 
 fn maybe_merge_search_trees(
-    search_tree_refs: &mut BinaryHeap<Reverse<SearchTreeRef>>,
-    standalone_search_trees_count: usize,
+    search_tree_refs: &mut BinMerger,
     search_trees: &Set<search_tree::Pid>,
     blocks_pool: &BytesPool,
     wheels_pid: &wheels::Pid,
@@ -773,23 +789,18 @@ fn maybe_merge_search_trees(
 )
     -> Option<task::TaskArgs>
 {
-    if search_tree_refs.len() <= standalone_search_trees_count {
-        None
-    } else {
-        let Reverse(SearchTreeRef { search_tree_ref: search_tree_a_ref, .. }) = search_tree_refs.pop().unwrap();
-        let Reverse(SearchTreeRef { search_tree_ref: search_tree_b_ref, .. }) = search_tree_refs.pop().unwrap();
-        let search_tree_a_pid = search_trees.get(search_tree_a_ref).unwrap().clone();
-        let search_tree_b_pid = search_trees.get(search_tree_b_ref).unwrap().clone();
-        Some(task::TaskArgs::MergeSearchTrees(
-            task::merge_search_trees::Args {
-                search_tree_a_ref,
-                search_tree_b_ref,
-                search_tree_a_pid,
-                search_tree_b_pid,
-                blocks_pool: blocks_pool.clone(),
-                wheels_pid: wheels_pid.clone(),
-                tree_block_size,
-            },
-        ))
-    }
+    let (search_tree_a_ref, search_tree_b_ref) = search_tree_refs.pop()?;
+    let search_tree_a_pid = search_trees.get(search_tree_a_ref.search_tree_ref).unwrap().clone();
+    let search_tree_b_pid = search_trees.get(search_tree_b_ref.search_tree_ref).unwrap().clone();
+    Some(task::TaskArgs::MergeSearchTrees(
+        task::merge_search_trees::Args {
+            search_tree_a_ref: search_tree_a_ref.search_tree_ref,
+            search_tree_b_ref: search_tree_b_ref.search_tree_ref,
+            search_tree_a_pid,
+            search_tree_b_pid,
+            blocks_pool: blocks_pool.clone(),
+            wheels_pid: wheels_pid.clone(),
+            tree_block_size,
+        },
+    ))
 }

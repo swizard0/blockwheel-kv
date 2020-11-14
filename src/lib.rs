@@ -37,7 +37,6 @@ pub struct Params {
     pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
     pub search_tree_iter_send_buffer: usize,
-    pub standalone_search_trees_count: usize,
 }
 
 impl Default for Params {
@@ -50,7 +49,6 @@ impl Default for Params {
             search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
             search_tree_iter_send_buffer: 4,
-            standalone_search_trees_count: 2,
         }
     }
 }
@@ -105,7 +103,6 @@ impl GenServer {
                 remove_tasks_limit: params.search_tree_remove_tasks_limit,
                 iter_send_buffer: params.search_tree_iter_send_buffer,
             },
-            standalone_search_trees_count: params.standalone_search_trees_count,
         };
 
         let child_supervisor_gen_server = parent_supervisor.child_supevisor();

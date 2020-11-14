@@ -64,7 +64,6 @@ fn stress() {
     // };
 
     let kv = blockwheel_kv::Params {
-        standalone_search_trees_count: 4,
         ..Default::default()
     };
     let work_block_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * kv.tree_block_size;
