@@ -47,27 +47,28 @@ fn stress() {
 
     let limits = Limits {
         active_tasks: 128,
-        actions: 1024,
+        actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
     };
-
-    let work_block_size_bytes = 16 * 1024;
-    let init_wheel_size_bytes = 2 * 1024 * 1024;
 
     // let runtime = tokio::runtime::Builder::new_multi_thread()
     //     .build()
     //     .unwrap();
 
     // let limits = Limits {
-    //     active_tasks: 256,
-    //     actions: 16384,
+    //     active_tasks: 512,
+    //     actions: 24576,
     //     key_size_bytes: 32,
     //     value_size_bytes: 4096,
     // };
 
-    // let work_block_size_bytes = 16 * 1024;
-    // let init_wheel_size_bytes = 64 * 1024 * 1024;
+    let kv = blockwheel_kv::Params {
+        standalone_search_trees_count: 4,
+        ..Default::default()
+    };
+    let work_block_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * kv.tree_block_size;
+    let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 4;
 
     let params = Params {
         wheel_a: blockwheel::Params {
@@ -86,6 +87,7 @@ fn stress() {
             defrag_parallel_tasks_limit: 8,
             ..Default::default()
         },
+        kv,
     };
 
     let version_provider = version::Provider::new();
@@ -100,6 +102,10 @@ fn stress() {
     fs::remove_file(&params.wheel_b.wheel_filename).ok();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
+    // next load existing wheel and repeat stress
+    counter.clear();
+    runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+
     fs::remove_file(&params.wheel_a.wheel_filename).ok();
     fs::remove_file(&params.wheel_b.wheel_filename).ok();
 }
@@ -108,6 +114,7 @@ fn stress() {
 struct Params {
     wheel_a: blockwheel::Params,
     wheel_b: blockwheel::Params,
+    kv: blockwheel_kv::Params,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -130,11 +137,11 @@ impl Counter {
         self.lookups + self.inserts + self.removes
     }
 
-    // fn clear(&mut self) {
-    //     self.lookups = 0;
-    //     self.inserts = 0;
-    //     self.removes = 0;
-    // }
+    fn clear(&mut self) {
+        self.lookups = 0;
+        self.inserts = 0;
+        self.removes = 0;
+    }
 }
 
 struct DataIndex {
@@ -222,10 +229,7 @@ async fn stress_loop(
             blocks_pool.clone(),
             version_provider.clone(),
             wheels_pid.clone(),
-            blockwheel_kv::Params {
-                standalone_search_trees_count: 1,
-                ..Default::default()
-            },
+            params.kv,
         ),
     );
 
