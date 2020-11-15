@@ -2,6 +2,7 @@
 pub mod info_butcher;
 pub mod insert_butcher;
 pub mod lookup_butcher;
+pub mod lookup_range_butcher;
 pub mod remove_butcher;
 pub mod flush_butcher;
 pub mod info_search_tree;
@@ -14,6 +15,7 @@ pub enum TaskArgs {
     InfoButcher(info_butcher::Args),
     InsertButcher(insert_butcher::Args),
     LookupButcher(lookup_butcher::Args),
+    LookupRangeButcher(lookup_range_butcher::Args),
     RemoveButcher(remove_butcher::Args),
     FlushButcher(flush_butcher::Args),
     InfoSearchTree(info_search_tree::Args),
@@ -27,6 +29,7 @@ pub enum TaskDone {
     InfoButcher(info_butcher::Done),
     InsertButcher(insert_butcher::Done),
     LookupButcher(lookup_butcher::Done),
+    LookupRangeButcher(lookup_range_butcher::Done),
     RemoveButcher(remove_butcher::Done),
     FlushButcher(flush_butcher::Done),
     InfoSearchTree(info_search_tree::Done),
@@ -41,6 +44,7 @@ pub enum Error {
     InfoButcher(info_butcher::Error),
     InsertButcher(insert_butcher::Error),
     LookupButcher(lookup_butcher::Error),
+    LookupRangeButcher(lookup_range_butcher::Error),
     RemoveButcher(remove_butcher::Error),
     FlushButcher(flush_butcher::Error),
     InfoSearchTree(info_search_tree::Error),
@@ -66,6 +70,11 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
             TaskDone::LookupButcher(
                 lookup_butcher::run(args).await
                     .map_err(Error::LookupButcher)?,
+            ),
+        TaskArgs::LookupRangeButcher(args) =>
+            TaskDone::LookupRangeButcher(
+                lookup_range_butcher::run(args).await
+                    .map_err(Error::LookupRangeButcher)?,
             ),
         TaskArgs::RemoveButcher(args) =>
             TaskDone::RemoveButcher(

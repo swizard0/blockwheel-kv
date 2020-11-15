@@ -2,6 +2,7 @@ use std::{
     cmp,
     ops::{
         Deref,
+        DerefMut,
         Bound,
         RangeBounds,
     },
@@ -32,8 +33,6 @@ pub mod butcher;
 pub mod search_tree;
 pub mod merger;
 
-type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
-
 #[derive(Debug)]
 pub struct RequestInfo {
     reply_tx: oneshot::Sender<Info>,
@@ -53,7 +52,7 @@ pub struct RequestLookup {
 }
 
 pub struct RequestLookupRange {
-    bounds: SearchRangeBounds,
+    range: SearchRangeBounds,
     reply_tx: oneshot::Sender<LookupRange>,
 }
 
@@ -66,6 +65,52 @@ pub struct RequestRemove {
 #[derive(Debug)]
 pub struct RequestFlush {
     reply_tx: oneshot::Sender<Flushed>,
+}
+
+pub struct MemCache {
+    cache: BTreeMap<OrdKey, kv::ValueCell>,
+}
+
+impl MemCache {
+    fn new() -> MemCache {
+        MemCache {
+            cache: BTreeMap::new(),
+        }
+    }
+
+    fn range(&self, range: SearchRangeBounds) -> impl Iterator<Item = kv::KeyValuePair> + '_ {
+        fn ord_key_map(bound: Bound<kv::Key>) -> Bound<OrdKey> {
+            match bound {
+                Bound::Unbounded =>
+                    Bound::Unbounded,
+                Bound::Included(key) =>
+                    Bound::Included(OrdKey::new(key)),
+                Bound::Excluded(key) =>
+                    Bound::Excluded(OrdKey::new(key)),
+            }
+        }
+
+        let ord_key_range = (ord_key_map(range.range_from), ord_key_map(range.range_to));
+        self.cache.range(ord_key_range)
+            .map(|(ord_key, value_cell)| kv::KeyValuePair {
+                key: ord_key.as_ref().clone(),
+                value_cell: value_cell.clone(),
+            })
+    }
+}
+
+impl Deref for MemCache {
+    type Target = BTreeMap<OrdKey, kv::ValueCell>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.cache
+    }
+}
+
+impl DerefMut for MemCache {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.cache
+    }
 }
 
 #[derive(Clone, Debug)]

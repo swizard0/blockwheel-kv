@@ -14,6 +14,11 @@ use futures::{
     SinkExt,
 };
 
+use alloc_pool::{
+    pool,
+    Shared,
+};
+
 use ero::{
     restart,
     ErrorSeverity,
@@ -32,6 +37,7 @@ use crate::{
         RequestLookup,
         RequestRemove,
         RequestFlush,
+        SearchRangeBounds,
     },
     Info,
     Inserted,
@@ -152,6 +158,30 @@ impl Pid {
         }
     }
 
+    pub async fn lookup_range(
+        &mut self,
+        range: SearchRangeBounds,
+        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair>>,
+    )
+        -> Result<Shared<Vec<kv::KeyValuePair>>, ero::NoProcError>
+    {
+        loop {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.request_tx.send(Request::LookupRange {
+                range: range.clone(),
+                iter_items_pool: iter_items_pool.clone(),
+                reply_tx,
+            }).await.map_err(|_send_error| ero::NoProcError)?;
+
+            match reply_rx.await {
+                Ok(result) =>
+                    return Ok(result),
+                Err(oneshot::Canceled) =>
+                    (),
+            }
+        }
+    }
+
     pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -195,6 +225,11 @@ enum Request {
     Info(RequestInfo),
     Insert(RequestInsert),
     Lookup(RequestLookup),
+    LookupRange {
+        range: SearchRangeBounds,
+        reply_tx: oneshot::Sender<Shared<Vec<kv::KeyValuePair>>>,
+        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair>>,
+    },
     Remove(RequestRemove),
     Flush(RequestFlush),
 }
@@ -253,6 +288,15 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     .cloned();
                 if let Err(_send_error) = reply_tx.send(lookup_result) {
                     log::warn!("client canceled lookup request");
+                }
+            },
+
+            Request::LookupRange { range, reply_tx, iter_items_pool, } => {
+                let mut iter_items = iter_items_pool.lend(Vec::new);
+                iter_items.clear();
+                iter_items.extend(memcache.range(range));
+                if let Err(_send_error) = reply_tx.send(iter_items.freeze()) {
+                    log::warn!("client canceled lookup range request");
                 }
             },
 

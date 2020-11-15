@@ -261,7 +261,7 @@ impl Pid {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
                 .send(Request::LookupRange(RequestLookupRange {
-                    bounds: bounds.clone(),
+                    range: bounds.clone(),
                     reply_tx,
                 }))
                 .await
@@ -442,6 +442,7 @@ async fn busyloop(
     -> Result<(), ErrorSeverity<State, Error>>
 {
     let merger_iters_pool = pool::Pool::new();
+    let iter_items_pool = pool::Pool::new();
 
     let mut info_requests = Set::new();
     let mut lookup_requests = Set::new();
@@ -646,39 +647,22 @@ async fn busyloop(
                 }
             },
 
-            Event::Request(Some(Request::LookupRange(RequestLookupRange { bounds, reply_tx, }))) => {
+            Event::Request(Some(Request::LookupRange(RequestLookupRange { range, reply_tx, }))) => {
                 let (key_values_tx, key_values_rx) =
                     mpsc::channel(state.params.search_tree_params.iter_send_buffer);
                 let lookup_range = LookupRange { key_values_rx, };
                 if let Err(_send_error) = reply_tx.send(lookup_range) {
                     log::warn!("client canceled lookup_range request");
                 }
-
-
-                // let request_ref = lookup_requests.insert(LookupRequest {
-                //     reply_tx,
-                //     pending_count: 1 + search_trees.len(),
-                //     found_fold: None,
-                // });
-                // tasks.push(task::run_args(task::TaskArgs::LookupButcher(
-                //     task::lookup_butcher::Args {
-                //         key: key.clone(),
-                //         request_ref: request_ref.clone(),
-                //         butcher_pid: state.butcher_pid.clone(),
-                //     },
-                // )));
-                // tasks_count += 1;
-                // for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-                //     tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
-                //         task::lookup_search_tree::Args {
-                //             key: key.clone(),
-                //             request_ref: request_ref.clone(),
-                //             search_tree_pid: search_tree_pid.clone(),
-                //         },
-                //     )));
-                //     tasks_count += 1;
-                // }
-                unimplemented!()
+                tasks.push(task::run_args(task::TaskArgs::LookupRangeButcher(
+                    task::lookup_range_butcher::Args {
+                        range,
+                        key_values_tx,
+                        iter_items_pool: iter_items_pool.clone(),
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                )));
+                tasks_count += 1;
             },
 
             Event::Request(Some(Request::Remove(request))) => {
@@ -766,6 +750,11 @@ async fn busyloop(
                         log::warn!("client canceled lookup request");
                     }
                 }
+            },
+
+            Event::Task(Ok(task::TaskDone::LookupRangeButcher(task::lookup_range_butcher::Done { range, key_values_tx, iter_items, }))) => {
+
+                unimplemented!()
             },
 
             Event::Task(Ok(task::TaskDone::RemoveButcher(task::remove_butcher::Done))) =>
