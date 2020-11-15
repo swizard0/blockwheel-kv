@@ -635,7 +635,7 @@ async fn busyloop(
                     },
                 )));
                 tasks_count += 1;
-                for (search_tree_ref, search_tree_pid) in search_trees.iter() {
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
                     tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
                         task::lookup_search_tree::Args {
                             key: key.clone(),

@@ -69,9 +69,18 @@ pub struct RequestFlush {
 }
 
 #[derive(Clone, Debug)]
-struct SearchRangeBounds {
+pub struct SearchRangeBounds {
     range_from: Bound<kv::Key>,
     range_to: Bound<kv::Key>,
+}
+
+impl SearchRangeBounds {
+    fn unbounded() -> SearchRangeBounds {
+        SearchRangeBounds {
+            range_from: Bound::Unbounded,
+            range_to: Bound::Unbounded,
+        }
+    }
 }
 
 impl<R> From<R> for SearchRangeBounds where R: RangeBounds<kv::Key> {

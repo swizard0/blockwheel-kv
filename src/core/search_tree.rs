@@ -47,6 +47,7 @@ use crate::{
     core::{
         BlockRef,
         MemCache,
+        SearchRangeBounds,
     },
     Info,
     Flushed,
@@ -508,6 +509,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         tasks.push(task::run_args(task::TaskArgs::IterCache(
                             task::iter_cache::Args {
                                 cache: cache.clone(),
+                                range: SearchRangeBounds::unbounded(),
                                 reply_tx,
                             },
                         )));
