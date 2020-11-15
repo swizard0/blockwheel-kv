@@ -1,17 +1,3 @@
-use std::{
-    mem,
-    cmp::{
-        Ordering,
-    },
-};
-
-use futures::{
-    future,
-    channel::{
-        mpsc,
-    },
-    StreamExt,
-};
 
 use o1::set::Ref;
 
@@ -41,7 +27,6 @@ use crate::{
         search_tree,
         BlockRef,
     },
-    KeyValueStreamItem,
 };
 
 pub struct Args {
@@ -294,7 +279,7 @@ async fn merger_start(
 )
     -> Result<merger::ItersMerger<Unique<Vec<merger::KeyValuesIter>>>, Error>
 {
-    let (items_a_rx, items_b_rx) = future::try_join(
+    let (items_a_rx, items_b_rx) = futures::future::try_join(
         async {
             let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter().await
                 .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;

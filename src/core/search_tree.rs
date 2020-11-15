@@ -321,7 +321,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
-    let mut demolish_reply_tx = None;
 
     let (iter_rec_tx, mut iter_rec_rx) = mpsc::channel(0);
 
@@ -344,7 +343,10 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
 
     enum FlushMode {
         NoFlush,
-        InProgress { done_reply_tx: oneshot::Sender<Flushed>, },
+        InProgress {
+            flush_reply_tx: Option<oneshot::Sender<Flushed>>,
+            demolish_reply_tx: Option<oneshot::Sender<Demolished>>,
+        },
     };
     let mut flush_mode = FlushMode::NoFlush;
 
@@ -355,6 +357,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             IterRec(I),
         }
         let event = match mem::replace(&mut flush_mode, FlushMode::NoFlush) {
+
             FlushMode::NoFlush if tasks_count == 0 =>
                 select! {
                     result = state.fused_request_rx.next() =>
@@ -366,6 +369,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             Event::IterRec(iter_rec_request),
                     },
                 },
+
             FlushMode::NoFlush =>
                 select! {
                     result = state.fused_request_rx.next() =>
@@ -385,16 +389,58 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             Event::IterRec(iter_rec_request),
                     },
                 },
-            FlushMode::InProgress { done_reply_tx, } if tasks_count == 0 => {
-                log::debug!("FlushMode::InProgress: all tasks finished, responding Flushed and switching mode");
-                if let Err(_send_error) = done_reply_tx.send(Flushed) {
-                    log::warn!("client canceled flush request");
+
+            FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } if tasks_count == 0 => {
+                log::debug!("FlushMode::InProgress: all tasks finished");
+
+                if let Some(done_reply_tx) = flush_reply_tx {
+                    log::debug!("responding Flushed");
+                    if let Err(_send_error) = done_reply_tx.send(Flushed) {
+                        log::warn!("client canceled flush request");
+                    }
                 }
+
+                if let Some(done_reply_tx) = demolish_reply_tx {
+                    match &state.mode {
+                        Mode::Regular { root_block, } => {
+                            log::debug!("starting demolish on root_block = {:?}", root_block);
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            let maybe_task_args = async_tree.apply_iter_request(
+                                task::IterRequest {
+                                    block_ref: root_block.clone(),
+                                    kind: task::IterRequestKind::BlockRefs { reply_tx, },
+                                },
+                                &state.pools.blocks_pool,
+                                &state.pools.lookup_requests_queue_pool,
+                                &state.pools.iter_requests_queue_pool,
+                                &state.pools.iters_pool,
+                                &state.wheels_pid,
+                                &iter_rec_tx,
+                                state.params.iter_send_buffer,
+                            );
+                            if let Some(task_args) = maybe_task_args {
+                                tasks.push(task::run_args(task_args));
+                                tasks_count += 1;
+                            }
+                            tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
+                                done_reply_tx,
+                                block_refs_rx_reply_rx: reply_rx,
+                                wheels_pid: state.wheels_pid.clone(),
+                                remove_tasks_limit: state.params.remove_tasks_limit,
+                            })));
+                            tasks_count += 1;
+                        },
+                        Mode::CacheBootstrap { .. } =>
+                            unreachable!(),
+                    }
+                }
+
                 continue;
             },
-            FlushMode::InProgress { done_reply_tx, } => {
+
+            FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } => {
                 log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
-                flush_mode = FlushMode::InProgress { done_reply_tx, };
+                flush_mode = FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, };
                 select! {
                     result = tasks.next() => match result {
                         None =>
@@ -412,6 +458,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     },
                 }
             },
+
         };
 
         match event {
@@ -487,42 +534,31 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
                 log::debug!("Request::Flush received: waiting for tasks to finish");
-                flush_mode = FlushMode::InProgress { done_reply_tx: reply_tx, };
+                match &mut flush_mode {
+                    FlushMode::NoFlush =>
+                        flush_mode = FlushMode::InProgress {
+                            flush_reply_tx: Some(reply_tx),
+                            demolish_reply_tx: None,
+                        },
+                    FlushMode::InProgress { flush_reply_tx: Some(..), .. } =>
+                        unreachable!(),
+                    FlushMode::InProgress { flush_reply_tx: flush_reply_tx @ None, .. } =>
+                        *flush_reply_tx = Some(reply_tx),
+                }
             },
 
             Event::Request(Some(Request::Demolish { reply_tx, })) => {
-                assert!(demolish_reply_tx.is_none());
-                demolish_reply_tx = Some(reply_tx);
-                match &state.mode {
-                    Mode::CacheBootstrap { .. } =>
-                        (),
-                    Mode::Regular { root_block, } => {
-                        log::debug!("starting demolish on root_block = {:?}", root_block);
-                        let (reply_tx, reply_rx) = oneshot::channel();
-                        let maybe_task_args = async_tree.apply_iter_request(
-                            task::IterRequest {
-                                block_ref: root_block.clone(),
-                                kind: task::IterRequestKind::BlockRefs { reply_tx, },
-                            },
-                            &state.pools.blocks_pool,
-                            &state.pools.lookup_requests_queue_pool,
-                            &state.pools.iter_requests_queue_pool,
-                            &state.pools.iters_pool,
-                            &state.wheels_pid,
-                            &iter_rec_tx,
-                            state.params.iter_send_buffer,
-                        );
-                        if let Some(task_args) = maybe_task_args {
-                            tasks.push(task::run_args(task_args));
-                            tasks_count += 1;
-                        }
-                        tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
-                            block_refs_rx_reply_rx: reply_rx,
-                            wheels_pid: state.wheels_pid.clone(),
-                            remove_tasks_limit: state.params.remove_tasks_limit,
-                        })));
-                        tasks_count += 1;
-                    },
+                log::debug!("Request::Demolish received: waiting for tasks to finish");
+                match &mut flush_mode {
+                    FlushMode::NoFlush =>
+                        flush_mode = FlushMode::InProgress {
+                            flush_reply_tx: None,
+                            demolish_reply_tx: Some(reply_tx),
+                        },
+                    FlushMode::InProgress { demolish_reply_tx: Some(..), .. } =>
+                        unreachable!(),
+                    FlushMode::InProgress { demolish_reply_tx: demolish_reply_tx @ None, .. } =>
+                        *demolish_reply_tx = Some(reply_tx),
                 }
             },
 
@@ -549,41 +585,13 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) => {
+            Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
                 match mem::replace(&mut state.mode, Mode::Regular { root_block: root_block.clone(), }) {
                     Mode::CacheBootstrap { .. } =>
                         (),
                     Mode::Regular { .. } =>
                         unreachable!(),
-                }
-                if demolish_reply_tx.is_some() {
-                    log::debug!("starting demolish on root_block = {:?}", root_block);
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let maybe_task_args = async_tree.apply_iter_request(
-                        task::IterRequest {
-                            block_ref: root_block.clone(),
-                            kind: task::IterRequestKind::BlockRefs { reply_tx, },
-                        },
-                        &state.pools.blocks_pool,
-                        &state.pools.lookup_requests_queue_pool,
-                        &state.pools.iter_requests_queue_pool,
-                        &state.pools.iters_pool,
-                        &state.wheels_pid,
-                        &iter_rec_tx,
-                        state.params.iter_send_buffer,
-                    );
-                    if let Some(task_args) = maybe_task_args {
-                        tasks.push(task::run_args(task_args));
-                        tasks_count += 1;
-                    }
-                    tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
-                        block_refs_rx_reply_rx: reply_rx,
-                        wheels_pid: state.wheels_pid.clone(),
-                        remove_tasks_limit: state.params.remove_tasks_limit,
-                    })));
-                    tasks_count += 1;
-                }
-            },
+                },
 
             Event::Task(Ok(task::TaskDone::LoadBlock(task::load_block::Done { block_ref, block_bytes, }))) => {
                 let async_block = async_tree.get_mut(&block_ref).unwrap();
@@ -688,10 +696,9 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::Demolish(task::demolish::Done { blocks_deleted, }))) => {
+            Event::Task(Ok(task::TaskDone::Demolish(task::demolish::Done { blocks_deleted, done_reply_tx, }))) => {
                 log::debug!("demolished, {} blocks actually deleted", blocks_deleted);
-                let reply_tx = demolish_reply_tx.unwrap();
-                if let Err(_send_error) = reply_tx.send(Demolished) {
+                if let Err(_send_error) = done_reply_tx.send(Demolished) {
                     log::warn!("client canceled demolish request");
                 }
                 return Ok(());

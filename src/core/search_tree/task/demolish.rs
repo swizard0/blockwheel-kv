@@ -15,12 +15,14 @@ use crate::{
     blockwheel,
     core::{
         search_tree::{
+            Demolished,
             SearchTreeIterBlockRefsRx,
         },
     },
 };
 
 pub struct Args {
+    pub done_reply_tx: oneshot::Sender<Demolished>,
     pub block_refs_rx_reply_rx: oneshot::Receiver<SearchTreeIterBlockRefsRx>,
     pub wheels_pid: wheels::Pid,
     pub remove_tasks_limit: usize,
@@ -28,6 +30,7 @@ pub struct Args {
 
 pub struct Done {
     pub blocks_deleted: usize,
+    pub done_reply_tx: oneshot::Sender<Demolished>,
 }
 
 #[derive(Debug)]
@@ -40,7 +43,7 @@ pub enum Error {
     DeleteBlock(blockwheel::DeleteBlockError),
 }
 
-pub async fn run(Args { block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
+pub async fn run(Args { done_reply_tx, block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
     log::debug!("spawned task with remove_tasks_limit = {:?}", remove_tasks_limit);
 
     let SearchTreeIterBlockRefsRx { block_refs_rx, } = block_refs_rx_reply_rx.await
@@ -101,7 +104,7 @@ pub async fn run(Args { block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, 
                 let () = status?;
                 blocks_deleted += 1;
                 if remove_tasks_count == 0 && fused_block_refs_rx.is_terminated() {
-                    return Ok(Done { blocks_deleted, });
+                    return Ok(Done { blocks_deleted, done_reply_tx, });
                 }
             },
         }
