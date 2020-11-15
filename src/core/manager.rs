@@ -38,6 +38,8 @@ use ero::{
 use alloc_pool::{
     pool,
     bytes::BytesPool,
+    Shared,
+    Unique,
 };
 
 use crate::{
@@ -62,6 +64,7 @@ use crate::{
     Removed,
     Inserted,
     LookupRange,
+    KeyValueStreamItem,
 };
 
 mod task;
@@ -353,6 +356,13 @@ enum LookupRequestButcherStatus {
     Invalidated,
 }
 
+struct LookupRangeRequest {
+    key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+    butcher_iter_items: Shared<Vec<kv::KeyValuePair>>,
+    merger_iters: Unique<Vec<merger::KeyValuesIter>>,
+    pending_count: usize,
+}
+
 struct FlushRequest {
     butcher_done: bool,
     search_trees_pending_count: usize,
@@ -446,6 +456,7 @@ async fn busyloop(
 
     let mut info_requests = Set::new();
     let mut lookup_requests = Set::new();
+    let mut lookup_range_requests = Set::new();
     let mut flush_requests = Set::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
@@ -753,9 +764,47 @@ async fn busyloop(
             },
 
             Event::Task(Ok(task::TaskDone::LookupRangeButcher(task::lookup_range_butcher::Done { range, key_values_tx, iter_items, }))) => {
-
-                unimplemented!()
+                let mut merger_iters = merger_iters_pool.lend(Vec::new);
+                merger_iters.clear();
+                let lookup_range_request = LookupRangeRequest {
+                    key_values_tx,
+                    butcher_iter_items: iter_items,
+                    merger_iters,
+                    pending_count: search_trees.len(),
+                };
+                let request_ref = lookup_range_requests.insert(lookup_range_request);
+                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                    tasks.push(task::run_args(task::TaskArgs::LookupRangeSearchTree(
+                        task::lookup_range_search_tree::Args {
+                            range: range.clone(),
+                            request_ref: request_ref.clone(),
+                            search_tree_pid: search_tree_pid.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
+                }
             },
+
+            Event::Task(Ok(task::TaskDone::LookupRangeSearchTree(task::lookup_range_search_tree::Done { request_ref, items_iter, }))) => {
+                let lookup_range_request = lookup_range_requests.get_mut(request_ref).unwrap();
+                assert!(lookup_range_request.pending_count > 0);
+                lookup_range_request.pending_count -= 1;
+                lookup_range_request.merger_iters.push(merger::KeyValuesIter::new(items_iter.items_rx));
+                if lookup_range_request.pending_count == 0 {
+                    let lookup_range_request = lookup_range_requests.remove(request_ref).unwrap();
+                    tasks.push(task::run_args(task::TaskArgs::MergeLookupRange(
+                        task::merge_lookup_range::Args {
+                            key_values_tx: lookup_range_request.key_values_tx,
+                            iter_items: lookup_range_request.butcher_iter_items,
+                            merger_iters: lookup_range_request.merger_iters,
+                        },
+                    )));
+                    tasks_count += 1;
+                }
+            },
+
+            Event::Task(Ok(task::TaskDone::MergeLookupRange(task::merge_lookup_range::Done))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::RemoveButcher(task::remove_butcher::Done))) =>
                 (),

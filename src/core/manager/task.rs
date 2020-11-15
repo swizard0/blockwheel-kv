@@ -7,9 +7,11 @@ pub mod remove_butcher;
 pub mod flush_butcher;
 pub mod info_search_tree;
 pub mod lookup_search_tree;
+pub mod lookup_range_search_tree;
 pub mod flush_search_tree;
-pub mod merge_search_trees;
 pub mod demolish_search_tree;
+pub mod merge_search_trees;
+pub mod merge_lookup_range;
 
 pub enum TaskArgs {
     InfoButcher(info_butcher::Args),
@@ -20,9 +22,11 @@ pub enum TaskArgs {
     FlushButcher(flush_butcher::Args),
     InfoSearchTree(info_search_tree::Args),
     LookupSearchTree(lookup_search_tree::Args),
+    LookupRangeSearchTree(lookup_range_search_tree::Args),
     FlushSearchTree(flush_search_tree::Args),
-    MergeSearchTrees(merge_search_trees::Args),
     DemolishSearchTree(demolish_search_tree::Args),
+    MergeSearchTrees(merge_search_trees::Args),
+    MergeLookupRange(merge_lookup_range::Args),
 }
 
 pub enum TaskDone {
@@ -34,9 +38,11 @@ pub enum TaskDone {
     FlushButcher(flush_butcher::Done),
     InfoSearchTree(info_search_tree::Done),
     LookupSearchTree(lookup_search_tree::Done),
+    LookupRangeSearchTree(lookup_range_search_tree::Done),
     FlushSearchTree(flush_search_tree::Done),
-    MergeSearchTrees(merge_search_trees::Done),
     DemolishSearchTree(demolish_search_tree::Done),
+    MergeSearchTrees(merge_search_trees::Done),
+    MergeLookupRange(merge_lookup_range::Done),
 }
 
 #[derive(Debug)]
@@ -49,9 +55,11 @@ pub enum Error {
     FlushButcher(flush_butcher::Error),
     InfoSearchTree(info_search_tree::Error),
     LookupSearchTree(lookup_search_tree::Error),
+    LookupRangeSearchTree(lookup_range_search_tree::Error),
     FlushSearchTree(flush_search_tree::Error),
-    MergeSearchTrees(merge_search_trees::Error),
     DemolishSearchTree(demolish_search_tree::Error),
+    MergeSearchTrees(merge_search_trees::Error),
+    MergeLookupRange(merge_lookup_range::Error),
 }
 
 pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
@@ -96,20 +104,30 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
                 lookup_search_tree::run(args).await
                     .map_err(Error::LookupSearchTree)?,
             ),
+        TaskArgs::LookupRangeSearchTree(args) =>
+            TaskDone::LookupRangeSearchTree(
+                lookup_range_search_tree::run(args).await
+                    .map_err(Error::LookupRangeSearchTree)?,
+            ),
         TaskArgs::FlushSearchTree(args) =>
             TaskDone::FlushSearchTree(
                 flush_search_tree::run(args).await
                     .map_err(Error::FlushSearchTree)?,
+            ),
+        TaskArgs::DemolishSearchTree(args) =>
+            TaskDone::DemolishSearchTree(
+                demolish_search_tree::run(args).await
+                    .map_err(Error::DemolishSearchTree)?,
             ),
         TaskArgs::MergeSearchTrees(args) =>
             TaskDone::MergeSearchTrees(
                 merge_search_trees::run(args).await
                     .map_err(Error::MergeSearchTrees)?,
             ),
-        TaskArgs::DemolishSearchTree(args) =>
-            TaskDone::DemolishSearchTree(
-                demolish_search_tree::run(args).await
-                    .map_err(Error::DemolishSearchTree)?,
+        TaskArgs::MergeLookupRange(args) =>
+            TaskDone::MergeLookupRange(
+                merge_lookup_range::run(args).await
+                    .map_err(Error::MergeLookupRange)?,
             ),
     })
 }
