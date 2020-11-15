@@ -216,10 +216,10 @@ impl Pid {
         }
     }
 
-    pub async fn iter(&mut self) -> Result<SearchTreeIterItemsRx, IterError> {
+    pub async fn iter(&mut self, range: SearchRangeBounds) -> Result<SearchTreeIterItemsRx, IterError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Iter { range: SearchRangeBounds::unbounded(), reply_tx, }).await
+            self.request_tx.send(Request::Iter { range: range.clone(), reply_tx, }).await
                 .map_err(|_send_error| IterError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {

@@ -26,6 +26,7 @@ use crate::{
         merger,
         search_tree,
         BlockRef,
+        SearchRangeBounds,
     },
 };
 
@@ -281,12 +282,12 @@ async fn merger_start(
 {
     let (items_a_rx, items_b_rx) = futures::future::try_join(
         async {
-            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter().await
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter(SearchRangeBounds::unbounded()).await
                 .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;
             Ok(items_rx)
         },
         async {
-            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter().await
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter(SearchRangeBounds::unbounded()).await
                 .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_b_ref.clone(), error, })?;
             Ok(items_rx)
         },

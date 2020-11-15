@@ -101,6 +101,7 @@ pub async fn run(
     for maybe_entry in entries_iter {
         let entry = maybe_entry
             .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+
         let maybe_jump_block_ref = match entry.jump_ref {
             storage::JumpRef::None =>
                 None,
@@ -196,48 +197,25 @@ pub async fn run(
         match &mut iter_kind {
 
             IterKind::Items(SearchTreeIterItemsTx { range, items_tx, }) => {
-                let contains_from = match &range.range_from {
+                match &range.range_to {
                     Bound::Unbounded =>
-                        true,
-                    Bound::Excluded(key) =>
-                        match key.key_bytes[..].cmp(entry.key) {
-                            Ordering::Less =>
-                                true,
-                            Ordering::Equal | Ordering::Greater =>
-                                false,
-                        },
-                    Bound::Included(key) =>
-                        match key.key_bytes[..].cmp(entry.key) {
-                            Ordering::Less | Ordering::Equal =>
-                                true,
-                            Ordering::Greater =>
-                                false,
-                        },
-                };
-                if !contains_from {
-                    continue;
-                }
-                let contains_to = match &range.range_to {
-                    Bound::Unbounded =>
-                        true,
+                        (),
                     Bound::Excluded(key) =>
                         match key.key_bytes[..].cmp(entry.key) {
                             Ordering::Less | Ordering::Equal =>
-                                false,
+                                break,
                             Ordering::Greater =>
-                                true,
+                                (),
                         },
                     Bound::Included(key) =>
                         match key.key_bytes[..].cmp(entry.key) {
                             Ordering::Less  =>
-                                false,
+                                break,
                             Ordering::Equal | Ordering::Greater =>
-                                true,
+                                (),
                         },
-                };
-                if !contains_to {
-                    continue;
                 }
+
                 let mut key_bytes = blocks_pool.lend();
                 key_bytes.extend_from_slice(entry.key);
                 let key = kv::Key { key_bytes: key_bytes.freeze(), };
