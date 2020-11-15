@@ -33,6 +33,7 @@ use crate::{
     storage,
     blockwheel,
     core::{
+        merger,
         search_tree,
         BlockRef,
     },
@@ -80,6 +81,7 @@ pub enum Error {
     BlockSerializerEntry(storage::Error),
     WriteBlock(blockwheel::WriteBlockError),
     BackendIterPeerLost,
+    Merger(merger::Error),
 }
 
 pub async fn run(
@@ -95,17 +97,37 @@ pub async fn run(
 )
     -> Result<Done, Error>
 {
-    let mut merge_iter = MergeIter::new(
-        search_tree_a_ref,
-        search_tree_b_ref,
-        &mut search_tree_a_pid,
-        &mut search_tree_b_pid,
-    ).await?;
-
     let mut tree_items_count = 0;
-    while let Some(..) = merge_iter.next().await? {
+
+    let (items_a_rx, items_b_rx) = future::try_join(
+        async {
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter().await
+                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;
+            Ok(items_rx)
+        },
+        async {
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter().await
+                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_b_ref.clone(), error, })?;
+            Ok(items_rx)
+        },
+    ).await?;
+    let mut merger = merger::ItersMerger::new(vec![
+        merger::KeyValuesIter::new(items_a_rx),
+        merger::KeyValuesIter::new(items_b_rx),
+    ]);
+    while let Some(..) = merger.next().await.map_err(Error::Merger)? {
         tree_items_count += 1;
     }
+
+    // let mut merge_iter = MergeIter::new(
+    //     search_tree_a_ref,
+    //     search_tree_b_ref,
+    //     &mut search_tree_a_pid,
+    //     &mut search_tree_b_pid,
+    // ).await?;
+    // while let Some(..) = merge_iter.next().await? {
+    //     tree_items_count += 1;
+    // }
 
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(

@@ -54,7 +54,7 @@ impl ItersMerger {
         }
     }
 
-    async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
+    pub async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
         assert!(self.advance_head_idx.is_none());
         let mut cursor_idx = 0;
         while cursor_idx < self.iters.len() {
