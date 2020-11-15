@@ -30,6 +30,7 @@ use super::{
 pub mod manager;
 pub mod butcher;
 pub mod search_tree;
+pub mod merger;
 
 type MemCache = BTreeMap<OrdKey, kv::ValueCell>;
 
@@ -52,7 +53,7 @@ pub struct RequestLookup {
 }
 
 pub struct RequestLookupRange {
-    bounds: LookupRangeBounds,
+    bounds: SearchRangeBounds,
     reply_tx: oneshot::Sender<LookupRange>,
 }
 
@@ -68,14 +69,14 @@ pub struct RequestFlush {
 }
 
 #[derive(Clone, Debug)]
-struct LookupRangeBounds {
+struct SearchRangeBounds {
     range_from: Bound<kv::Key>,
     range_to: Bound<kv::Key>,
 }
 
-impl<R> From<R> for LookupRangeBounds where R: RangeBounds<kv::Key> {
-    fn from(range: R) -> LookupRangeBounds {
-        LookupRangeBounds {
+impl<R> From<R> for SearchRangeBounds where R: RangeBounds<kv::Key> {
+    fn from(range: R) -> SearchRangeBounds {
+        SearchRangeBounds {
             range_from: match range.start_bound() {
                 Bound::Unbounded =>
                     Bound::Unbounded,

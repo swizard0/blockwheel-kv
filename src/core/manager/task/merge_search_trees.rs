@@ -36,6 +36,7 @@ use crate::{
         search_tree,
         BlockRef,
     },
+    KeyValueStreamItem,
 };
 
 pub struct Args {
@@ -78,6 +79,7 @@ pub enum Error {
     BlockSerializerStart(storage::Error),
     BlockSerializerEntry(storage::Error),
     WriteBlock(blockwheel::WriteBlockError),
+    BackendIterPeerLost,
 }
 
 pub async fn run(
@@ -101,7 +103,7 @@ pub async fn run(
     ).await?;
 
     let mut tree_items_count = 0;
-    while let Some(..) = merge_iter.next().await {
+    while let Some(..) = merge_iter.next().await? {
         tree_items_count += 1;
     }
 
@@ -177,7 +179,7 @@ pub async fn run(
                 next,
                 ..
             })) => {
-                let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await
+                let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await?
                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
                 let child_ref_taken = child_ref.take();
                 let jump_ref = match &child_ref_taken {
@@ -262,7 +264,7 @@ pub async fn run(
                 },
         };
     };
-    assert_eq!(merge_iter.next().await, None);
+    assert_eq!(merge_iter.next().await?, None);
 
     Ok(Done {
         search_tree_a_ref,
@@ -273,8 +275,8 @@ pub async fn run(
 }
 
 struct MergeIter {
-    items_a_rx: mpsc::Receiver<kv::KeyValuePair>,
-    items_b_rx: mpsc::Receiver<kv::KeyValuePair>,
+    items_a_rx: mpsc::Receiver<KeyValueStreamItem>,
+    items_b_rx: mpsc::Receiver<KeyValueStreamItem>,
     maybe_item_a: Option<kv::KeyValuePair>,
     maybe_item_b: Option<kv::KeyValuePair>,
 }
@@ -303,18 +305,18 @@ impl MergeIter {
         })
     }
 
-    async fn next(&mut self) -> Option<kv::KeyValuePair> {
-        match (&mut self.maybe_item_a, &mut self.maybe_item_b) {
+    async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
+        Ok(match (&mut self.maybe_item_a, &mut self.maybe_item_b) {
             (None, None) =>
                 None,
             (item_a @ Some(..), None) => {
                 let value = item_a.take();
-                self.maybe_item_a = self.items_a_rx.next().await;
+                self.maybe_item_a = fetch_next(&mut self.items_a_rx).await?;
                 value
             },
             (None, item_b @ Some(..)) => {
                 let value = item_b.take();
-                self.maybe_item_b = self.items_b_rx.next().await;
+                self.maybe_item_b = fetch_next(&mut self.items_b_rx).await?;
                 value
             },
             (
@@ -323,28 +325,28 @@ impl MergeIter {
             ) =>
                 match key_a.key_bytes.cmp(&key_b.key_bytes) {
                     Ordering::Less => {
-                        let next_item_a = self.items_a_rx.next().await;
+                        let next_item_a = fetch_next(&mut self.items_a_rx).await?;
                         mem::replace(&mut self.maybe_item_a, next_item_a)
                     },
                     Ordering::Equal =>
                         match value_cell_a.version.cmp(&value_cell_b.version) {
                             Ordering::Less => {
-                                self.maybe_item_a = self.items_a_rx.next().await;
-                                let next_item_b = self.items_b_rx.next().await;
+                                self.maybe_item_a = fetch_next(&mut self.items_a_rx).await?;
+                                let next_item_b = fetch_next(&mut self.items_b_rx).await?;
                                 mem::replace(&mut self.maybe_item_b, next_item_b)
                             },
                             Ordering::Equal | Ordering::Greater => {
-                                self.maybe_item_b = self.items_b_rx.next().await;
-                                let next_item_a = self.items_a_rx.next().await;
+                                self.maybe_item_b = fetch_next(&mut self.items_b_rx).await?;
+                                let next_item_a = fetch_next(&mut self.items_a_rx).await?;
                                 mem::replace(&mut self.maybe_item_a, next_item_a)
                             },
                         },
                     Ordering::Greater => {
-                        let next_item_b = self.items_b_rx.next().await;
+                        let next_item_b = fetch_next(&mut self.items_b_rx).await?;
                         mem::replace(&mut self.maybe_item_b, next_item_b)
                     },
                 },
-        }
+        })
     }
 }
 
@@ -352,10 +354,21 @@ async fn iter_and_fetch(
     search_tree_ref: Ref,
     search_tree_pid: &mut search_tree::Pid,
 )
-    -> Result<(mpsc::Receiver<kv::KeyValuePair>, Option<kv::KeyValuePair>), Error>
+    -> Result<(mpsc::Receiver<KeyValueStreamItem>, Option<kv::KeyValuePair>), Error>
 {
     let search_tree::SearchTreeIterItemsRx { mut items_rx, } = search_tree_pid.iter().await
         .map_err(|error| Error::SearchTreeIter { search_tree_ref, error, })?;
-    let maybe_item = items_rx.next().await;
+    let maybe_item = fetch_next(&mut items_rx).await?;
     Ok((items_rx, maybe_item))
+}
+
+async fn fetch_next(items_rx: &mut mpsc::Receiver<KeyValueStreamItem>) -> Result<Option<kv::KeyValuePair>, Error> {
+    match items_rx.next().await {
+        None =>
+            Err(Error::BackendIterPeerLost),
+        Some(KeyValueStreamItem::NoMore) =>
+            Ok(None),
+        Some(KeyValueStreamItem::KeyValue(kv)) =>
+            Ok(Some(kv)),
+    }
 }

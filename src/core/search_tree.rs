@@ -50,6 +50,7 @@ use crate::{
     },
     Info,
     Flushed,
+    KeyValueStreamItem,
 };
 
 mod task;
@@ -163,11 +164,11 @@ pub enum DemolishError {
 }
 
 pub struct SearchTreeIterItemsTx {
-    pub items_tx: mpsc::Sender<kv::KeyValuePair>,
+    pub items_tx: mpsc::Sender<KeyValueStreamItem>,
 }
 
 pub struct SearchTreeIterItemsRx {
-    pub items_rx: mpsc::Receiver<kv::KeyValuePair>,
+    pub items_rx: mpsc::Receiver<KeyValueStreamItem>,
 }
 
 pub struct SearchTreeIterBlockRefsTx {

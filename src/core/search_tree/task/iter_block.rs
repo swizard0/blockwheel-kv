@@ -33,6 +33,7 @@ use crate::{
             SearchTreeIterBlockRefsRx,
         },
     },
+    KeyValueStreamItem,
 };
 
 pub struct Args {
@@ -52,6 +53,7 @@ pub struct Done {
 #[derive(Debug)]
 pub enum Error {
     ReadBlockStorage { block_ref: BlockRef, error: storage::Error, },
+    IterRecPeerLost,
 }
 
 pub async fn run(
@@ -127,8 +129,19 @@ pub async fn run(
                         break;
                     },
                 };
-                while let Some(key_value_pair) = items_rx.next().await {
-                    let Broadcasted = broadcast_items_task(key_value_pair, &mut iters_tx.items_txs).await;
+                loop {
+                    match items_rx.next().await {
+                        None =>
+                            return Err(Error::IterRecPeerLost),
+                        Some(KeyValueStreamItem::NoMore) =>
+                            break,
+                        Some(KeyValueStreamItem::KeyValue(key_value_pair)) => {
+                            let Broadcasted = broadcast_items_task(
+                                KeyValueStreamItem::KeyValue(key_value_pair),
+                                &mut iters_tx.items_txs,
+                            ).await;
+                        },
+                    }
                 }
             }
 
@@ -171,8 +184,15 @@ pub async fn run(
                     kv::ValueCell { version, cell: kv::Cell::Tombstone, },
             };
 
-            let Broadcasted = broadcast_items_task(kv::KeyValuePair { key, value_cell, }, &mut iters_tx.items_txs).await;
+            let Broadcasted = broadcast_items_task(
+                KeyValueStreamItem::KeyValue(kv::KeyValuePair { key, value_cell, }),
+                &mut iters_tx.items_txs,
+            ).await;
         }
+    }
+
+    if !iters_tx.items_txs.is_empty() {
+        let Broadcasted = broadcast_items_task(KeyValueStreamItem::NoMore, &mut iters_tx.items_txs).await;
     }
 
     if !iters_tx.block_refs_txs.is_empty() {
@@ -185,13 +205,13 @@ pub async fn run(
 
 struct Broadcasted;
 
-async fn broadcast_items_task(key_value_pair: kv::KeyValuePair, items_txs: &mut [SearchTreeIterItemsTx]) -> Broadcasted {
+async fn broadcast_items_task(stream_item: KeyValueStreamItem, items_txs: &mut [SearchTreeIterItemsTx]) -> Broadcasted {
     let task = future::join_all(
         items_txs.iter_mut()
             .map(|SearchTreeIterItemsTx { items_tx, }| {
-                let key_value_pair = key_value_pair.clone();
+                let stream_item = stream_item.clone();
                 async move {
-                    items_tx.send(key_value_pair).await.ok();
+                    items_tx.send(stream_item).await.ok();
                 }
             }),
     );

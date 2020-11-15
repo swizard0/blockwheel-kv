@@ -16,6 +16,7 @@ use crate::{
             SearchTreeIterItemsRx,
         },
     },
+    KeyValueStreamItem,
 };
 
 pub struct Args {
@@ -40,10 +41,11 @@ pub async fn run(Args { cache, reply_tx, }: Args) -> Result<Done, Error> {
                 key: ord_key.as_ref().clone(),
                 value_cell: value_cell.clone(),
             };
-            if let Err(_send_error) = iter_tx.send(kv_pair).await {
-                break;
+            if let Err(_send_error) = iter_tx.send(KeyValueStreamItem::KeyValue(kv_pair)).await {
+                return Ok(Done);
             }
         }
+        iter_tx.send(KeyValueStreamItem::NoMore).await.ok();
     }
     Ok(Done)
 }

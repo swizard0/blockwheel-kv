@@ -177,12 +177,13 @@ pub struct Info {
 }
 
 pub struct LookupRange {
-    pub key_values_rx: mpsc::Receiver<LookupRangeItem>,
+    pub key_values_rx: mpsc::Receiver<KeyValueStreamItem>,
 }
 
-pub enum LookupRangeItem {
+#[derive(Clone)]
+pub enum KeyValueStreamItem {
     KeyValue(kv::KeyValuePair),
-    NoMoreItems,
+    NoMore,
 }
 
 impl Pid {
