@@ -1,5 +1,6 @@
 use std::{
     mem,
+    ops::DerefMut,
     cmp::Ordering,
 };
 
@@ -31,8 +32,8 @@ impl KeyValuesIter {
     }
 }
 
-pub struct ItersMerger {
-    iters: Vec<KeyValuesIter>,
+pub struct ItersMerger<V> {
+    iters: V,
     advance_head_idx: Option<usize>,
 }
 
@@ -46,14 +47,16 @@ pub enum Error {
     BackendIterPeerLost,
 }
 
-impl ItersMerger {
-    pub fn new(iters: Vec<KeyValuesIter>) -> ItersMerger {
+impl<V> ItersMerger<V> {
+    pub fn new(iters: V) -> ItersMerger<V> {
         ItersMerger {
             iters,
             advance_head_idx: None,
         }
     }
+}
 
+impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIter>> {
     pub async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
         assert!(self.advance_head_idx.is_none());
         let mut cursor_idx = 0;

@@ -23,8 +23,12 @@ use bntree::{
     },
 };
 
-use alloc_pool::bytes::{
-    BytesPool,
+use alloc_pool::{
+    pool,
+    bytes::{
+        BytesPool,
+    },
+    Unique,
 };
 
 use crate::{
@@ -46,6 +50,7 @@ pub struct Args {
     pub search_tree_a_pid: search_tree::Pid,
     pub search_tree_b_pid: search_tree::Pid,
     pub blocks_pool: BytesPool,
+    pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIter>>,
     pub wheels_pid: wheels::Pid,
     pub tree_block_size: usize,
 }
@@ -80,7 +85,6 @@ pub enum Error {
     BlockSerializerStart(storage::Error),
     BlockSerializerEntry(storage::Error),
     WriteBlock(blockwheel::WriteBlockError),
-    BackendIterPeerLost,
     Merger(merger::Error),
 }
 
@@ -91,6 +95,7 @@ pub async fn run(
         mut search_tree_a_pid,
         mut search_tree_b_pid,
         blocks_pool,
+        merger_iters_pool,
         mut wheels_pid,
         tree_block_size,
     }: Args,
@@ -99,35 +104,17 @@ pub async fn run(
 {
     let mut tree_items_count = 0;
 
-    let (items_a_rx, items_b_rx) = future::try_join(
-        async {
-            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter().await
-                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;
-            Ok(items_rx)
-        },
-        async {
-            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter().await
-                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_b_ref.clone(), error, })?;
-            Ok(items_rx)
-        },
+    let mut merger = merger_start(
+        search_tree_a_ref,
+        search_tree_b_ref,
+        &mut search_tree_a_pid,
+        &mut search_tree_b_pid,
+        &merger_iters_pool,
     ).await?;
-    let mut merger = merger::ItersMerger::new(vec![
-        merger::KeyValuesIter::new(items_a_rx),
-        merger::KeyValuesIter::new(items_b_rx),
-    ]);
+
     while let Some(..) = merger.next().await.map_err(Error::Merger)? {
         tree_items_count += 1;
     }
-
-    // let mut merge_iter = MergeIter::new(
-    //     search_tree_a_ref,
-    //     search_tree_b_ref,
-    //     &mut search_tree_a_pid,
-    //     &mut search_tree_b_pid,
-    // ).await?;
-    // while let Some(..) = merge_iter.next().await? {
-    //     tree_items_count += 1;
-    // }
 
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(
@@ -143,11 +130,12 @@ pub async fn run(
         },
     }
 
-    let mut merge_iter = MergeIter::new(
+    let mut merger = merger_start(
         search_tree_a_ref,
         search_tree_b_ref,
         &mut search_tree_a_pid,
         &mut search_tree_b_pid,
+        &merger_iters_pool,
     ).await?;
 
     let mut child_ref = None;
@@ -201,7 +189,8 @@ pub async fn run(
                 next,
                 ..
             })) => {
-                let kv::KeyValuePair { ref key, ref value_cell, } = merge_iter.next().await?
+                let kv::KeyValuePair { ref key, ref value_cell, } = merger.next().await
+                    .map_err(Error::Merger)?
                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
                 let child_ref_taken = child_ref.take();
                 let jump_ref = match &child_ref_taken {
@@ -286,7 +275,7 @@ pub async fn run(
                 },
         };
     };
-    assert_eq!(merge_iter.next().await?, None);
+    assert_eq!(merger.next().await.map_err(Error::Merger)?, None);
 
     Ok(Done {
         search_tree_a_ref,
@@ -296,101 +285,32 @@ pub async fn run(
     })
 }
 
-struct MergeIter {
-    items_a_rx: mpsc::Receiver<KeyValueStreamItem>,
-    items_b_rx: mpsc::Receiver<KeyValueStreamItem>,
-    maybe_item_a: Option<kv::KeyValuePair>,
-    maybe_item_b: Option<kv::KeyValuePair>,
-}
-
-impl MergeIter {
-    async fn new(
-        search_tree_a_ref: Ref,
-        search_tree_b_ref: Ref,
-        search_tree_a_pid: &mut search_tree::Pid,
-        search_tree_b_pid: &mut search_tree::Pid,
-    )
-        -> Result<MergeIter, Error>
-    {
-        let ((items_a_rx, maybe_item_a), (items_b_rx, maybe_item_b)) =
-            future::try_join(
-                iter_and_fetch(search_tree_a_ref, search_tree_a_pid),
-                iter_and_fetch(search_tree_b_ref, search_tree_b_pid),
-            )
-            .await?;
-
-        Ok(MergeIter {
-            items_a_rx,
-            items_b_rx,
-            maybe_item_a,
-            maybe_item_b,
-        })
-    }
-
-    async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
-        Ok(match (&mut self.maybe_item_a, &mut self.maybe_item_b) {
-            (None, None) =>
-                None,
-            (item_a @ Some(..), None) => {
-                let value = item_a.take();
-                self.maybe_item_a = fetch_next(&mut self.items_a_rx).await?;
-                value
-            },
-            (None, item_b @ Some(..)) => {
-                let value = item_b.take();
-                self.maybe_item_b = fetch_next(&mut self.items_b_rx).await?;
-                value
-            },
-            (
-                Some(kv::KeyValuePair { key: key_a, value_cell: value_cell_a, }),
-                Some(kv::KeyValuePair { key: key_b, value_cell: value_cell_b, }),
-            ) =>
-                match key_a.key_bytes.cmp(&key_b.key_bytes) {
-                    Ordering::Less => {
-                        let next_item_a = fetch_next(&mut self.items_a_rx).await?;
-                        mem::replace(&mut self.maybe_item_a, next_item_a)
-                    },
-                    Ordering::Equal =>
-                        match value_cell_a.version.cmp(&value_cell_b.version) {
-                            Ordering::Less => {
-                                self.maybe_item_a = fetch_next(&mut self.items_a_rx).await?;
-                                let next_item_b = fetch_next(&mut self.items_b_rx).await?;
-                                mem::replace(&mut self.maybe_item_b, next_item_b)
-                            },
-                            Ordering::Equal | Ordering::Greater => {
-                                self.maybe_item_b = fetch_next(&mut self.items_b_rx).await?;
-                                let next_item_a = fetch_next(&mut self.items_a_rx).await?;
-                                mem::replace(&mut self.maybe_item_a, next_item_a)
-                            },
-                        },
-                    Ordering::Greater => {
-                        let next_item_b = fetch_next(&mut self.items_b_rx).await?;
-                        mem::replace(&mut self.maybe_item_b, next_item_b)
-                    },
-                },
-        })
-    }
-}
-
-async fn iter_and_fetch(
-    search_tree_ref: Ref,
-    search_tree_pid: &mut search_tree::Pid,
+async fn merger_start(
+    search_tree_a_ref: Ref,
+    search_tree_b_ref: Ref,
+    search_tree_a_pid: &mut search_tree::Pid,
+    search_tree_b_pid: &mut search_tree::Pid,
+    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIter>>,
 )
-    -> Result<(mpsc::Receiver<KeyValueStreamItem>, Option<kv::KeyValuePair>), Error>
+    -> Result<merger::ItersMerger<Unique<Vec<merger::KeyValuesIter>>>, Error>
 {
-    let search_tree::SearchTreeIterItemsRx { mut items_rx, } = search_tree_pid.iter().await
-        .map_err(|error| Error::SearchTreeIter { search_tree_ref, error, })?;
-    let maybe_item = fetch_next(&mut items_rx).await?;
-    Ok((items_rx, maybe_item))
-}
+    let (items_a_rx, items_b_rx) = future::try_join(
+        async {
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter().await
+                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;
+            Ok(items_rx)
+        },
+        async {
+            let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter().await
+                .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_b_ref.clone(), error, })?;
+            Ok(items_rx)
+        },
+    ).await?;
 
-async fn fetch_next(items_rx: &mut mpsc::Receiver<KeyValueStreamItem>) -> Result<Option<kv::KeyValuePair>, Error> {
-    match items_rx.next().await {
-        None =>
-            Err(Error::BackendIterPeerLost),
-        Some(KeyValueStreamItem::NoMore) =>
-            Ok(None),
-        Some(KeyValueStreamItem::KeyValue(kv)) =>
-            Ok(Some(kv)),
-    }
+    let mut iters = merger_iters_pool.lend(Vec::new);
+    iters.clear();
+    iters.push(merger::KeyValuesIter::new(items_a_rx));
+    iters.push(merger::KeyValuesIter::new(items_b_rx));
+
+    Ok(merger::ItersMerger::new(iters))
 }

@@ -36,6 +36,7 @@ use ero::{
 };
 
 use alloc_pool::{
+    pool,
     bytes::BytesPool,
 };
 
@@ -44,6 +45,7 @@ use crate::{
     wheels,
     storage,
     core::{
+        merger,
         butcher,
         search_tree,
         MemCache,
@@ -432,6 +434,8 @@ async fn busyloop(
 )
     -> Result<(), ErrorSeverity<State, Error>>
 {
+    let merger_iters_pool = pool::Pool::new();
+
     let mut info_requests = Set::new();
     let mut lookup_requests = Set::new();
     let mut flush_requests = Set::new();
@@ -450,6 +454,7 @@ async fn busyloop(
             &mut search_tree_refs,
             &search_trees,
             &state.blocks_pool,
+            &merger_iters_pool,
             &state.wheels_pid,
             state.params.search_tree_params.tree_block_size,
         );
@@ -541,6 +546,7 @@ async fn busyloop(
                     &mut search_tree_refs,
                     &search_trees,
                     &state.blocks_pool,
+                    &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
                 );
@@ -780,6 +786,7 @@ async fn busyloop(
                     &mut search_tree_refs,
                     &search_trees,
                     &state.blocks_pool,
+                    &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
                 );
@@ -851,6 +858,7 @@ fn maybe_merge_search_trees(
     search_tree_refs: &mut BinMerger,
     search_trees: &Set<search_tree::Pid>,
     blocks_pool: &BytesPool,
+    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIter>>,
     wheels_pid: &wheels::Pid,
     tree_block_size: usize,
 )
@@ -866,6 +874,7 @@ fn maybe_merge_search_trees(
             search_tree_a_pid,
             search_tree_b_pid,
             blocks_pool: blocks_pool.clone(),
+            merger_iters_pool: merger_iters_pool.clone(),
             wheels_pid: wheels_pid.clone(),
             tree_block_size,
         },
