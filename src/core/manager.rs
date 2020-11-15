@@ -62,7 +62,6 @@ use crate::{
     Removed,
     Inserted,
     LookupRange,
-    KeyValueStreamItem,
 };
 
 mod task;

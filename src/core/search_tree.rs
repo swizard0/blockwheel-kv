@@ -81,7 +81,6 @@ pub struct Pools {
     lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
     iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
     outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
-    iters_pool: pool::Pool<task::SearchTreeIterSinks>,
 }
 
 impl Pools {
@@ -91,7 +90,6 @@ impl Pools {
             lookup_requests_queue_pool: pool::Pool::new(),
             iter_requests_queue_pool: pool::Pool::new(),
             outcomes_pool: pool::Pool::new(),
-            iters_pool: pool::Pool::new(),
         }
     }
 }
@@ -221,7 +219,7 @@ impl Pid {
     pub async fn iter(&mut self) -> Result<SearchTreeIterItemsRx, IterError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Iter { reply_tx, }).await
+            self.request_tx.send(Request::Iter { range: SearchRangeBounds::unbounded(), reply_tx, }).await
                 .map_err(|_send_error| IterError::GenServer(ero::NoProcError))?;
 
             match reply_rx.await {
@@ -417,7 +415,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 &state.pools.blocks_pool,
                                 &state.pools.lookup_requests_queue_pool,
                                 &state.pools.iter_requests_queue_pool,
-                                &state.pools.iters_pool,
                                 &state.wheels_pid,
                                 &iter_rec_tx,
                                 state.params.iter_send_buffer,
@@ -524,7 +521,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             &state.pools.blocks_pool,
                             &state.pools.lookup_requests_queue_pool,
                             &state.pools.iter_requests_queue_pool,
-                            &state.pools.iters_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
                             state.params.iter_send_buffer,
@@ -578,7 +574,6 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     &state.pools.blocks_pool,
                     &state.pools.lookup_requests_queue_pool,
                     &state.pools.iter_requests_queue_pool,
-                    &state.pools.iters_pool,
                     &state.wheels_pid,
                     &iter_rec_tx,
                     state.params.iter_send_buffer,
@@ -606,7 +601,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 match prev_async_block {
                     AsyncBlock::Ready { .. } =>
                         unreachable!(),
-                    AsyncBlock::Awaiting { lookup_requests_queue, iter_requests_queue, } => {
+                    AsyncBlock::Awaiting { lookup_requests_queue, mut iter_requests_queue, } => {
                         if !lookup_requests_queue.is_empty() {
                             let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
@@ -623,18 +618,15 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             );
                             tasks_count += 1;
                         }
-                        if !iter_requests_queue.is_empty() {
-                            let mut iters_tx = state.pools.iters_pool.lend(task::SearchTreeIterSinks::default);
-                            iters_tx.clear();
+                        for iter_request in iter_requests_queue.drain(..) {
                             tasks.push(
                                 task::run_args(
                                     task::TaskArgs::IterBlock(task::iter_block::Args {
-                                        block_ref,
+                                        block_ref: block_ref.clone(),
+                                        iter_request,
                                         blocks_pool: state.pools.blocks_pool.clone(),
-                                        block_bytes: block_bytes,
-                                        iters_tx,
+                                        block_bytes: block_bytes.clone(),
                                         iter_rec_tx: iter_rec_tx.clone(),
-                                        iter_requests_queue,
                                         iter_send_buffer: state.params.iter_send_buffer,
                                     }),
                                 ),
@@ -790,7 +782,6 @@ impl AsyncTree {
         blocks_pool: &BytesPool,
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
-        iters_pool: &pool::Pool<task::SearchTreeIterSinks>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
         iter_send_buffer: usize,
@@ -806,20 +797,12 @@ impl AsyncTree {
                         None
                     },
                     AsyncBlock::Ready { block_bytes, .. } => {
-                        let mut iter_requests_queue =
-                            iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
-                        iter_requests_queue.clear();
-                        iter_requests_queue.push(iter_request);
-                        let mut iters_tx = iters_pool.lend(task::SearchTreeIterSinks::default);
-                        iters_tx.clear();
                         Some(task::TaskArgs::IterBlock(task::iter_block::Args {
                             block_ref,
-                            range: SearchRangeBounds::unbounded(),
+                            iter_request,
                             blocks_pool: blocks_pool.clone(),
                             block_bytes: block_bytes.clone(),
-                            iters_tx,
                             iter_rec_tx: iter_rec_tx.clone(),
-                            iter_requests_queue,
                             iter_send_buffer,
                         }))
                     },
