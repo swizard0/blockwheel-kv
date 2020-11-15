@@ -377,13 +377,14 @@ async fn stress_loop(
                 let value_amount = rng.gen_range(1, limits.value_size_bytes);
 
                 log::info!(
-                    "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
+                    "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
                     actions_counter,
                     key_amount,
                     value_amount,
                     dice,
                     insert_prob,
                     counter,
+                    active_tasks_counter,
                 );
 
                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
@@ -417,13 +418,14 @@ async fn stress_loop(
                 };
 
                 log::info!(
-                    "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}",
+                    "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
                     actions_counter,
                     key.key_bytes.len(),
                     value.value_bytes.len(),
                     dice,
                     1.0 - insert_prob,
                     counter,
+                    active_tasks_counter,
                 );
 
                 let key = key.clone();
@@ -445,7 +447,7 @@ async fn stress_loop(
             let version_snapshot = data.current_version;
 
             log::info!(
-                "{}. performing LOOKUP with {} bytes key and {} value | {:?}",
+                "{}. performing LOOKUP with {} bytes key and {} value | {:?}, active = {:?}",
                 actions_counter,
                 key.key_bytes.len(),
                 match &value_cell.cell {
@@ -455,6 +457,7 @@ async fn stress_loop(
                         "tombstone".to_string(),
                 },
                 counter,
+                active_tasks_counter,
             );
 
             let key = key.clone();

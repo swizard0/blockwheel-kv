@@ -301,6 +301,8 @@ async fn run(state: State) {
     ).await;
     if let Err(error) = terminate_result {
         log::error!("fatal error: {:?}", error);
+    } else {
+        log::debug!("search tree terminated with result = {:?}", terminate_result);
     }
 }
 
@@ -533,7 +535,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 },
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
-                log::debug!("Request::Flush received: waiting for tasks to finish");
+                log::debug!("Request::Flush received: waiting for {} tasks to finish", tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
                         flush_mode = FlushMode::InProgress {
@@ -548,7 +550,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             },
 
             Event::Request(Some(Request::Demolish { reply_tx, })) => {
-                log::debug!("Request::Demolish received: waiting for tasks to finish");
+                log::debug!("Request::Demolish received: waiting for {} tasks to finish", tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
                         flush_mode = FlushMode::InProgress {

@@ -341,9 +341,17 @@ struct InfoRequest {
 }
 
 struct LookupRequest {
+    key: kv::Key,
     reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
+    butcher_status: LookupRequestButcherStatus,
     pending_count: usize,
     found_fold: Option<kv::ValueCell>,
+}
+
+enum LookupRequestButcherStatus {
+    NotReady,
+    Done,
+    Invalidated,
 }
 
 struct FlushRequest {
@@ -537,10 +545,10 @@ async fn busyloop(
                         search_tree_pools.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
-                        search_tree::Mode::CacheBootstrap { cache, },
+                        search_tree::Mode::CacheBootstrap { cache: cache.clone(), },
                     ),
                 );
-                let search_tree_ref = search_trees.insert(search_tree_pid);
+                let search_tree_ref = search_trees.insert(search_tree_pid.clone());
                 search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count, });
                 let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
@@ -553,6 +561,22 @@ async fn busyloop(
                 if let Some(task_args) = maybe_task_args {
                     tasks.push(task::run_args(task_args));
                     tasks_count += 1;
+                }
+
+                // maybe invalidate on-fly butcher requests
+                for (request_ref, LookupRequest { key, butcher_status, pending_count, .. }) in lookup_requests.iter_mut() {
+                    if let LookupRequestButcherStatus::NotReady = butcher_status {
+                        *butcher_status = LookupRequestButcherStatus::Invalidated;
+                        tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
+                            task::lookup_search_tree::Args {
+                                key: key.clone(),
+                                request_ref: request_ref.clone(),
+                                search_tree_pid: search_tree_pid.clone(),
+                            },
+                        )));
+                        tasks_count += 1;
+                        *pending_count += 1;
+                    }
                 }
             },
 
@@ -597,7 +621,9 @@ async fn busyloop(
 
             Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
                 let request_ref = lookup_requests.insert(LookupRequest {
+                    key: key.clone(),
                     reply_tx,
+                    butcher_status: LookupRequestButcherStatus::NotReady,
                     pending_count: 1 + search_trees.len(),
                     found_fold: None,
                 });
@@ -609,7 +635,7 @@ async fn busyloop(
                     },
                 )));
                 tasks_count += 1;
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                for (search_tree_ref, search_tree_pid) in search_trees.iter() {
                     tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
                         task::lookup_search_tree::Args {
                             key: key.clone(),
@@ -701,7 +727,32 @@ async fn busyloop(
             Event::Task(Ok(task::TaskDone::InsertButcher(task::insert_butcher::Done))) =>
                 (),
 
-            Event::Task(Ok(task::TaskDone::LookupButcher(task::lookup_butcher::Done { request_ref, found, }))) |
+            Event::Task(Ok(task::TaskDone::LookupButcher(task::lookup_butcher::Done { request_ref, found, }))) => {
+                let lookup_request = lookup_requests.get_mut(request_ref).unwrap();
+                assert!(lookup_request.pending_count > 0);
+                lookup_request.pending_count -= 1;
+                match lookup_request.butcher_status {
+                    LookupRequestButcherStatus::NotReady => {
+                        lookup_request.butcher_status = LookupRequestButcherStatus::Done;
+                        if replace_fold_found(&lookup_request.found_fold, &found) {
+                            lookup_request.found_fold = found;
+                        }
+                        if lookup_request.pending_count == 0 {
+                            let lookup_request = lookup_requests.remove(request_ref).unwrap();
+                            let lookup_result = lookup_request.found_fold;
+                            if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
+                                log::warn!("client canceled lookup request");
+                            }
+                        }
+                    },
+                    LookupRequestButcherStatus::Done =>
+                        unreachable!(),
+                    LookupRequestButcherStatus::Invalidated => {
+                        log::debug!("invalidating butcher lookup reply");
+                    },
+                }
+            },
+
             Event::Task(Ok(task::TaskDone::LookupSearchTree(task::lookup_search_tree::Done { request_ref, found, }))) => {
                 let lookup_request = lookup_requests.get_mut(request_ref).unwrap();
                 assert!(lookup_request.pending_count > 0);
