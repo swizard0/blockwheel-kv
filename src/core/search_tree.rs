@@ -165,6 +165,7 @@ pub enum DemolishError {
 }
 
 pub struct SearchTreeIterItemsTx {
+    pub range: SearchRangeBounds,
     pub items_tx: mpsc::Sender<KeyValueStreamItem>,
 }
 
@@ -310,7 +311,7 @@ async fn run(state: State) {
 enum Request {
     Info { reply_tx: oneshot::Sender<Info>, },
     Lookup(task::LookupRequest),
-    Iter { reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
+    Iter { range: SearchRangeBounds, reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
     Flush { reply_tx: oneshot::Sender<Flushed>, },
     Demolish { reply_tx: oneshot::Sender<Demolished>, },
 }
@@ -503,14 +504,13 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     },
                 },
 
-            Event::Request(Some(Request::Iter { reply_tx, })) =>
+            Event::Request(Some(Request::Iter { range, reply_tx, })) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
                         tasks.push(task::run_args(task::TaskArgs::IterCache(
                             task::iter_cache::Args {
                                 cache: cache.clone(),
-                                range: SearchRangeBounds::unbounded(),
-                                reply_tx,
+                                range, reply_tx,
                             },
                         )));
                         tasks_count += 1;
@@ -519,7 +519,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                         let maybe_task_args = async_tree.apply_iter_request(
                             task::IterRequest {
                                 block_ref: root_block.clone(),
-                                kind: task::IterRequestKind::Items { reply_tx, },
+                                kind: task::IterRequestKind::Items { range, reply_tx, },
                             },
                             &state.pools.blocks_pool,
                             &state.pools.lookup_requests_queue_pool,
@@ -814,6 +814,7 @@ impl AsyncTree {
                         iters_tx.clear();
                         Some(task::TaskArgs::IterBlock(task::iter_block::Args {
                             block_ref,
+                            range: SearchRangeBounds::unbounded(),
                             blocks_pool: blocks_pool.clone(),
                             block_bytes: block_bytes.clone(),
                             iters_tx,

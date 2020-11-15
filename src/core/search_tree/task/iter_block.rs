@@ -19,7 +19,6 @@ use crate::{
     kv,
     storage,
     core::{
-        BlockRef,
         search_tree::{
             task::{
                 ItersTx,
@@ -32,6 +31,8 @@ use crate::{
             SearchTreeIterBlockRefsTx,
             SearchTreeIterBlockRefsRx,
         },
+        BlockRef,
+        SearchRangeBounds,
     },
     KeyValueStreamItem,
 };
@@ -72,12 +73,12 @@ pub async fn run(
     for IterRequest { block_ref: request_block_ref, kind, } in iter_requests_queue.drain(..) {
         assert_eq!(request_block_ref, block_ref);
         match kind {
-            IterRequestKind::Items { reply_tx, } => {
+            IterRequestKind::Items { range, reply_tx, } => {
                 let (items_tx, items_rx) = mpsc::channel(iter_send_buffer);
                 if let Err(_send_error) = reply_tx.send(SearchTreeIterItemsRx { items_rx, }) {
                     log::warn!("client canceled iter items request");
                 } else {
-                    iters_tx.items_txs.push(SearchTreeIterItemsTx { items_tx, });
+                    iters_tx.items_txs.push(SearchTreeIterItemsTx { range, items_tx, });
                 }
             },
             IterRequestKind::BlockRefs { reply_tx, } => {

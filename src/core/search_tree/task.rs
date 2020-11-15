@@ -14,13 +14,14 @@ use alloc_pool::Unique;
 use crate::{
     kv,
     core::{
-        BlockRef,
         search_tree::{
             SearchTreeIterItemsTx,
             SearchTreeIterItemsRx,
             SearchTreeIterBlockRefsTx,
             SearchTreeIterBlockRefsRx,
         },
+        BlockRef,
+        SearchRangeBounds,
     },
 };
 
@@ -74,7 +75,10 @@ pub struct IterRequest {
 }
 
 pub enum IterRequestKind {
-    Items { reply_tx: oneshot::Sender<SearchTreeIterItemsRx>, },
+    Items {
+        range: SearchRangeBounds,
+        reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
+    },
     BlockRefs { reply_tx: oneshot::Sender<SearchTreeIterBlockRefsRx>, },
 }
 
