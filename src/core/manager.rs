@@ -827,15 +827,21 @@ async fn busyloop(
                 let flush_request = flush_requests.get_mut(request_ref).unwrap();
                 assert!(!flush_request.butcher_done);
                 flush_request.butcher_done = true;
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-                    tasks.push(task::run_args(task::TaskArgs::FlushSearchTree(
-                        task::flush_search_tree::Args {
-                            request_ref: request_ref.clone(),
-                            search_tree_pid: search_tree_pid.clone(),
-                        },
-                    )));
-                    tasks_count += 1;
-                    flush_request.search_trees_pending_count += 1;
+
+                if search_trees.is_empty() {
+                    log::debug!("task::TaskDone::FlushSearchTree finished, waiting for all tasks to be done");
+                    flush_requests.remove(request_ref).unwrap();
+                } else {
+                    for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                        tasks.push(task::run_args(task::TaskArgs::FlushSearchTree(
+                            task::flush_search_tree::Args {
+                                request_ref: request_ref.clone(),
+                                search_tree_pid: search_tree_pid.clone(),
+                            },
+                        )));
+                        tasks_count += 1;
+                        flush_request.search_trees_pending_count += 1;
+                    }
                 }
             },
 
