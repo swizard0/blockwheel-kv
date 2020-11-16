@@ -154,8 +154,10 @@ struct DataIndex {
 enum Error {
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
+    LookupRange(blockwheel_kv::LookupRangeError),
     Remove(blockwheel_kv::RemoveError),
     Flush(blockwheel_kv::FlushError),
+    UnexpectedLookupRangeRxFinish,
     ExpectedValueNotFound {
         key: kv::Key,
         value_cell: kv::ValueCell,
@@ -164,6 +166,10 @@ enum Error {
         key: kv::Key,
         expected_value_cell: kv::ValueCell,
         found_value_cell: kv::ValueCell,
+    },
+    UnexpectedValueForLookupRange {
+        key: kv::Key,
+        key_value_pair: kv::KeyValuePair,
     },
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
@@ -446,9 +452,18 @@ async fn stress_loop(
             let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
             let version_snapshot = data.current_version;
 
+            #[derive(Debug)]
+            enum LookupKind { Single, Range, };
+            let lookup_kind = if rng.gen_range(0.0, 1.0) < 0.5 {
+                LookupKind::Single
+            } else {
+                LookupKind::Range
+            };
+
             log::info!(
-                "{}. performing LOOKUP with {} bytes key and {} value | {:?}, active = {:?}",
+                "{}. performing {:?} LOOKUP with {} bytes key and {} value | {:?}, active = {:?}",
                 actions_counter,
+                lookup_kind,
                 key.key_bytes.len(),
                 match &value_cell.cell {
                     kv::Cell::Value(value) =>
@@ -463,16 +478,45 @@ async fn stress_loop(
             let key = key.clone();
             let value_cell = value_cell.clone();
             let mut wheel_kv_pid = wheel_kv_pid.clone();
-            spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-                match wheel_kv_pid.lookup(key.clone()).await {
-                    Ok(None) =>
-                        Err(Error::ExpectedValueNotFound { key, value_cell, }),
-                    Ok(Some(found_value_cell)) =>
-                        Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, }),
-                    Err(error) =>
-                        Err(Error::Lookup(error))
-                }
-            });
+
+            match lookup_kind {
+                LookupKind::Single =>
+                    spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
+                        match wheel_kv_pid.lookup(key.clone()).await {
+                            Ok(None) =>
+                                Err(Error::ExpectedValueNotFound { key, value_cell, }),
+                            Ok(Some(found_value_cell)) =>
+                                Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, }),
+                            Err(error) =>
+                                Err(Error::Lookup(error))
+                        }
+                    }),
+                LookupKind::Range =>
+                    spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
+                        let mut lookup_range = wheel_kv_pid.lookup_range(key.clone() ..= key.clone()).await
+                            .map_err(Error::LookupRange)?;
+                        let result = match lookup_range.key_values_rx.next().await {
+                            None =>
+                                return Err(Error::UnexpectedLookupRangeRxFinish),
+                            Some(blockwheel_kv::KeyValueStreamItem::KeyValue(key_value_pair)) =>
+                                TaskDone::Lookup {
+                                    key: key.clone(),
+                                    found_value_cell: key_value_pair.value_cell,
+                                    version_snapshot,
+                                },
+                            Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
+                                return Err(Error::ExpectedValueNotFound { key, value_cell, }),
+                        };
+                        match lookup_range.key_values_rx.next().await {
+                            None =>
+                                Err(Error::UnexpectedLookupRangeRxFinish),
+                            Some(blockwheel_kv::KeyValueStreamItem::KeyValue(key_value_pair)) =>
+                                Err(Error::UnexpectedValueForLookupRange { key, key_value_pair, }),
+                            Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
+                               Ok(result),
+                        }
+                    }),
+            }
             active_tasks_counter.lookups += 1;
         }
         actions_counter += 1;
