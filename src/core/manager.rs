@@ -766,22 +766,34 @@ async fn busyloop(
             Event::Task(Ok(task::TaskDone::LookupRangeButcher(task::lookup_range_butcher::Done { range, key_values_tx, iter_items, }))) => {
                 let mut merger_iters = merger_iters_pool.lend(Vec::new);
                 merger_iters.clear();
-                let lookup_range_request = LookupRangeRequest {
-                    key_values_tx,
-                    butcher_iter_items: iter_items,
-                    merger_iters,
-                    pending_count: search_trees.len(),
-                };
-                let request_ref = lookup_range_requests.insert(lookup_range_request);
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-                    tasks.push(task::run_args(task::TaskArgs::LookupRangeSearchTree(
-                        task::lookup_range_search_tree::Args {
-                            range: range.clone(),
-                            request_ref: request_ref.clone(),
-                            search_tree_pid: search_tree_pid.clone(),
+
+                if search_trees.is_empty() {
+                    tasks.push(task::run_args(task::TaskArgs::MergeLookupRange(
+                        task::merge_lookup_range::Args {
+                            key_values_tx,
+                            butcher_iter_items: iter_items,
+                            merger_iters,
                         },
                     )));
                     tasks_count += 1;
+                } else {
+                    let lookup_range_request = LookupRangeRequest {
+                        key_values_tx,
+                        butcher_iter_items: iter_items,
+                        merger_iters,
+                        pending_count: search_trees.len(),
+                    };
+                    let request_ref = lookup_range_requests.insert(lookup_range_request);
+                    for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+                        tasks.push(task::run_args(task::TaskArgs::LookupRangeSearchTree(
+                            task::lookup_range_search_tree::Args {
+                                range: range.clone(),
+                                request_ref: request_ref.clone(),
+                                search_tree_pid: search_tree_pid.clone(),
+                            },
+                        )));
+                        tasks_count += 1;
+                    }
                 }
             },
 
