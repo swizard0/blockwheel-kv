@@ -795,7 +795,7 @@ async fn busyloop(
                     tasks.push(task::run_args(task::TaskArgs::MergeLookupRange(
                         task::merge_lookup_range::Args {
                             key_values_tx: lookup_range_request.key_values_tx,
-                            iter_items: lookup_range_request.butcher_iter_items,
+                            butcher_iter_items: lookup_range_request.butcher_iter_items,
                             merger_iters: lookup_range_request.merger_iters,
                         },
                     )));
