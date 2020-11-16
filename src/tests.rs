@@ -128,17 +128,19 @@ struct Limits {
 #[derive(Clone, Copy, Default, Debug)]
 struct Counter {
     lookups: usize,
+    lookups_range: usize,
     inserts: usize,
     removes: usize,
 }
 
 impl Counter {
     fn sum(&self) -> usize {
-        self.lookups + self.inserts + self.removes
+        self.lookups + self.lookups_range + self.inserts + self.removes
     }
 
     fn clear(&mut self) {
         self.lookups = 0;
+        self.lookups_range = 0;
         self.inserts = 0;
         self.removes = 0;
     }
@@ -246,10 +248,13 @@ async fn stress_loop(
     let mut actions_counter = 0;
 
     enum TaskDone {
-        Lookup { key: kv::Key, found_value_cell: kv::ValueCell, version_snapshot: u64, },
+        Lookup { key: kv::Key, found_value_cell: kv::ValueCell, version_snapshot: u64, lookup_kind: LookupKind, },
         Insert { key: kv::Key, value: kv::Value, version: u64, },
         Remove { key: kv::Key, version: u64, },
     }
+
+    #[derive(Debug)]
+    enum LookupKind { Single, Range, };
 
     fn spawn_task<T>(
         supervisor_pid: &mut SupervisorPid,
@@ -285,7 +290,7 @@ async fn stress_loop(
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
-            TaskDone::Lookup { key, found_value_cell, version_snapshot, } => {
+            TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind, } => {
                 let &offset = data.index.get(&key).unwrap();
                 let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
                 let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
@@ -314,8 +319,16 @@ async fn stress_loop(
                 } else {
                     unreachable!("key = {:?}, version_current = {}, version_found = {}", key, version_current, version_found);
                 }
-                counter.lookups += 1;
-                active_tasks_counter.lookups -= 1;
+                match lookup_kind {
+                    LookupKind::Single => {
+                        counter.lookups += 1;
+                        active_tasks_counter.lookups -= 1;
+                    },
+                    LookupKind::Range => {
+                        counter.lookups_range += 1;
+                        active_tasks_counter.lookups_range -= 1;
+                    },
+                }
             }
             TaskDone::Remove { key, version, } => {
                 let data_cell = kv::KeyValuePair {
@@ -340,6 +353,7 @@ async fn stress_loop(
             std::mem::drop(done_tx);
 
             while active_tasks_counter.sum() > 0 {
+                log::debug!("terminating, waiting for {} tasks to finish | active = {:?}", active_tasks_counter.sum(), active_tasks_counter);
                 process(done_rx.next().await.unwrap()?, data, counter, &mut active_tasks_counter)?;
             }
             break;
@@ -452,8 +466,6 @@ async fn stress_loop(
             let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
             let version_snapshot = data.current_version;
 
-            #[derive(Debug)]
-            enum LookupKind { Single, Range, };
             let lookup_kind = if rng.gen_range(0.0, 1.0) < 0.5 {
                 LookupKind::Single
             } else {
@@ -480,18 +492,20 @@ async fn stress_loop(
             let mut wheel_kv_pid = wheel_kv_pid.clone();
 
             match lookup_kind {
-                LookupKind::Single =>
+                LookupKind::Single => {
                     spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
                         match wheel_kv_pid.lookup(key.clone()).await {
                             Ok(None) =>
                                 Err(Error::ExpectedValueNotFound { key, value_cell, }),
                             Ok(Some(found_value_cell)) =>
-                                Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, }),
+                                Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind: LookupKind::Single, }),
                             Err(error) =>
                                 Err(Error::Lookup(error))
                         }
-                    }),
-                LookupKind::Range =>
+                    });
+                    active_tasks_counter.lookups += 1;
+                },
+                LookupKind::Range => {
                     spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
                         let mut lookup_range = wheel_kv_pid.lookup_range(key.clone() ..= key.clone()).await
                             .map_err(Error::LookupRange)?;
@@ -503,21 +517,25 @@ async fn stress_loop(
                                     key: key.clone(),
                                     found_value_cell: key_value_pair.value_cell,
                                     version_snapshot,
+                                    lookup_kind: LookupKind::Range,
                                 },
                             Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
                                 return Err(Error::ExpectedValueNotFound { key, value_cell, }),
                         };
                         match lookup_range.key_values_rx.next().await {
                             None =>
-                                Err(Error::UnexpectedLookupRangeRxFinish),
+                                return Err(Error::UnexpectedLookupRangeRxFinish),
                             Some(blockwheel_kv::KeyValueStreamItem::KeyValue(key_value_pair)) =>
-                                Err(Error::UnexpectedValueForLookupRange { key, key_value_pair, }),
+                                return Err(Error::UnexpectedValueForLookupRange { key, key_value_pair, }),
                             Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
-                               Ok(result),
+                                ()
                         }
-                    }),
+                        assert!(lookup_range.key_values_rx.next().await.is_none());
+                        Ok(result)
+                    });
+                    active_tasks_counter.lookups_range += 1;
+                },
             }
-            active_tasks_counter.lookups += 1;
         }
         actions_counter += 1;
     }
