@@ -17,6 +17,8 @@ use crate::{
     blockwheel::block,
 };
 
+pub const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct BlockHeader {
     pub node_type: NodeType,
@@ -83,8 +85,11 @@ impl<'a> From<&'a kv::ValueCell> for ValueCell<'a> {
 
 #[derive(Debug)]
 pub enum Error {
+    BlockMagicSerialize(bincode::Error),
     BlockHeaderSerialize(bincode::Error),
     EntrySerialize(bincode::Error),
+    BlockMagicDeserialize(bincode::Error),
+    InvalidBlockMagic { expected: u64, provided: u64, },
     BlockHeaderDeserialize(bincode::Error),
     EntryDeserialize(bincode::Error),
 }
@@ -97,6 +102,9 @@ pub struct BlockSerializer<B> {
 impl<B> BlockSerializer<B> where B: DerefMut<Target = Vec<u8>> {
     pub fn start(node_type: NodeType, entries_count: usize, mut block_bytes: B) -> Result<BlockSerializerContinue<B>, Error> {
         block_bytes.deref_mut().clear();
+        bincode_options()
+            .serialize_into(block_bytes.deref_mut(), &BLOCK_MAGIC)
+            .map_err(Error::BlockMagicSerialize)?;
         bincode_options()
             .serialize_into(block_bytes.deref_mut(), &BlockHeader { node_type, entries_count, })
             .map_err(Error::BlockHeaderSerialize)?;
@@ -139,6 +147,11 @@ pub fn block_deserialize_iter<'a>(
     -> Result<BlockDeserializeIter<'a, impl bincode::BincodeRead<'a>, impl Options>, Error>
 {
     let mut deserializer = bincode::Deserializer::from_slice(block_bytes, bincode_options());
+    let magic: u64 = serde::Deserialize::deserialize(&mut deserializer)
+        .map_err(Error::BlockMagicDeserialize)?;
+    if magic != BLOCK_MAGIC {
+        return Err(Error::InvalidBlockMagic { expected: BLOCK_MAGIC, provided: magic, });
+    }
     let block_header: BlockHeader = serde::Deserialize::deserialize(&mut deserializer)
         .map_err(Error::BlockHeaderDeserialize)?;
     Ok(BlockDeserializeIter {

@@ -34,7 +34,6 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct Params {
     pub tree_block_size: usize,
-    pub kv_task_restart_sec: usize,
     pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
@@ -46,7 +45,6 @@ impl Default for Params {
     fn default() -> Params {
         Params {
             tree_block_size: 32,
-            kv_task_restart_sec: 2,
             butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,

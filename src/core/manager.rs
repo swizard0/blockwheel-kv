@@ -397,11 +397,19 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
                 return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
             Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
                 blocks_total += 1;
-                let deserializer = storage::block_deserialize_iter(&block_bytes)
-                    .map_err(|error| ErrorSeverity::Fatal(Error::DeserializeBlock {
-                        block_ref: block_ref.clone(),
-                        error,
-                    }))?;
+                let deserializer = match storage::block_deserialize_iter(&block_bytes) {
+                    Ok(deserializer) =>
+                        deserializer,
+                    Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
+                        log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
+                        continue;
+                    },
+                    Err(error) =>
+                        return Err(ErrorSeverity::Fatal(Error::DeserializeBlock {
+                            block_ref,
+                            error,
+                        })),
+                };
                 match deserializer.block_header().node_type {
                     storage::NodeType::Root { tree_entries_count, } => {
                         log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
