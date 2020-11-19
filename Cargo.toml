@@ -1,6 +1,6 @@
 [package]
 name = "ero-blockwheel-kv"
-version = "0.3.11"
+version = "0.3.12"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 description = "Key/value persistent store based on `ero-blockwheel` framework."
 edition = "2018"
