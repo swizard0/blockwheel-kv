@@ -1,6 +1,9 @@
 use std::borrow::Borrow;
 
-use alloc_pool::bytes::Bytes;
+use alloc_pool::bytes::{
+    Bytes,
+    BytesMut,
+};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Key {
@@ -13,6 +16,12 @@ impl From<Bytes> for Key {
     }
 }
 
+impl From<BytesMut> for Key {
+    fn from(key_bytes: BytesMut) -> Key {
+        key_bytes.freeze().into()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Value {
     pub value_bytes: Bytes,
@@ -21,6 +30,12 @@ pub struct Value {
 impl From<Bytes> for Value {
     fn from(value_bytes: Bytes) -> Value {
         Value { value_bytes, }
+    }
+}
+
+impl From<BytesMut> for Value {
+    fn from(value_bytes: BytesMut) -> Value {
+        value_bytes.freeze().into()
     }
 }
 
