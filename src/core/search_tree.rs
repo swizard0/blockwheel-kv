@@ -290,7 +290,7 @@ async fn run(state: State) {
         },
         state,
         |mut state| async move {
-            let child_supervisor_gen_server = state.parent_supervisor.child_supevisor();
+            let child_supervisor_gen_server = state.parent_supervisor.child_supervisor();
             let child_supervisor_pid = child_supervisor_gen_server.pid();
             state.parent_supervisor.spawn_link_temporary(
                 child_supervisor_gen_server.run(),
