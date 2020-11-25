@@ -1,8 +1,11 @@
-use std::sync::{
-    Arc,
-    atomic::{
-        Ordering,
-        AtomicU64,
+use std::{
+    time,
+    sync::{
+        Arc,
+        atomic::{
+            Ordering,
+            AtomicU64,
+        },
     },
 };
 
@@ -12,9 +15,14 @@ pub struct Provider {
 }
 
 impl Provider {
-    pub fn new() -> Provider {
+    pub fn from_unix_epoch_seed() -> Provider {
+        let seconds_since_epoch = time::SystemTime::now()
+            .duration_since(time::SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let initial_counter = seconds_since_epoch << 24;
         Provider {
-            counter: Arc::new(AtomicU64::new(0)),
+            counter: Arc::new(AtomicU64::new(initial_counter)),
         }
     }
 

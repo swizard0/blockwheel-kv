@@ -90,7 +90,7 @@ fn stress() {
         kv,
     };
 
-    let version_provider = version::Provider::new();
+    let version_provider = version::Provider::from_unix_epoch_seed();
     let mut data = DataIndex {
         index: HashMap::new(),
         data: Vec::new(),
