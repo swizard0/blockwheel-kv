@@ -63,7 +63,7 @@ fn stress() {
     //     key_size_bytes: 32,
     //     value_size_bytes: 4096,
     // };
-    // let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
+    // let init_wheel_size_bytes = 134217728; // (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
 
     let kv = blockwheel_kv::Params {
         ..Default::default()
