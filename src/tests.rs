@@ -58,8 +58,8 @@ fn stress() {
     //     .unwrap();
 
     // let limits = Limits {
-    //     active_tasks: 512,
-    //     actions: 24576,
+    //     active_tasks: 1024,
+    //     actions: 32768,
     //     key_size_bytes: 32,
     //     value_size_bytes: 4096,
     // };
@@ -154,6 +154,7 @@ struct DataIndex {
 
 #[derive(Debug)]
 enum Error {
+    GenTaskJoin(tokio::task::JoinError),
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
     LookupRange(blockwheel_kv::LookupRangeError),
@@ -279,14 +280,22 @@ async fn stress_loop(
                         cell: kv::Cell::Value(value.clone()),
                     },
                 };
-                if let Some(&offset) = data.index.get(&key) {
-                    data.data[offset] = data_cell;
+                let updated = if let Some(&offset) = data.index.get(&key) {
+                    if data.data[offset].value_cell.version < data_cell.value_cell.version {
+                        data.data[offset] = data_cell;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     let offset = data.data.len();
                     data.data.push(data_cell);
                     data.index.insert(key, offset);
+                    true
+                };
+                if updated {
+                    data.current_version = version;
                 }
-                data.current_version = version;
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
@@ -396,7 +405,7 @@ async fn stress_loop(
                 let key_amount = rng.gen_range(1, limits.key_size_bytes);
                 let value_amount = rng.gen_range(1, limits.value_size_bytes);
 
-                log::info!(
+                log::debug!(
                     "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
                     actions_counter,
                     key_amount,
@@ -408,14 +417,24 @@ async fn stress_loop(
                 );
 
                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-                    let mut block = blocks_pool.lend();
-                    block.resize(key_amount, 0);
-                    rand::thread_rng().fill(&mut block[..]);
-                    let key = kv::Key { key_bytes: block.freeze(), };
-                    let mut block = blocks_pool.lend();
-                    block.resize(value_amount, 0);
-                    rand::thread_rng().fill(&mut block[..]);
-                    let value = kv::Value { value_bytes: block.freeze(), };
+                    let mut key_block = blocks_pool.lend();
+                    let mut value_block = blocks_pool.lend();
+                    let gen_task = tokio::task::spawn_blocking(move || {
+                        let mut rng = rand::thread_rng();
+                        key_block.reserve(key_amount);
+                        for _ in 0 .. key_amount {
+                            key_block.push(rng.gen());
+                        }
+                        value_block.reserve(value_amount);
+                        for _ in 0 .. value_amount {
+                            value_block.push(rng.gen());
+                        }
+                        (key_block.freeze(), value_block.freeze())
+                    });
+                    let (key_bytes, value_bytes) = gen_task.await
+                        .map_err(Error::GenTaskJoin)?;
+                    let key = kv::Key { key_bytes, };
+                    let value = kv::Value { value_bytes, };
                     match wheel_kv_pid.insert(key.clone(), value.clone()).await {
                         Ok(blockwheel_kv::Inserted { version, }) =>
                             Ok(TaskDone::Insert { key, value, version, }),
@@ -437,7 +456,7 @@ async fn stress_loop(
                     }
                 };
 
-                log::info!(
+                log::debug!(
                     "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
                     actions_counter,
                     key.key_bytes.len(),
@@ -472,7 +491,7 @@ async fn stress_loop(
                 LookupKind::Range
             };
 
-            log::info!(
+            log::debug!(
                 "{}. performing {:?} LOOKUP with {} bytes key and {} value | {:?}, active = {:?}",
                 actions_counter,
                 lookup_kind,
