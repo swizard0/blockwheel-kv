@@ -769,6 +769,9 @@ async fn busyloop(
                         unreachable!(),
                     LookupRequestButcherStatus::Invalidated => {
                         log::debug!("invalidating butcher lookup reply");
+                        if lookup_request.pending_count == 0 {
+                            log::error!("hit lookup_request.pending_count == 0 when LookupRequestButcherStatus::Invalidated on TaskDone::LookupButcher!");
+                        }
                     },
                 }
             },
