@@ -739,19 +739,18 @@ async fn busyloop(
                         if replace_fold_found(&lookup_request.found_fold, &found) {
                             lookup_request.found_fold = found;
                         }
-                        if lookup_request.pending_count == 0 {
-                            let lookup_request = lookup_requests.remove(request_ref).unwrap();
-                            let lookup_result = lookup_request.found_fold;
-                            if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
-                                log::warn!("client canceled lookup request");
-                            }
-                        }
                     },
                     LookupRequestButcherStatus::Done =>
                         unreachable!(),
-                    LookupRequestButcherStatus::Invalidated => {
-                        log::debug!("invalidating butcher lookup reply");
-                    },
+                    LookupRequestButcherStatus::Invalidated =>
+                        log::debug!("invalidating butcher lookup reply"),
+                }
+                if lookup_request.pending_count == 0 {
+                    let lookup_request = lookup_requests.remove(request_ref).unwrap();
+                    let lookup_result = lookup_request.found_fold;
+                    if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
+                        log::warn!("client canceled lookup request");
+                    }
                 }
             },
 
