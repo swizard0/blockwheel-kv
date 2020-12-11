@@ -353,6 +353,8 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
     let mut flush_mode = FlushMode::NoFlush;
 
     loop {
+        assert!(tasks_count != 0 || async_tree.tree.is_empty());
+
         enum Event<R, T, I> {
             Request(Option<R>),
             Task(T),

@@ -350,6 +350,7 @@ struct LookupRequest {
     found_fold: Option<kv::ValueCell>,
 }
 
+#[derive(Debug)]
 enum LookupRequestButcherStatus {
     NotReady,
     Done,
@@ -493,11 +494,15 @@ async fn busyloop(
         break;
     }
 
+    let (timeout_tx, timeout_rx) = mpsc::channel(0);
+    let mut fused_timeout_rx = timeout_rx.fuse();
+
     loop {
-        enum Event<R, F, T> {
+        enum Event<R, F, T, O> {
             Request(Option<R>),
             FlushCache(Option<F>),
             Task(T),
+            Timeout(O),
         }
 
         let event = match mem::replace(&mut current_mode, Mode::Regular) {
@@ -507,6 +512,8 @@ async fn busyloop(
                         Event::Request(result),
                     result = state.fused_flush_cache_rx.next() =>
                         Event::FlushCache(result),
+                    result = fused_timeout_rx.next() =>
+                        Event::Timeout(result),
                 },
             Mode::Regular =>
                 select! {
@@ -522,6 +529,8 @@ async fn busyloop(
                             Event::Task(task)
                         },
                     },
+                    result = fused_timeout_rx.next() =>
+                        Event::Timeout(result),
                 },
             Mode::Flushing { done_reply_tx, } if tasks_count == 0 => {
                 log::debug!("Mode::Flushing: all tasks finished, responding Flushed and switching mode");
@@ -544,6 +553,8 @@ async fn busyloop(
                             Event::Task(task)
                         },
                     },
+                    result = fused_timeout_rx.next() =>
+                        Event::Timeout(result),
                 }
             },
         };
@@ -646,6 +657,13 @@ async fn busyloop(
                     pending_count: 1 + search_trees.len(),
                     found_fold: None,
                 });
+
+                let mut timeout_tx = timeout_tx.clone();
+                state.parent_supervisor.spawn_link_temporary(async move {
+                    tokio::time::sleep(Duration::from_secs(24)).await;
+                    timeout_tx.send(request_ref).await.ok();
+                });
+
                 tasks.push(task::run_args(task::TaskArgs::LookupButcher(
                     task::lookup_butcher::Args {
                         key: key.clone(),
@@ -916,6 +934,21 @@ async fn busyloop(
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
+
+            Event::Timeout(None) =>
+                unreachable!(),
+
+            Event::Timeout(Some(request_ref)) =>
+                if let Some(lookup_request) = lookup_requests.get(request_ref) {
+                    panic!(
+                        "lookup request timed out: key = {:?}, butcher_status = {:?}, pending_count = {:?}, found_fold = {:?}",
+                        lookup_request.key,
+                        lookup_request.butcher_status,
+                        lookup_request.pending_count,
+                        lookup_request.found_fold,
+                    );
+                },
+
         }
     }
 }
