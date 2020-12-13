@@ -1,7 +1,4 @@
 use std::{
-    ops::{
-        DerefMut,
-    },
     marker::PhantomData,
 };
 
@@ -99,14 +96,14 @@ pub struct BlockSerializer<B> {
     entries_left: usize,
 }
 
-impl<B> BlockSerializer<B> where B: DerefMut<Target = Vec<u8>> {
+impl<B> BlockSerializer<B> where B: AsMut<Vec<u8>> {
     pub fn start(node_type: NodeType, entries_count: usize, mut block_bytes: B) -> Result<BlockSerializerContinue<B>, Error> {
-        block_bytes.deref_mut().clear();
+        block_bytes.as_mut().clear();
         bincode_options()
-            .serialize_into(block_bytes.deref_mut(), &BLOCK_MAGIC)
+            .serialize_into(block_bytes.as_mut(), &BLOCK_MAGIC)
             .map_err(Error::BlockMagicSerialize)?;
         bincode_options()
-            .serialize_into(block_bytes.deref_mut(), &BlockHeader { node_type, entries_count, })
+            .serialize_into(block_bytes.as_mut(), &BlockHeader { node_type, entries_count, })
             .map_err(Error::BlockHeaderSerialize)?;
         Ok(if entries_count == 0 {
             BlockSerializerContinue::Done(block_bytes)
@@ -118,7 +115,7 @@ impl<B> BlockSerializer<B> where B: DerefMut<Target = Vec<u8>> {
     pub fn entry(mut self, key: &[u8], value_cell: ValueCell, jump_ref: JumpRef) -> Result<BlockSerializerContinue<B>, Error> {
         let entry = Entry { key, value_cell, jump_ref, };
         bincode_options()
-            .serialize_into(self.block_bytes.deref_mut(), &entry)
+            .serialize_into(self.block_bytes.as_mut(), &entry)
             .map_err(Error::EntrySerialize)?;
         self.entries_left -= 1;
         Ok(if self.entries_left == 0 {
