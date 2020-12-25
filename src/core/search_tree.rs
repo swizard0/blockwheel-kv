@@ -482,7 +482,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = cache.get(&**lookup_request.key.key_bytes)
+                        let result = cache.get(&*lookup_request.key.key_bytes)
                             .cloned();
                         if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result)) {
                             log::warn!("client canceled lookup request");

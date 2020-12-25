@@ -284,7 +284,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
             },
 
             Request::Lookup(RequestLookup { key, reply_tx, }) => {
-                let lookup_result = memcache.get(&**key.key_bytes)
+                let lookup_result = memcache.get(&*key.key_bytes)
                     .cloned();
                 if let Err(_send_error) = reply_tx.send(lookup_result) {
                     log::warn!("client canceled lookup request");
