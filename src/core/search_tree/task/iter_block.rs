@@ -13,6 +13,7 @@ use futures::{
 };
 
 use alloc_pool::{
+    pool,
     bytes::{
         Bytes,
         BytesPool,
@@ -27,6 +28,7 @@ use crate::{
             task::{
                 IterRequest,
                 IterRequestKind,
+                BlockEntry,
             },
             SearchTreeIterItemsTx,
             SearchTreeIterItemsRx,
@@ -43,6 +45,7 @@ pub struct Args {
     pub block_ref: BlockRef,
     pub iter_request: IterRequest,
     pub blocks_pool: BytesPool,
+    pub iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
     pub block_bytes: Bytes,
     pub iter_rec_tx: mpsc::Sender<IterRequest>,
     pub iter_send_buffer: usize,
@@ -57,6 +60,7 @@ pub enum Error {
     ReadBlockStorage { block_ref: BlockRef, error: storage::Error, },
     IterRecPeerLost,
     SearchTreeGone,
+    BlockEntriesJoin(tokio::task::JoinError),
 }
 
 pub async fn run(
@@ -64,6 +68,7 @@ pub async fn run(
         block_ref,
         iter_request,
         blocks_pool,
+        iter_block_entries_pool,
         block_bytes,
         mut iter_rec_tx,
         iter_send_buffer,
@@ -96,6 +101,17 @@ pub async fn run(
             IterKind::BlockRefs(SearchTreeIterBlockRefsTx { block_refs_tx, })
         },
     };
+
+    let mut block_entries = iter_block_entries_pool.lend(Vec::new);
+    block_entries.clear();
+
+    let block_entries_task = tokio::task::spawn_blocking(move || {
+
+        Ok(block_entries)
+    });
+    let block_entries = block_entries_task.await
+        .map_err(Error::BlockEntriesJoin)??;
+
 
     let entries_iter = storage::block_deserialize_iter(&block_bytes)
         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;

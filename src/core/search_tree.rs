@@ -81,6 +81,7 @@ pub struct Pools {
     lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
     iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
     outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
+    iter_block_entries_pool: pool::Pool<Vec<task::BlockEntry>>,
 }
 
 impl Pools {
@@ -90,6 +91,7 @@ impl Pools {
             lookup_requests_queue_pool: pool::Pool::new(),
             iter_requests_queue_pool: pool::Pool::new(),
             outcomes_pool: pool::Pool::new(),
+            iter_block_entries_pool: pool::Pool::new(),
         }
     }
 }
@@ -417,6 +419,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 &state.pools.blocks_pool,
                                 &state.pools.lookup_requests_queue_pool,
                                 &state.pools.iter_requests_queue_pool,
+                                &state.pools.iter_block_entries_pool,
                                 &state.wheels_pid,
                                 &iter_rec_tx,
                                 state.params.iter_send_buffer,
@@ -523,6 +526,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             &state.pools.blocks_pool,
                             &state.pools.lookup_requests_queue_pool,
                             &state.pools.iter_requests_queue_pool,
+                            &state.pools.iter_block_entries_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
                             state.params.iter_send_buffer,
@@ -576,6 +580,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     &state.pools.blocks_pool,
                     &state.pools.lookup_requests_queue_pool,
                     &state.pools.iter_requests_queue_pool,
+                    &state.pools.iter_block_entries_pool,
                     &state.wheels_pid,
                     &iter_rec_tx,
                     state.params.iter_send_buffer,
@@ -627,6 +632,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                         block_ref: block_ref.clone(),
                                         iter_request,
                                         blocks_pool: state.pools.blocks_pool.clone(),
+                                        iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
                                         block_bytes: block_bytes.clone(),
                                         iter_rec_tx: iter_rec_tx.clone(),
                                         iter_send_buffer: state.params.iter_send_buffer,
@@ -784,6 +790,7 @@ impl AsyncTree {
         blocks_pool: &BytesPool,
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
+        iter_block_entries_pool: &pool::Pool<Vec<task::BlockEntry>>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
         iter_send_buffer: usize,
@@ -803,6 +810,7 @@ impl AsyncTree {
                             block_ref,
                             iter_request,
                             blocks_pool: blocks_pool.clone(),
+                            iter_block_entries_pool: iter_block_entries_pool.clone(),
                             block_bytes: block_bytes.clone(),
                             iter_rec_tx: iter_rec_tx.clone(),
                             iter_send_buffer,

@@ -66,6 +66,10 @@ pub enum IterRequestKind {
     BlockRefs { reply_tx: oneshot::Sender<SearchTreeIterBlockRefsRx>, },
 }
 
+pub struct BlockEntry {
+
+}
+
 #[derive(Debug)]
 pub enum SearchTreeLookupError {
 }
