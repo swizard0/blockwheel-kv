@@ -397,7 +397,7 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
                 return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
             Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
                 blocks_total += 1;
-                let deserializer = match storage::block_deserialize_iter(&block_bytes) {
+                let deserializer = match storage::BlockDeserializeIter::new(block_bytes) {
                     Ok(deserializer) =>
                         deserializer,
                     Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {

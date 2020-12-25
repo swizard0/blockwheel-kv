@@ -73,6 +73,12 @@ impl Deref for WheelFilename {
     }
 }
 
+impl AsRef<[u8]> for WheelFilename {
+    fn as_ref(&self) -> &[u8] {
+        self.filename.as_bytes()
+    }
+}
+
 #[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,

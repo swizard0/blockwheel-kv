@@ -1,4 +1,5 @@
 use std::{
+    str,
     ops::Bound,
     cmp::Ordering,
 };
@@ -16,12 +17,10 @@ use alloc_pool::{
     pool,
     bytes::{
         Bytes,
-        BytesPool,
     },
 };
 
 use crate::{
-    kv,
     storage,
     core::{
         search_tree::{
@@ -44,7 +43,6 @@ use crate::{
 pub struct Args {
     pub block_ref: BlockRef,
     pub iter_request: IterRequest,
-    pub blocks_pool: BytesPool,
     pub iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
     pub block_bytes: Bytes,
     pub iter_rec_tx: mpsc::Sender<IterRequest>,
@@ -58,6 +56,7 @@ pub struct Done {
 #[derive(Debug)]
 pub enum Error {
     ReadBlockStorage { block_ref: BlockRef, error: storage::Error, },
+    FilenameUtf8 { block_ref: BlockRef, error: str::Utf8Error, },
     IterRecPeerLost,
     SearchTreeGone,
     BlockEntriesJoin(tokio::task::JoinError),
@@ -67,7 +66,6 @@ pub async fn run(
     Args {
         block_ref,
         iter_request,
-        blocks_pool,
         iter_block_entries_pool,
         block_bytes,
         mut iter_rec_tx,
@@ -109,28 +107,28 @@ pub async fn run(
 
         Ok(block_entries)
     });
-    let block_entries = block_entries_task.await
+    let _block_entries = block_entries_task.await
         .map_err(Error::BlockEntriesJoin)??;
 
 
-    let entries_iter = storage::block_deserialize_iter(&block_bytes)
+    let entries_iter = storage::BlockDeserializeIter::new(block_bytes)
         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
     for maybe_entry in entries_iter {
-        let entry = maybe_entry
+        let (jump_ref, key_value_pair) = maybe_entry
             .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
 
         match &iter_kind {
             IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Unbounded, .. }, .. }) =>
                 (),
             IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Excluded(key), .. }, .. }) =>
-                match key.key_bytes[..].cmp(entry.key) {
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
                     Ordering::Less =>
                         (),
                     Ordering::Equal | Ordering::Greater =>
                         continue,
                 },
             IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Included(key), .. }, .. }) =>
-                match key.key_bytes[..].cmp(entry.key) {
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
                     Ordering::Less | Ordering::Equal =>
                         (),
                     Ordering::Greater =>
@@ -140,7 +138,7 @@ pub async fn run(
                 (),
         }
 
-        let maybe_jump_block_ref = match entry.jump_ref {
+        let maybe_jump_block_ref = match jump_ref {
             storage::JumpRef::None =>
                 None,
             storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
@@ -150,7 +148,12 @@ pub async fn run(
                 }),
             storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
                 Some(BlockRef {
-                    blockwheel_filename: filename.into(),
+                    blockwheel_filename: str::from_utf8(&*filename)
+                        .map_err(|error| Error::FilenameUtf8 {
+                            block_ref: block_ref.clone(),
+                            error,
+                        })?
+                        .into(),
                     block_id: block_id.clone(),
                 }),
         };
@@ -226,14 +229,14 @@ pub async fn run(
                     Bound::Unbounded =>
                         (),
                     Bound::Excluded(key) =>
-                        match key.key_bytes[..].cmp(entry.key) {
+                        match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
                             Ordering::Less | Ordering::Equal =>
                                 break,
                             Ordering::Greater =>
                                 (),
                         },
                     Bound::Included(key) =>
-                        match key.key_bytes[..].cmp(entry.key) {
+                        match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
                             Ordering::Less  =>
                                 break,
                             Ordering::Equal | Ordering::Greater =>
@@ -241,21 +244,6 @@ pub async fn run(
                         },
                 }
 
-                let mut key_bytes = blocks_pool.lend();
-                key_bytes.extend_from_slice(entry.key);
-                let key = kv::Key { key_bytes: key_bytes.freeze(), };
-
-                let value_cell = match entry.value_cell {
-                    storage::ValueCell { version, cell: storage::Cell::Value { value, }, } => {
-                        let mut value_bytes = blocks_pool.lend();
-                        value_bytes.extend_from_slice(value);
-                        kv::ValueCell { version, cell: kv::Cell::Value(kv::Value { value_bytes: value_bytes.freeze(), }), }
-                    },
-                    storage::ValueCell { version, cell: storage::Cell::Tombstone, } =>
-                        kv::ValueCell { version, cell: kv::Cell::Tombstone, },
-                };
-
-                let key_value_pair = kv::KeyValuePair { key, value_cell, };
                 if let Err(_send_error) = items_tx.send(KeyValueStreamItem::KeyValue(key_value_pair)).await {
                     log::warn!("client canceled iter items request");
                     return Ok(Done { block_ref, });

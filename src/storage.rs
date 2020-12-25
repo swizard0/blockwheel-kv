@@ -219,7 +219,7 @@ pub struct BlockDeserializeIter {
 }
 
 impl BlockDeserializeIter {
-    fn new(block_bytes: Bytes) -> Result<BlockDeserializeIter, Error> {
+    pub fn new(block_bytes: Bytes) -> Result<BlockDeserializeIter, Error> {
         let mut cursor = io::Cursor::new(block_bytes);
         let magic: u64 = bincode_options()
             .deserialize_from(&mut cursor)

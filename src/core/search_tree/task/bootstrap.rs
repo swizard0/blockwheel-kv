@@ -46,7 +46,7 @@ pub async fn run(Args { cache, blocks_pool, mut wheels_pid, }: Args) -> Result<D
                     return Ok(block_bytes),
                 storage::BlockSerializerContinue::More(serializer) => {
                     let (key, value_cell) = cache_iter.next().unwrap();
-                    kont = serializer.entry(&key.key_bytes, value_cell.into(), storage::JumpRef::None)?;
+                    kont = serializer.entry::<&'_ [u8]>(&key, &value_cell, storage::JumpRef::None)?;
                 },
             }
         }
