@@ -202,146 +202,91 @@ pub async fn run(
     let mut block_entries = block_entries_task.await
         .map_err(Error::BlockEntriesJoin)??;
 
-    let entries_iter = storage::BlockDeserializeIter::new(block_bytes)
-        .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
-    for maybe_entry in entries_iter {
-        let (jump_ref, key_value_pair) = maybe_entry
-            .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+    for block_entry_action in block_entries.drain(..) {
 
-        match &iter_kind {
-            IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Unbounded, .. }, .. }) =>
-                (),
-            IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Excluded(key), .. }, .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                    Ordering::Less =>
-                        (),
-                    Ordering::Equal | Ordering::Greater =>
-                        continue,
-                },
-            IterKind::Items(SearchTreeIterItemsTx { range: SearchRangeBounds { range_from: Bound::Included(key), .. }, .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                    Ordering::Less | Ordering::Equal =>
-                        (),
-                    Ordering::Greater =>
-                        continue,
-                },
-            IterKind::BlockRefs(..) =>
-                (),
-        }
+        match &block_entry_action {
+            BlockEntry::OnlyJump(jump_block_ref) | BlockEntry::JumpAndEntry { jump: jump_block_ref, .. } => {
+                match &mut iter_kind {
 
-        let maybe_jump_block_ref = match jump_ref {
-            storage::JumpRef::None =>
-                None,
-            storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
-                Some(BlockRef {
-                    blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                    block_id: block_id.clone(),
-                }),
-            storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
-                Some(BlockRef {
-                    blockwheel_filename: str::from_utf8(&*filename)
-                        .map_err(|error| Error::FilenameUtf8 {
-                            block_ref: block_ref.clone(),
-                            error,
-                        })?
-                        .into(),
-                    block_id: block_id.clone(),
-                }),
-        };
-        if let Some(jump_block_ref) = maybe_jump_block_ref {
-            match &mut iter_kind {
-
-                IterKind::Items(SearchTreeIterItemsTx { range, items_tx, }) => {
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let send_result = iter_rec_tx.send(IterRequest {
-                        block_ref: jump_block_ref.clone(),
-                        kind: IterRequestKind::Items { range: range.clone(), reply_tx, },
-                    }).await;
-                    if let Err(_send_error) = send_result {
-                        log::warn!("search_tree has gone, terminating iter task");
-                        return Err(Error::SearchTreeGone);
-                    }
-                    let mut items_rec_rx = match reply_rx.await {
-                        Ok(SearchTreeIterItemsRx { items_rx }) =>
-                            items_rx,
-                        Err(oneshot::Canceled) => {
+                    IterKind::Items(SearchTreeIterItemsTx { range, items_tx, }) => {
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        let send_result = iter_rec_tx.send(IterRequest {
+                            block_ref: jump_block_ref.clone(),
+                            kind: IterRequestKind::Items { range: range.clone(), reply_tx, },
+                        }).await;
+                        if let Err(_send_error) = send_result {
                             log::warn!("search_tree has gone, terminating iter task");
                             return Err(Error::SearchTreeGone);
-                        },
-                    };
-                    loop {
-                        match items_rec_rx.next().await {
-                            None =>
-                                return Err(Error::IterRecPeerLost),
-                            Some(KeyValueStreamItem::NoMore) =>
-                                break,
-                            Some(KeyValueStreamItem::KeyValue(key_value_pair)) =>
-                                if let Err(_send_error) = items_tx.send(KeyValueStreamItem::KeyValue(key_value_pair)).await {
-                                    log::warn!("client canceled iter items request");
-                                    return Ok(Done { block_ref, });
-                                },
                         }
-                    }
-                },
+                        let mut items_rec_rx = match reply_rx.await {
+                            Ok(SearchTreeIterItemsRx { items_rx }) =>
+                                items_rx,
+                            Err(oneshot::Canceled) => {
+                                log::warn!("search_tree has gone, terminating iter task");
+                                return Err(Error::SearchTreeGone);
+                            },
+                        };
+                        loop {
+                            match items_rec_rx.next().await {
+                                None =>
+                                    return Err(Error::IterRecPeerLost),
+                                Some(KeyValueStreamItem::NoMore) =>
+                                    break,
+                                Some(KeyValueStreamItem::KeyValue(key_value_pair)) =>
+                                    if let Err(_send_error) = items_tx.send(KeyValueStreamItem::KeyValue(key_value_pair)).await {
+                                        log::warn!("client canceled iter items request");
+                                        return Ok(Done { block_ref, });
+                                    },
+                            }
+                        }
+                    },
 
-                IterKind::BlockRefs(SearchTreeIterBlockRefsTx { block_refs_tx, }) => {
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let send_result = iter_rec_tx.send(IterRequest {
-                        block_ref: jump_block_ref.clone(),
-                        kind: IterRequestKind::BlockRefs { reply_tx, },
-                    }).await;
-                    if let Err(_send_error) = send_result {
-                        log::warn!("search_tree has gone, terminating iter task");
-                        return Err(Error::SearchTreeGone);
-                    }
-                    let mut block_refs_rec_rx = match reply_rx.await {
-                        Ok(SearchTreeIterBlockRefsRx { block_refs_rx }) =>
-                            block_refs_rx,
-                        Err(oneshot::Canceled) => {
+                    IterKind::BlockRefs(SearchTreeIterBlockRefsTx { block_refs_tx, }) => {
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        let send_result = iter_rec_tx.send(IterRequest {
+                            block_ref: jump_block_ref.clone(),
+                            kind: IterRequestKind::BlockRefs { reply_tx, },
+                        }).await;
+                        if let Err(_send_error) = send_result {
                             log::warn!("search_tree has gone, terminating iter task");
                             return Err(Error::SearchTreeGone);
-                        },
-                    };
-                    while let Some(block_ref_rec) = block_refs_rec_rx.next().await {
-                        if let Err(_send_error) = block_refs_tx.send(block_ref_rec).await {
-                            log::warn!("client canceled iter block_refs request");
-                            return Ok(Done { block_ref, });
                         }
-                    }
-                },
+                        let mut block_refs_rec_rx = match reply_rx.await {
+                            Ok(SearchTreeIterBlockRefsRx { block_refs_rx }) =>
+                                block_refs_rx,
+                            Err(oneshot::Canceled) => {
+                                log::warn!("search_tree has gone, terminating iter task");
+                                return Err(Error::SearchTreeGone);
+                            },
+                        };
+                        while let Some(block_ref_rec) = block_refs_rec_rx.next().await {
+                            if let Err(_send_error) = block_refs_tx.send(block_ref_rec).await {
+                                log::warn!("client canceled iter block_refs request");
+                                return Ok(Done { block_ref, });
+                            }
+                        }
+                    },
 
-            }
-        }
-
-        match &mut iter_kind {
-
-            IterKind::Items(SearchTreeIterItemsTx { range, items_tx, }) => {
-                match &range.range_to {
-                    Bound::Unbounded =>
-                        (),
-                    Bound::Excluded(key) =>
-                        match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                            Ordering::Less | Ordering::Equal =>
-                                break,
-                            Ordering::Greater =>
-                                (),
-                        },
-                    Bound::Included(key) =>
-                        match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                            Ordering::Less  =>
-                                break,
-                            Ordering::Equal | Ordering::Greater =>
-                                (),
-                        },
-                }
-
-                if let Err(_send_error) = items_tx.send(KeyValueStreamItem::KeyValue(key_value_pair)).await {
-                    log::warn!("client canceled iter items request");
-                    return Ok(Done { block_ref, });
                 }
             },
+            BlockEntry::OnlyEntry(..) =>
+                (),
+        }
 
-            IterKind::BlockRefs(..) =>
+        match &block_entry_action {
+            BlockEntry::OnlyEntry(key_value_pair) | BlockEntry::JumpAndEntry { key_value_pair, .. } =>
+                match &mut iter_kind {
+                    IterKind::Items(SearchTreeIterItemsTx { items_tx, .. }) => {
+                        if let Err(_send_error) = items_tx.send(KeyValueStreamItem::KeyValue(key_value_pair.clone())).await {
+                            log::warn!("client canceled iter items request");
+                            return Ok(Done { block_ref, });
+                        }
+                    },
+
+                    IterKind::BlockRefs(..) =>
+                        (),
+                },
+            BlockEntry::OnlyJump(..) =>
                 (),
         }
     }
