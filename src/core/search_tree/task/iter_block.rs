@@ -100,16 +100,107 @@ pub async fn run(
         },
     };
 
+    let block_bytes_clone = block_bytes.clone();
+    let block_ref_clone = block_ref.clone();
     let mut block_entries = iter_block_entries_pool.lend(Vec::new);
     block_entries.clear();
 
+    let maybe_search_range = match &iter_kind {
+        IterKind::Items(SearchTreeIterItemsTx { range, .. }) =>
+            Some(range.clone()),
+        IterKind::BlockRefs(..) =>
+            None,
+    };
+
     let block_entries_task = tokio::task::spawn_blocking(move || {
+        let entries_iter = storage::BlockDeserializeIter::new(block_bytes_clone)
+            .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref_clone.clone(), error, })?;
+        for maybe_entry in entries_iter {
+            let (jump_ref, key_value_pair) = maybe_entry
+                .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref_clone.clone(), error, })?;
+            match &maybe_search_range {
+                Some(SearchRangeBounds { range_from: Bound::Unbounded, .. }) =>
+                    (),
+                Some(SearchRangeBounds { range_from: Bound::Excluded(key), .. }) =>
+                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                        Ordering::Less =>
+                            (),
+                        Ordering::Equal | Ordering::Greater =>
+                            continue,
+                    },
+                Some(SearchRangeBounds { range_from: Bound::Included(key), .. }) =>
+                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                        Ordering::Less | Ordering::Equal =>
+                            (),
+                        Ordering::Greater =>
+                            continue,
+                    },
+                None =>
+                    (),
+            }
+
+            let maybe_jump_block_ref = match jump_ref {
+                storage::JumpRef::None =>
+                    None,
+                storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
+                    Some(BlockRef {
+                        blockwheel_filename: block_ref_clone.blockwheel_filename.clone(),
+                        block_id: block_id.clone(),
+                    }),
+                storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
+                    Some(BlockRef {
+                        blockwheel_filename: str::from_utf8(&*filename)
+                            .map_err(|error| Error::FilenameUtf8 {
+                                block_ref: block_ref_clone.clone(),
+                                error,
+                            })?
+                            .into(),
+                        block_id: block_id.clone(),
+                    }),
+            };
+
+            let force_stop = match &maybe_search_range {
+                Some(SearchRangeBounds { range_to: Bound::Unbounded, .. }) =>
+                    false,
+                Some(SearchRangeBounds { range_to: Bound::Excluded(key), .. }) =>
+                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                        Ordering::Less | Ordering::Equal =>
+                            true,
+                        Ordering::Greater =>
+                            false,
+                    },
+                Some(SearchRangeBounds { range_to: Bound::Included(key), .. }) =>
+                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                        Ordering::Less  =>
+                            true,
+                        Ordering::Equal | Ordering::Greater =>
+                            false,
+                    },
+                None =>
+                    false,
+            };
+
+            match (maybe_jump_block_ref, force_stop) {
+                (None, true) =>
+                    break,
+                (None, false) =>
+                    block_entries.push(BlockEntry::OnlyEntry(key_value_pair)),
+                (Some(jump_block_ref), true) => {
+                    block_entries.push(BlockEntry::OnlyJump(jump_block_ref));
+                    break;
+                },
+                (Some(jump_block_ref), false) =>
+                    block_entries.push(BlockEntry::JumpAndEntry {
+                        jump: jump_block_ref,
+                        key_value_pair,
+                    }),
+            }
+        }
 
         Ok(block_entries)
     });
-    let _block_entries = block_entries_task.await
+    let mut block_entries = block_entries_task.await
         .map_err(Error::BlockEntriesJoin)??;
-
 
     let entries_iter = storage::BlockDeserializeIter::new(block_bytes)
         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;

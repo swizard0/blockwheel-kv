@@ -66,8 +66,13 @@ pub enum IterRequestKind {
     BlockRefs { reply_tx: oneshot::Sender<SearchTreeIterBlockRefsRx>, },
 }
 
-pub struct BlockEntry {
-
+pub enum BlockEntry {
+    OnlyJump(BlockRef),
+    OnlyEntry(kv::KeyValuePair),
+    JumpAndEntry {
+        jump: BlockRef,
+        key_value_pair: kv::KeyValuePair,
+    },
 }
 
 #[derive(Debug)]
