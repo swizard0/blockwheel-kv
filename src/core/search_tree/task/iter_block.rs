@@ -2,6 +2,7 @@ use std::{
     str,
     ops::Bound,
     cmp::Ordering,
+    sync::Arc,
 };
 
 use futures::{
@@ -44,6 +45,7 @@ pub struct Args {
     pub block_ref: BlockRef,
     pub iter_request: IterRequest,
     pub iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
+    pub thread_pool: Arc<rayon::ThreadPool>,
     pub block_bytes: Bytes,
     pub iter_rec_tx: mpsc::Sender<IterRequest>,
     pub iter_send_buffer: usize,
@@ -59,7 +61,7 @@ pub enum Error {
     FilenameUtf8 { block_ref: BlockRef, error: str::Utf8Error, },
     IterRecPeerLost,
     SearchTreeGone,
-    BlockEntriesJoin(tokio::task::JoinError),
+    BlockEntriesTaskGone,
 }
 
 pub async fn run(
@@ -67,6 +69,7 @@ pub async fn run(
         block_ref,
         iter_request,
         iter_block_entries_pool,
+        thread_pool,
         block_bytes,
         mut iter_rec_tx,
         iter_send_buffer,
@@ -112,7 +115,7 @@ pub async fn run(
             None,
     };
 
-    let block_entries_task = tokio::task::spawn_blocking(move || {
+    let block_entries_task = move || {
         let entries_iter = storage::BlockDeserializeIter::new(block_bytes_clone)
             .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref_clone.clone(), error, })?;
         for maybe_entry in entries_iter {
@@ -198,9 +201,12 @@ pub async fn run(
         }
 
         Ok(block_entries)
-    });
-    let mut block_entries = block_entries_task.await
-        .map_err(Error::BlockEntriesJoin)??;
+    };
+    let (block_entries_task_tx, block_entries_task_rx) = oneshot::channel();
+    thread_pool.install(move || block_entries_task_tx.send(block_entries_task()).ok());
+
+    let mut block_entries = block_entries_task_rx.await
+        .map_err(|oneshot::Canceled| Error::BlockEntriesTaskGone)??;
 
     for block_entry_action in block_entries.drain(..) {
 

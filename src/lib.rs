@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::{
+    sync::Arc,
     ops::{
         AddAssign,
         RangeBounds,
@@ -83,6 +84,7 @@ impl GenServer {
     pub async fn run(
         self,
         mut parent_supervisor: SupervisorPid,
+        thread_pool: Arc<rayon::ThreadPool>,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels_pid: wheels::Pid,
@@ -121,6 +123,7 @@ impl GenServer {
 
         let manager_task = self.manager_gen_server.run(
             child_supervisor_pid.clone(),
+            thread_pool,
             blocks_pool,
             butcher_pid,
             wheels_pid,

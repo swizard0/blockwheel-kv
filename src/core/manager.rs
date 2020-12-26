@@ -119,6 +119,7 @@ impl GenServer {
     pub async fn run(
         self,
         parent_supervisor: SupervisorPid,
+        thread_pool: Arc<rayon::ThreadPool>,
         blocks_pool: BytesPool,
         butcher_pid: butcher::Pid,
         wheels_pid: wheels::Pid,
@@ -136,6 +137,7 @@ impl GenServer {
                 fused_request_rx: self.fused_request_rx,
                 fused_flush_cache_rx: self.fused_flush_cache_rx,
                 parent_supervisor,
+                thread_pool,
                 blocks_pool,
                 butcher_pid,
                 wheels_pid,
@@ -161,6 +163,7 @@ struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     fused_flush_cache_rx: stream::Fuse<mpsc::Receiver<ButcherFlush>>,
     parent_supervisor: SupervisorPid,
+    thread_pool: Arc<rayon::ThreadPool>,
     blocks_pool: BytesPool,
     butcher_pid: butcher::Pid,
     wheels_pid: wheels::Pid,
@@ -418,6 +421,7 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
                         child_supervisor_pid.spawn_link_temporary(
                             search_tree_gen_server.run(
                                 child_supervisor_pid.clone(),
+                                state.thread_pool.clone(),
                                 search_tree_pools.clone(),
                                 state.wheels_pid.clone(),
                                 state.params.search_tree_params.clone(),
@@ -561,6 +565,7 @@ async fn busyloop(
                 child_supervisor_pid.spawn_link_temporary(
                     search_tree_gen_server.run(
                         child_supervisor_pid.clone(),
+                        state.thread_pool.clone(),
                         search_tree_pools.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),
@@ -887,6 +892,7 @@ async fn busyloop(
                 child_supervisor_pid.spawn_link_temporary(
                     search_tree_gen_server.run(
                         child_supervisor_pid.clone(),
+                        state.thread_pool.clone(),
                         search_tree_pools.clone(),
                         state.wheels_pid.clone(),
                         state.params.search_tree_params.clone(),

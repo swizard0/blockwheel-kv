@@ -124,6 +124,7 @@ impl GenServer {
     pub async fn run(
         self,
         parent_supervisor: SupervisorPid,
+        thread_pool: Arc<rayon::ThreadPool>,
         pools: Pools,
         wheels_pid: wheels::Pid,
         params: Params,
@@ -133,6 +134,7 @@ impl GenServer {
         run(State {
             fused_request_rx: self.fused_request_rx,
             parent_supervisor,
+            thread_pool,
             pools,
             wheels_pid,
             params,
@@ -267,6 +269,7 @@ impl Pid {
 struct State {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
+    thread_pool: Arc<rayon::ThreadPool>,
     pools: Pools,
     wheels_pid: wheels::Pid,
     params: Params,
@@ -334,6 +337,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 task::run_args(
                     task::TaskArgs::Bootstrap(task::bootstrap::Args {
                         cache: cache.clone(),
+                        thread_pool: state.thread_pool.clone(),
                         blocks_pool: state.pools.blocks_pool.clone(),
                         wheels_pid: state.wheels_pid.clone(),
                     }),
@@ -419,6 +423,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 &state.pools.lookup_requests_queue_pool,
                                 &state.pools.iter_requests_queue_pool,
                                 &state.pools.iter_block_entries_pool,
+                                &state.thread_pool,
                                 &state.wheels_pid,
                                 &iter_rec_tx,
                                 state.params.iter_send_buffer,
@@ -525,6 +530,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                             &state.pools.lookup_requests_queue_pool,
                             &state.pools.iter_requests_queue_pool,
                             &state.pools.iter_block_entries_pool,
+                            &state.thread_pool,
                             &state.wheels_pid,
                             &iter_rec_tx,
                             state.params.iter_send_buffer,
@@ -578,6 +584,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                     &state.pools.lookup_requests_queue_pool,
                     &state.pools.iter_requests_queue_pool,
                     &state.pools.iter_block_entries_pool,
+                    &state.thread_pool,
                     &state.wheels_pid,
                     &iter_rec_tx,
                     state.params.iter_send_buffer,
@@ -613,6 +620,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                 task::run_args(
                                     task::TaskArgs::SearchBlock(task::search_block::Args {
                                         block_ref: block_ref.clone(),
+                                        thread_pool: state.thread_pool.clone(),
                                         block_bytes: block_bytes.clone(),
                                         lookup_requests_queue,
                                         outcomes,
@@ -628,6 +636,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                                         block_ref: block_ref.clone(),
                                         iter_request,
                                         iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
+                                        thread_pool: state.thread_pool.clone(),
                                         block_bytes: block_bytes.clone(),
                                         iter_rec_tx: iter_rec_tx.clone(),
                                         iter_send_buffer: state.params.iter_send_buffer,
@@ -671,6 +680,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
                 }
                 let maybe_task_args = async_tree.drop_or_search_more(
                     &block_ref,
+                    &state.thread_pool,
                     &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
@@ -685,6 +695,7 @@ async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Res
             Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
                 let maybe_task_args = async_tree.drop_or_search_more(
                     &block_ref,
+                    &state.thread_pool,
                     &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
@@ -783,6 +794,7 @@ impl AsyncTree {
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
         iter_block_entries_pool: &pool::Pool<Vec<task::BlockEntry>>,
+        thread_pool: &Arc<rayon::ThreadPool>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
         iter_send_buffer: usize,
@@ -802,6 +814,7 @@ impl AsyncTree {
                             block_ref,
                             iter_request,
                             iter_block_entries_pool: iter_block_entries_pool.clone(),
+                            thread_pool: thread_pool.clone(),
                             block_bytes: block_bytes.clone(),
                             iter_rec_tx: iter_rec_tx.clone(),
                             iter_send_buffer,
@@ -832,6 +845,7 @@ impl AsyncTree {
     fn drop_or_search_more(
         &mut self,
         block_ref: &BlockRef,
+        thread_pool: &Arc<rayon::ThreadPool>,
         outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
     )
         -> Option<task::TaskArgs>
@@ -850,6 +864,7 @@ impl AsyncTree {
                             Some(lookup_requests_queue) =>
                                 Some(task::TaskArgs::SearchBlock(task::search_block::Args {
                                     block_ref: block_ref.clone(),
+                                    thread_pool: thread_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     lookup_requests_queue,
                                     outcomes: outcomes_pool.lend(Vec::new),

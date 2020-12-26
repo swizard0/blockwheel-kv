@@ -244,6 +244,7 @@ async fn stress_loop(
     supervisor_pid.spawn_link_permanent(
         wheel_kv_gen_server.run(
             supervisor_pid.clone(),
+            thread_pool.clone(),
             blocks_pool.clone(),
             version_provider.clone(),
             wheels_pid.clone(),
