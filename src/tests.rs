@@ -1,5 +1,8 @@
 use std::{
     fs,
+    sync::{
+        Arc,
+    },
     collections::{
         HashMap,
     },
@@ -154,6 +157,7 @@ struct DataIndex {
 
 #[derive(Debug)]
 enum Error {
+    ThreadPool(rayon::ThreadPoolBuildError),
     GenTaskJoin(tokio::task::JoinError),
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
@@ -197,19 +201,24 @@ async fn stress_loop(
     tokio::spawn(supervisor_gen_server.run());
 
     let blocks_pool = BytesPool::new();
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .build()
+        .map_err(Error::ThreadPool)?;
+    let thread_pool = Arc::new(thread_pool);
+
     let blockwheel_a_filename = params.wheel_a.wheel_filename.clone().into();
     let blockwheel_b_filename = params.wheel_b.wheel_filename.clone().into();
 
     let wheel_a_gen_server = blockwheel::GenServer::new();
     let mut wheel_a_pid = wheel_a_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
-        wheel_a_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_a),
+        wheel_a_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params.wheel_a),
     );
 
     let wheel_b_gen_server = blockwheel::GenServer::new();
     let mut wheel_b_pid = wheel_b_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
-        wheel_b_gen_server.run(supervisor_pid.clone(), blocks_pool.clone(), params.wheel_b),
+        wheel_b_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params.wheel_b),
     );
 
     let wheels_gen_server = wheels::GenServer::new();
