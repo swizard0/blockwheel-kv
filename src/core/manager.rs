@@ -44,6 +44,7 @@ use alloc_pool::{
 
 use crate::{
     kv,
+    job,
     wheels,
     storage,
     core::{
@@ -116,15 +117,18 @@ impl GenServer {
         }
     }
 
-    pub async fn run(
+    pub async fn run<J>(
         self,
         parent_supervisor: SupervisorPid,
-        thread_pool: Arc<rayon::ThreadPool>,
+        thread_pool: edeltraud::Edeltraud<J>,
         blocks_pool: BytesPool,
         butcher_pid: butcher::Pid,
         wheels_pid: wheels::Pid,
         params: Params,
     )
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
     {
         let terminate_result = restart::restartable(
             ero::Params {
@@ -159,11 +163,11 @@ impl GenServer {
     }
 }
 
-struct State {
+struct State<J> where J: edeltraud::Job {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     fused_flush_cache_rx: stream::Fuse<mpsc::Receiver<ButcherFlush>>,
     parent_supervisor: SupervisorPid,
-    thread_pool: Arc<rayon::ThreadPool>,
+    thread_pool: edeltraud::Edeltraud<J>,
     blocks_pool: BytesPool,
     butcher_pid: butcher::Pid,
     wheels_pid: wheels::Pid,
@@ -382,7 +386,15 @@ fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::Val
     }
 }
 
-async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+async fn load<J>(
+    mut child_supervisor_pid: SupervisorPid,
+    mut state: State<J>,
+)
+    -> Result<(), ErrorSeverity<State<J>, Error>>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
     let mut search_trees = Set::new();
     let mut search_tree_refs = BinMerger::new();
@@ -454,14 +466,17 @@ async fn load(mut child_supervisor_pid: SupervisorPid, mut state: State) -> Resu
     ).await
 }
 
-async fn busyloop(
+async fn busyloop<J>(
     mut child_supervisor_pid: SupervisorPid,
     mut search_trees: Set<search_tree::Pid>,
     mut search_tree_refs: BinMerger,
     search_tree_pools: search_tree::Pools,
-    mut state: State,
+    mut state: State<J>,
 )
-    -> Result<(), ErrorSeverity<State, Error>>
+    -> Result<(), ErrorSeverity<State<J>, Error>>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
 {
     let merger_iters_pool = pool::Pool::new();
     let iter_items_pool = pool::Pool::new();

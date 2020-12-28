@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 use std::{
-    sync::Arc,
     ops::{
         AddAssign,
         RangeBounds,
@@ -23,6 +22,7 @@ use alloc_pool::bytes::BytesPool;
 use ero_blockwheel_fs as blockwheel;
 
 pub mod kv;
+pub mod job;
 pub mod wheels;
 pub mod version;
 
@@ -81,15 +81,18 @@ impl GenServer {
         }
     }
 
-    pub async fn run(
+    pub async fn run<J>(
         self,
         mut parent_supervisor: SupervisorPid,
-        thread_pool: Arc<rayon::ThreadPool>,
+        thread_pool: edeltraud::Edeltraud<J>,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels_pid: wheels::Pid,
         params: Params,
     )
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
     {
         let butcher_gen_server = core::butcher::GenServer::new();
         let butcher_pid = butcher_gen_server.pid();

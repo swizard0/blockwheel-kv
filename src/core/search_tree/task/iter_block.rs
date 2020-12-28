@@ -2,7 +2,6 @@ use std::{
     str,
     ops::Bound,
     cmp::Ordering,
-    sync::Arc,
 };
 
 use futures::{
@@ -16,12 +15,14 @@ use futures::{
 
 use alloc_pool::{
     pool,
+    Unique,
     bytes::{
         Bytes,
     },
 };
 
 use crate::{
+    job,
     storage,
     core::{
         search_tree::{
@@ -41,11 +42,11 @@ use crate::{
     KeyValueStreamItem,
 };
 
-pub struct Args {
+pub struct Args<J> where J: edeltraud::Job {
     pub block_ref: BlockRef,
     pub iter_request: IterRequest,
     pub iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
-    pub thread_pool: Arc<rayon::ThreadPool>,
+    pub thread_pool: edeltraud::Edeltraud<J>,
     pub block_bytes: Bytes,
     pub iter_rec_tx: mpsc::Sender<IterRequest>,
     pub iter_send_buffer: usize,
@@ -61,10 +62,114 @@ pub enum Error {
     FilenameUtf8 { block_ref: BlockRef, error: str::Utf8Error, },
     IterRecPeerLost,
     SearchTreeGone,
-    BlockEntriesTaskGone,
+    ThreadPoolGone,
 }
 
-pub async fn run(
+pub type JobOutput = Result<JobDone, Error>;
+
+pub struct JobArgs {
+    block_ref: BlockRef,
+    block_bytes: Bytes,
+    maybe_search_range: Option<SearchRangeBounds>,
+    iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
+}
+
+pub struct JobDone {
+    block_entries: Unique<Vec<BlockEntry>>,
+}
+
+pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entries_pool, }: JobArgs) -> JobOutput {
+    let mut block_entries = iter_block_entries_pool.lend(Vec::new);
+    block_entries.clear();
+
+    let entries_iter = storage::BlockDeserializeIter::new(block_bytes)
+        .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+    for maybe_entry in entries_iter {
+        let (jump_ref, key_value_pair) = maybe_entry
+            .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+        match &maybe_search_range {
+            Some(SearchRangeBounds { range_from: Bound::Unbounded, .. }) =>
+                (),
+            Some(SearchRangeBounds { range_from: Bound::Excluded(key), .. }) =>
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                    Ordering::Less =>
+                        (),
+                    Ordering::Equal | Ordering::Greater =>
+                        continue,
+                },
+            Some(SearchRangeBounds { range_from: Bound::Included(key), .. }) =>
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                    Ordering::Less | Ordering::Equal =>
+                        (),
+                    Ordering::Greater =>
+                        continue,
+                },
+            None =>
+                (),
+        }
+
+        let maybe_jump_block_ref = match jump_ref {
+            storage::JumpRef::None =>
+                None,
+            storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
+                Some(BlockRef {
+                    blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                    block_id: block_id.clone(),
+                }),
+            storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
+                Some(BlockRef {
+                    blockwheel_filename: str::from_utf8(&*filename)
+                        .map_err(|error| Error::FilenameUtf8 {
+                            block_ref: block_ref.clone(),
+                            error,
+                        })?
+                        .into(),
+                    block_id: block_id.clone(),
+                }),
+        };
+
+        let force_stop = match &maybe_search_range {
+            Some(SearchRangeBounds { range_to: Bound::Unbounded, .. }) =>
+                false,
+            Some(SearchRangeBounds { range_to: Bound::Excluded(key), .. }) =>
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                    Ordering::Less | Ordering::Equal =>
+                        true,
+                    Ordering::Greater =>
+                        false,
+                },
+            Some(SearchRangeBounds { range_to: Bound::Included(key), .. }) =>
+                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                    Ordering::Less  =>
+                        true,
+                    Ordering::Equal | Ordering::Greater =>
+                        false,
+                },
+            None =>
+                false,
+        };
+
+        match (maybe_jump_block_ref, force_stop) {
+            (None, true) =>
+                break,
+            (None, false) =>
+                block_entries.push(BlockEntry::OnlyEntry(key_value_pair)),
+            (Some(jump_block_ref), true) => {
+                block_entries.push(BlockEntry::OnlyJump(jump_block_ref));
+                break;
+            },
+            (Some(jump_block_ref), false) =>
+                block_entries.push(BlockEntry::JumpAndEntry {
+                    jump: jump_block_ref,
+                    key_value_pair,
+                }),
+        }
+    }
+
+    Ok(JobDone { block_entries, })
+}
+
+pub async fn run<J>(
     Args {
         block_ref,
         iter_request,
@@ -73,9 +178,12 @@ pub async fn run(
         block_bytes,
         mut iter_rec_tx,
         iter_send_buffer,
-    }: Args,
+    }: Args<J>,
 )
     -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
 {
     assert_eq!(iter_request.block_ref, block_ref);
 
@@ -103,110 +211,22 @@ pub async fn run(
         },
     };
 
-    let block_bytes_clone = block_bytes.clone();
-    let block_ref_clone = block_ref.clone();
-    let mut block_entries = iter_block_entries_pool.lend(Vec::new);
-    block_entries.clear();
-
-    let maybe_search_range = match &iter_kind {
-        IterKind::Items(SearchTreeIterItemsTx { range, .. }) =>
-            Some(range.clone()),
-        IterKind::BlockRefs(..) =>
-            None,
-    };
-
-    let block_entries_task = move || {
-        let entries_iter = storage::BlockDeserializeIter::new(block_bytes_clone)
-            .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref_clone.clone(), error, })?;
-        for maybe_entry in entries_iter {
-            let (jump_ref, key_value_pair) = maybe_entry
-                .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref_clone.clone(), error, })?;
-            match &maybe_search_range {
-                Some(SearchRangeBounds { range_from: Bound::Unbounded, .. }) =>
-                    (),
-                Some(SearchRangeBounds { range_from: Bound::Excluded(key), .. }) =>
-                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                        Ordering::Less =>
-                            (),
-                        Ordering::Equal | Ordering::Greater =>
-                            continue,
-                    },
-                Some(SearchRangeBounds { range_from: Bound::Included(key), .. }) =>
-                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                        Ordering::Less | Ordering::Equal =>
-                            (),
-                        Ordering::Greater =>
-                            continue,
-                    },
-                None =>
-                    (),
-            }
-
-            let maybe_jump_block_ref = match jump_ref {
-                storage::JumpRef::None =>
-                    None,
-                storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
-                    Some(BlockRef {
-                        blockwheel_filename: block_ref_clone.blockwheel_filename.clone(),
-                        block_id: block_id.clone(),
-                    }),
-                storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
-                    Some(BlockRef {
-                        blockwheel_filename: str::from_utf8(&*filename)
-                            .map_err(|error| Error::FilenameUtf8 {
-                                block_ref: block_ref_clone.clone(),
-                                error,
-                            })?
-                            .into(),
-                        block_id: block_id.clone(),
-                    }),
-            };
-
-            let force_stop = match &maybe_search_range {
-                Some(SearchRangeBounds { range_to: Bound::Unbounded, .. }) =>
-                    false,
-                Some(SearchRangeBounds { range_to: Bound::Excluded(key), .. }) =>
-                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                        Ordering::Less | Ordering::Equal =>
-                            true,
-                        Ordering::Greater =>
-                            false,
-                    },
-                Some(SearchRangeBounds { range_to: Bound::Included(key), .. }) =>
-                    match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
-                        Ordering::Less  =>
-                            true,
-                        Ordering::Equal | Ordering::Greater =>
-                            false,
-                    },
-                None =>
-                    false,
-            };
-
-            match (maybe_jump_block_ref, force_stop) {
-                (None, true) =>
-                    break,
-                (None, false) =>
-                    block_entries.push(BlockEntry::OnlyEntry(key_value_pair)),
-                (Some(jump_block_ref), true) => {
-                    block_entries.push(BlockEntry::OnlyJump(jump_block_ref));
-                    break;
-                },
-                (Some(jump_block_ref), false) =>
-                    block_entries.push(BlockEntry::JumpAndEntry {
-                        jump: jump_block_ref,
-                        key_value_pair,
-                    }),
-            }
-        }
-
-        Ok(block_entries)
-    };
-    let (block_entries_task_tx, block_entries_task_rx) = oneshot::channel();
-    thread_pool.install(move || block_entries_task_tx.send(block_entries_task()).ok());
-
-    let mut block_entries = block_entries_task_rx.await
-        .map_err(|oneshot::Canceled| Error::BlockEntriesTaskGone)??;
+    let job_task = thread_pool.spawn(job::Job::SearchTreeIterBlock(JobArgs {
+        block_ref: block_ref.clone(),
+        block_bytes: block_bytes.clone(),
+        maybe_search_range: match &iter_kind {
+            IterKind::Items(SearchTreeIterItemsTx { range, .. }) =>
+                Some(range.clone()),
+            IterKind::BlockRefs(..) =>
+                None,
+        },
+        iter_block_entries_pool,
+    }));
+    let job_output = job_task.await
+        .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+    let job_output: job::JobOutput = job_output.into();
+    let job::SearchTreeIterBlockDone(job_result) = job_output.into();
+    let JobDone { mut block_entries, } = job_result?;
 
     for block_entry_action in block_entries.drain(..) {
 

@@ -13,6 +13,7 @@ use alloc_pool::Unique;
 
 use crate::{
     kv,
+    job,
     core::{
         search_tree::{
             SearchTreeIterItemsRx,
@@ -79,12 +80,12 @@ pub enum BlockEntry {
 pub enum SearchTreeLookupError {
 }
 
-pub enum TaskArgs {
-    Bootstrap(bootstrap::Args),
+pub enum TaskArgs<J> where J: edeltraud::Job {
+    Bootstrap(bootstrap::Args<J>),
     LoadBlock(load_block::Args),
-    SearchBlock(search_block::Args),
+    SearchBlock(search_block::Args<J>),
     IterCache(iter_cache::Args),
-    IterBlock(iter_block::Args),
+    IterBlock(iter_block::Args<J>),
     Demolish(demolish::Args),
 }
 
@@ -107,7 +108,11 @@ pub enum Error {
     Demolish(demolish::Error),
 }
 
-pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
+pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     Ok(match args {
         TaskArgs::Bootstrap(args) =>
             TaskDone::Bootstrap(

@@ -1,8 +1,5 @@
 use std::{
     fs,
-    sync::{
-        Arc,
-    },
     collections::{
         HashMap,
     },
@@ -32,6 +29,7 @@ use alloc_pool::bytes::{
 
 use super::{
     kv,
+    job,
     wheels,
     version,
     storage,
@@ -157,7 +155,7 @@ struct DataIndex {
 
 #[derive(Debug)]
 enum Error {
-    ThreadPool(rayon::ThreadPoolBuildError),
+    ThreadPool(edeltraud::BuildError),
     GenTaskJoin(tokio::task::JoinError),
     Insert(blockwheel_kv::InsertError),
     Lookup(blockwheel_kv::LookupError),
@@ -201,10 +199,9 @@ async fn stress_loop(
     tokio::spawn(supervisor_gen_server.run());
 
     let blocks_pool = BytesPool::new();
-    let thread_pool = rayon::ThreadPoolBuilder::new()
+    let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
         .build()
         .map_err(Error::ThreadPool)?;
-    let thread_pool = Arc::new(thread_pool);
 
     let blockwheel_a_filename = params.wheel_a.wheel_filename.clone().into();
     let blockwheel_b_filename = params.wheel_b.wheel_filename.clone().into();

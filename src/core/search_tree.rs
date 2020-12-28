@@ -43,6 +43,7 @@ use alloc_pool::{
 
 use crate::{
     kv,
+    job,
     wheels,
     core::{
         BlockRef,
@@ -54,7 +55,7 @@ use crate::{
     KeyValueStreamItem,
 };
 
-mod task;
+pub mod task;
 
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -121,15 +122,18 @@ impl GenServer {
         }
     }
 
-    pub async fn run(
+    pub async fn run<J>(
         self,
         parent_supervisor: SupervisorPid,
-        thread_pool: Arc<rayon::ThreadPool>,
+        thread_pool: edeltraud::Edeltraud<J>,
         pools: Pools,
         wheels_pid: wheels::Pid,
         params: Params,
         mode: Mode,
     )
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
     {
         run(State {
             fused_request_rx: self.fused_request_rx,
@@ -266,10 +270,10 @@ impl Pid {
     }
 }
 
-struct State {
+struct State<J> where J: edeltraud::Job {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
-    thread_pool: Arc<rayon::ThreadPool>,
+    thread_pool: edeltraud::Edeltraud<J>,
     pools: Pools,
     wheels_pid: wheels::Pid,
     params: Params,
@@ -285,7 +289,11 @@ pub enum Mode {
     },
 }
 
-async fn run(state: State) {
+async fn run<J>(state: State<J>)
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     let terminate_result = restart::restartable(
         ero::Params {
             name: "ero-blockwheel-kv search tree task",
@@ -324,7 +332,11 @@ enum Error {
     Task(task::Error),
 }
 
-async fn busyloop(_child_supervisor_pid: SupervisorPid, mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
+async fn busyloop<J>(_child_supervisor_pid: SupervisorPid, mut state: State<J>) -> Result<(), ErrorSeverity<State<J>, Error>>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     let mut async_tree = AsyncTree::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
@@ -740,7 +752,7 @@ impl AsyncTree {
         }
     }
 
-    fn apply_lookup_request(
+    fn apply_lookup_request<J>(
         &mut self,
         lookup_request: task::LookupRequest,
         block_ref: BlockRef,
@@ -748,7 +760,8 @@ impl AsyncTree {
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
         wheels_pid: &wheels::Pid,
     )
-        -> Option<task::TaskArgs>
+        -> Option<task::TaskArgs<J>>
+    where J: edeltraud::Job
     {
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
@@ -788,18 +801,21 @@ impl AsyncTree {
         }
     }
 
-    fn apply_iter_request(
+    fn apply_iter_request<J>(
         &mut self,
         iter_request: task::IterRequest,
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
         iter_block_entries_pool: &pool::Pool<Vec<task::BlockEntry>>,
-        thread_pool: &Arc<rayon::ThreadPool>,
+        thread_pool: &edeltraud::Edeltraud<J>,
         wheels_pid: &wheels::Pid,
         iter_rec_tx: &mpsc::Sender<task::IterRequest>,
         iter_send_buffer: usize,
     )
-        -> Option<task::TaskArgs>
+        -> Option<task::TaskArgs<J>>
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
     {
         let block_ref = iter_request.block_ref.clone();
         match self.tree.entry(block_ref.clone()) {
@@ -842,13 +858,16 @@ impl AsyncTree {
         }
     }
 
-    fn drop_or_search_more(
+    fn drop_or_search_more<J>(
         &mut self,
         block_ref: &BlockRef,
-        thread_pool: &Arc<rayon::ThreadPool>,
+        thread_pool: &edeltraud::Edeltraud<J>,
         outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
     )
-        -> Option<task::TaskArgs>
+        -> Option<task::TaskArgs<J>>
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
     {
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
