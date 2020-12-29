@@ -104,14 +104,14 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                 let outcome = match jump_ref {
                                     storage::JumpRef::None =>
                                         Outcome::NotFound,
-                                    storage::JumpRef::Local(storage::LocalJumpRef { ref block_id, }) =>
+                                    storage::JumpRef::Local(storage::LocalRef { ref block_id, }) =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
                                                 blockwheel_filename: search_block_ref.blockwheel_filename.clone(),
                                                 block_id: block_id.clone(),
                                             },
                                         },
-                                    storage::JumpRef::External(storage::ExternalJumpRef { filename, ref block_id, }) =>
+                                    storage::JumpRef::External(storage::ExternalRef { filename, ref block_id, }) =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
                                                 blockwheel_filename: filename.into(),

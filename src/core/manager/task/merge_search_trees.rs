@@ -183,9 +183,9 @@ pub async fn run(
                     None =>
                         storage::JumpRef::None,
                     Some(BlockRef { blockwheel_filename, block_id, }) if blockwheel_filename == &wheel_ref.blockwheel_filename =>
-                        storage::JumpRef::Local(storage::LocalJumpRef { block_id: block_id.clone(), }),
+                        storage::JumpRef::Local(storage::LocalRef { block_id: block_id.clone(), }),
                     Some(BlockRef { blockwheel_filename, block_id, }) =>
-                        storage::JumpRef::External(storage::ExternalJumpRef {
+                        storage::JumpRef::External(storage::ExternalRef {
                             filename: blockwheel_filename,
                             block_id: block_id.clone(),
                         }),

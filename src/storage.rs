@@ -53,18 +53,18 @@ pub enum Cell<'a> {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum JumpRef<'a> {
     None,
-    Local(LocalJumpRef),
+    Local(LocalRef),
     #[serde(borrow)]
-    External(ExternalJumpRef<'a>),
+    External(ExternalRef<'a>),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct LocalJumpRef {
+pub struct LocalRef {
     pub block_id: block::Id,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ExternalJumpRef<'a> {
+pub struct ExternalRef<'a> {
     pub filename: &'a str,
     pub block_id: block::Id,
 }
@@ -214,126 +214,6 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
         }
     }
 }
-
-// impl Iterator for BlockDeserializeIter {
-//     type Item = Result<(JumpRef<'a>, kv::KeyValuePair), Error>;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.entries_read >= self.block_header.entries_count {
-//             None
-//         } else {
-//             self.entries_read += 1;
-//             let maybe_entry: Result<Entry, Error> = bincode_options()
-//                 .deserialize_from(&mut self.cursor)
-//                 .map_err(Error::EntryDeserialize);
-//             let offset = self.cursor.position() as usize;
-//             match maybe_entry {
-//                 Ok(Entry::JumpRefNoneCellTombstone { key_length, cell_version, }) => {
-//                     let offset_to = offset + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::None,
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Tombstone,
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Ok(Entry::JumpRefNoneCellValue { key_length, value_length, cell_version, }) => {
-//                     let offset_value = offset + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset .. offset_value);
-//                     let offset_to = offset_value + value_length;
-//                     let value_bytes = self.cursor.get_ref().subrange(offset_value .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::None,
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Value(kv::Value { value_bytes, }),
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Ok(Entry::JumpRefLocalCellTombstone { block_id, key_length, cell_version, }) => {
-//                     let offset_to = offset + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::Local(LocalJumpRef { block_id, }),
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Tombstone,
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Ok(Entry::JumpRefLocalCellValue { block_id, key_length, value_length, cell_version, }) => {
-//                     let offset_value = offset + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset .. offset_value);
-//                     let offset_to = offset_value + value_length;
-//                     let value_bytes = self.cursor.get_ref().subrange(offset_value .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::Local(LocalJumpRef { block_id, }),
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Value(kv::Value { value_bytes, }),
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Ok(Entry::JumpRefExternalCellTombstone { block_id, filename_length, key_length, cell_version, }) => {
-//                     let offset_key = offset + filename_length;
-//                     let filename_bytes = self.cursor.get_ref().subrange(offset .. offset_key);
-//                     let offset_to = offset_key + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset_key .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::External(ExternalJumpRef { block_id, filename: filename_bytes, }),
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Tombstone,
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Ok(Entry::JumpRefExternalCellValue { block_id, filename_length, key_length, value_length, cell_version, }) => {
-//                     let offset_key = offset + filename_length;
-//                     let filename_bytes = self.cursor.get_ref().subrange(offset .. offset_key);
-//                     let offset_value = offset_key + key_length;
-//                     let key_bytes = self.cursor.get_ref().subrange(offset_key .. offset_value);
-//                     let offset_to = offset_value + value_length;
-//                     let value_bytes = self.cursor.get_ref().subrange(offset_value .. offset_to);
-//                     self.cursor.set_position(offset_to as u64);
-//                     Some(Ok((
-//                         JumpRef::External(ExternalJumpRef { block_id, filename: filename_bytes, }),
-//                         kv::KeyValuePair {
-//                             key: kv::Key { key_bytes, },
-//                             value_cell: kv::ValueCell {
-//                                 version: cell_version,
-//                                 cell: kv::Cell::Value(kv::Value { value_bytes, }),
-//                             },
-//                         },
-//                     )))
-//                 },
-//                 Err(error) =>
-//                     Some(Err(error)),
-//             }
-//         }
-//     }
-// }
 
 fn bincode_options() -> impl Options {
     bincode::DefaultOptions::new()

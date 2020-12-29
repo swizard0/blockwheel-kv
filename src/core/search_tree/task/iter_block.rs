@@ -111,12 +111,12 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
         let maybe_jump_block_ref = match jump_ref {
             storage::JumpRef::None =>
                 None,
-            storage::JumpRef::Local(storage::LocalJumpRef { block_id, }) =>
+            storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
                 Some(BlockRef {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                     block_id: block_id.clone(),
                 }),
-            storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
+            storage::JumpRef::External(storage::ExternalRef { filename, block_id, }) =>
                 Some(BlockRef {
                     blockwheel_filename: filename.into(),
                     block_id: block_id.clone(),
