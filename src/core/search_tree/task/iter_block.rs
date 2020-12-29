@@ -82,7 +82,7 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
     let mut block_entries = iter_block_entries_pool.lend(Vec::new);
     block_entries.clear();
 
-    let entries_iter = storage::BlockDeserializeIter::new(block_bytes)
+    let entries_iter = storage::block_deserialize_iter(&block_bytes)
         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
     for maybe_entry in entries_iter {
         let (jump_ref, key_value_pair) = maybe_entry
@@ -118,12 +118,7 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
                 }),
             storage::JumpRef::External(storage::ExternalJumpRef { filename, block_id, }) =>
                 Some(BlockRef {
-                    blockwheel_filename: str::from_utf8(&*filename)
-                        .map_err(|error| Error::FilenameUtf8 {
-                            block_ref: block_ref.clone(),
-                            error,
-                        })?
-                        .into(),
+                    blockwheel_filename: filename.into(),
                     block_id: block_id.clone(),
                 }),
         };

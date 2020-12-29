@@ -59,7 +59,7 @@ pub struct JobDone {
 }
 
 pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, mut outcomes, }: JobArgs) -> JobOutput {
-    let mut entries_iter = storage::BlockDeserializeIter::new(block_bytes)
+    let mut entries_iter = storage::block_deserialize_iter(&block_bytes)
         .map_err(|error| Error::ReadBlockStorage {
             block_ref: search_block_ref.clone(),
             error,
@@ -111,15 +111,10 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                                 block_id: block_id.clone(),
                                             },
                                         },
-                                    storage::JumpRef::External(storage::ExternalJumpRef { ref filename, ref block_id, }) =>
+                                    storage::JumpRef::External(storage::ExternalJumpRef { filename, ref block_id, }) =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
-                                                blockwheel_filename: str::from_utf8(&*filename)
-                                                    .map_err(|error| Error::FilenameUtf8 {
-                                                        block_ref: search_block_ref.clone(),
-                                                        error,
-                                                    })?
-                                                    .into(),
+                                                blockwheel_filename: filename.into(),
                                                 block_id: block_id.clone(),
                                             },
                                         },

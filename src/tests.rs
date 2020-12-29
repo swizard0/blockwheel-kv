@@ -584,7 +584,7 @@ async fn stress_loop(
                 return Err(Error::WheelsIterBlocksRxDropped),
             Some(wheels::IterBlocksItem::Block { block_bytes, .. }) => {
                 checked_blocks += 1;
-                let deserializer = storage::BlockDeserializeIter::new(block_bytes)
+                let deserializer = storage::block_deserialize_iter(&block_bytes)
                     .map_err(Error::Storage)?;
                 for maybe_entry in deserializer {
                     let (_jump_ref, key_value_pair) = maybe_entry
