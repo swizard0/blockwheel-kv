@@ -61,7 +61,7 @@ pub fn job(JobArgs { cache, blocks_pool, }: JobArgs) -> JobOutput {
                 return Ok(JobDone { block_bytes: block_bytes.freeze(), }),
             storage::BlockSerializerContinue::More(serializer) => {
                 let (key, value_cell) = cache_iter.next().unwrap();
-                kont = serializer.entry(&key, &value_cell, storage::JumpRef::None)
+                kont = serializer.entry(&key, value_cell.into(), storage::JumpRef::None)
                     .map_err(Error::SerializeBlockStorage)?;
             },
         }

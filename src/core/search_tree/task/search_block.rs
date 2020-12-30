@@ -10,6 +10,7 @@ use alloc_pool::bytes::{
 };
 
 use crate::{
+    kv,
     job,
     storage,
     core::{
@@ -81,27 +82,36 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                         maybe_entry = None;
                     },
                     Some(entry_result) => {
-                        let (jump_ref, key_value_pair) = entry_result
+                        let iter_entry = entry_result
                             .map_err(|error| Error::ReadBlockStorage {
                                 block_ref: search_block_ref.clone(),
                                 error,
                             })?;
-                        match key_value_pair.key.key_bytes.cmp(&request_key.key.key_bytes) {
+                        match iter_entry.key.key_bytes.cmp(&request_key.key.key_bytes) {
                             Ordering::Less => {
                                 maybe_request = Some(request_key);
                                 maybe_entry = entries_iter.next();
                             },
                             Ordering::Equal => {
-                                let value_cell = key_value_pair.value_cell.clone();
+                                let value_cell = match iter_entry.value_cell {
+                                    storage::IterValueCell { version, cell: storage::IterCell::Value(storage::IterValueRef::Inline(ref value)), } =>
+                                        kv::ValueCell { version, cell: kv::Cell::Value(value.clone()), },
+                                    storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::Local(..)), .. } =>
+                                        todo!(),
+                                    storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::External(..)), .. } =>
+                                        todo!(),
+                                    storage::IterValueCell { version, cell: storage::IterCell::Tombstone, } =>
+                                        kv::ValueCell { version, cell: kv::Cell::Tombstone, },
+                                };
                                 outcomes.push(SearchOutcome {
                                     request: request_key,
                                     outcome: Outcome::Found { value_cell, },
                                 });
                                 maybe_request = lookup_requests_queue.pop();
-                                maybe_entry = Some(Ok((jump_ref, key_value_pair)));
+                                maybe_entry = Some(Ok(iter_entry));
                             },
                             Ordering::Greater => {
-                                let outcome = match jump_ref {
+                                let outcome = match iter_entry.jump_ref {
                                     storage::JumpRef::None =>
                                         Outcome::NotFound,
                                     storage::JumpRef::Local(storage::LocalRef { ref block_id, }) =>
@@ -124,7 +134,7 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                     outcome,
                                 });
                                 maybe_request = lookup_requests_queue.pop();
-                                maybe_entry = Some(Ok((jump_ref, key_value_pair)));
+                                maybe_entry = Some(Ok(iter_entry));
                             },
                         }
                     },

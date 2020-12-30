@@ -22,6 +22,7 @@ use alloc_pool::{
 };
 
 use crate::{
+    kv,
     job,
     storage,
     core::{
@@ -85,20 +86,20 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
     let entries_iter = storage::block_deserialize_iter(&block_bytes)
         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
     for maybe_entry in entries_iter {
-        let (jump_ref, key_value_pair) = maybe_entry
+        let iter_entry = maybe_entry
             .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
         match &maybe_search_range {
             Some(SearchRangeBounds { range_from: Bound::Unbounded, .. }) =>
                 (),
             Some(SearchRangeBounds { range_from: Bound::Excluded(key), .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                     Ordering::Less =>
                         (),
                     Ordering::Equal | Ordering::Greater =>
                         continue,
                 },
             Some(SearchRangeBounds { range_from: Bound::Included(key), .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                     Ordering::Less | Ordering::Equal =>
                         (),
                     Ordering::Greater =>
@@ -108,7 +109,7 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
                 (),
         }
 
-        let maybe_jump_block_ref = match jump_ref {
+        let maybe_jump_block_ref = match iter_entry.jump_ref {
             storage::JumpRef::None =>
                 None,
             storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
@@ -127,14 +128,14 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
             Some(SearchRangeBounds { range_to: Bound::Unbounded, .. }) =>
                 false,
             Some(SearchRangeBounds { range_to: Bound::Excluded(key), .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                     Ordering::Less | Ordering::Equal =>
                         true,
                     Ordering::Greater =>
                         false,
                 },
             Some(SearchRangeBounds { range_to: Bound::Included(key), .. }) =>
-                match key.key_bytes[..].cmp(&key_value_pair.key.key_bytes) {
+                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                     Ordering::Less  =>
                         true,
                     Ordering::Equal | Ordering::Greater =>
@@ -142,6 +143,20 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
                 },
             None =>
                 false,
+        };
+
+        let key_value_pair = kv::KeyValuePair {
+            key: iter_entry.key,
+            value_cell: match iter_entry.value_cell {
+                storage::IterValueCell { version, cell: storage::IterCell::Value(storage::IterValueRef::Inline(value)), } =>
+                    kv::ValueCell { version, cell: kv::Cell::Value(value.clone()), },
+                storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::Local(..)), .. } =>
+                    todo!(),
+                storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::External(..)), .. } =>
+                    todo!(),
+                storage::IterValueCell { version, cell: storage::IterCell::Tombstone, } =>
+                    kv::ValueCell { version, cell: kv::Cell::Tombstone, },
+            },
         };
 
         match (maybe_jump_block_ref, force_stop) {

@@ -46,13 +46,22 @@ pub struct ValueCell<'a> {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Cell<'a> {
-    Value { value: &'a [u8], },
+    #[serde(borrow)]
+    Value(ValueRef<'a>),
     Tombstone,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum JumpRef<'a> {
     None,
+    Local(LocalRef),
+    #[serde(borrow)]
+    External(ExternalRef<'a>),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum ValueRef<'a> {
+    Inline { value: &'a [u8], },
     Local(LocalRef),
     #[serde(borrow)]
     External(ExternalRef<'a>),
@@ -71,11 +80,14 @@ pub struct ExternalRef<'a> {
 
 impl<'a> From<&'a kv::ValueCell> for ValueCell<'a> {
     fn from(value_cell: &'a kv::ValueCell) -> ValueCell<'a> {
-        match value_cell {
-            &kv::ValueCell { version, cell: kv::Cell::Value(ref value), } =>
-                ValueCell { version, cell: Cell::Value { value: &value.value_bytes, }, },
-            &kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
-                ValueCell { version, cell: Cell::Tombstone, },
+        ValueCell {
+            version: value_cell.version,
+            cell: match value_cell.cell {
+                kv::Cell::Tombstone =>
+                    Cell::Tombstone,
+                kv::Cell::Value(kv::Value { ref value_bytes, }) =>
+                    Cell::Value(ValueRef::Inline { value: value_bytes, }),
+            },
         }
     }
 }
@@ -112,10 +124,10 @@ impl<B> BlockSerializer<B> where B: AsMut<Vec<u8>> {
         })
     }
 
-    pub fn entry(mut self, key: &kv::Key, value_cell: &kv::ValueCell, jump_ref: JumpRef) -> Result<BlockSerializerContinue<B>, Error> {
+    pub fn entry(mut self, key: &kv::Key, value_cell: ValueCell, jump_ref: JumpRef) -> Result<BlockSerializerContinue<B>, Error> {
         let entry = Entry {
             key: &key.key_bytes,
-            value_cell: value_cell.into(),
+            value_cell,
             jump_ref,
         };
         bincode_options()
@@ -167,10 +179,43 @@ impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
     }
+
+    fn subslice_to_bytes(&self, slice: &[u8]) -> Bytes {
+        let ptr = slice.as_ptr();
+        let offset_from = unsafe {
+            // safe because both the starting and other pointer are either in bounds or one
+            // byte past the end of the same allocated object
+            ptr.offset_from(self.block_bytes.as_ptr()) as usize
+        };
+        let offset_to = offset_from + slice.len();
+        self.block_bytes.subrange(offset_from .. offset_to)
+    }
+}
+
+pub struct IterEntry<'a> {
+    pub jump_ref: JumpRef<'a>,
+    pub key: kv::Key,
+    pub value_cell: IterValueCell<'a>,
+}
+
+pub struct IterValueCell<'a> {
+    pub version: u64,
+    pub cell: IterCell<'a>,
+}
+
+pub enum IterCell<'a> {
+    Value(IterValueRef<'a>),
+    Tombstone,
+}
+
+pub enum IterValueRef<'a> {
+    Inline(kv::Value),
+    Local(LocalRef),
+    External(ExternalRef<'a>),
 }
 
 impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::BincodeRead<'a>, O: Options {
-    type Item = Result<(JumpRef<'a>, kv::KeyValuePair), Error>;
+    type Item = Result<IterEntry<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.entries_read >= self.block_header.entries_count {
@@ -180,34 +225,29 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
             let maybe_entry: Result<Entry<'_>, Error> = serde::Deserialize::deserialize(&mut self.deserializer)
                 .map_err(Error::EntryDeserialize);
             match maybe_entry {
-                Ok(entry) => {
-                    let key_from = unsafe {
-                        // safe because both the starting and other pointer are either in bounds or one
-                        // byte past the end of the same allocated object
-                        entry.key.as_ptr().offset_from(self.block_bytes.as_ptr()) as usize
-                    };
-                    let key_to = key_from + entry.key.len();
-                    let key_value_pair = kv::KeyValuePair {
-                        key: kv::Key { key_bytes: self.block_bytes.subrange(key_from .. key_to), },
-                        value_cell: kv::ValueCell {
+                Ok(entry) =>
+                    Some(Ok(IterEntry {
+                        jump_ref: entry.jump_ref,
+                        key: kv::Key {
+                            key_bytes: self.subslice_to_bytes(&entry.key),
+                        },
+                        value_cell: IterValueCell {
                             version: entry.value_cell.version,
                             cell: match entry.value_cell.cell {
-                                Cell::Value { value, } => {
-                                    let value_from = unsafe {
-                                        // safe because both the starting and other pointer are either in bounds or one
-                                        // byte past the end of the same allocated object
-                                        value.as_ptr().offset_from(self.block_bytes.as_ptr()) as usize
-                                    };
-                                    let value_to = value_from + value.len();
-                                    kv::Cell::Value(kv::Value { value_bytes: self.block_bytes.subrange(value_from .. value_to), })
-                                },
                                 Cell::Tombstone =>
-                                    kv::Cell::Tombstone,
+                                    IterCell::Tombstone,
+                                Cell::Value(ValueRef::Inline { value, }) => {
+                                    IterCell::Value(IterValueRef::Inline(kv::Value {
+                                        value_bytes: self.subslice_to_bytes(value),
+                                    }))
+                                },
+                                Cell::Value(ValueRef::Local(local_ref)) =>
+                                    IterCell::Value(IterValueRef::Local(local_ref)),
+                                Cell::Value(ValueRef::External(external_ref)) =>
+                                    IterCell::Value(IterValueRef::External(external_ref)),
                             },
                         },
-                    };
-                    Some(Ok((entry.jump_ref, key_value_pair)))
-                },
+                    })),
                 Err(error) =>
                     Some(Err(error)),
             }

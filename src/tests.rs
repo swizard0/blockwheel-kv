@@ -587,10 +587,10 @@ async fn stress_loop(
                 let deserializer = storage::block_deserialize_iter(&block_bytes)
                     .map_err(Error::Storage)?;
                 for maybe_entry in deserializer {
-                    let (_jump_ref, key_value_pair) = maybe_entry
+                    let iter_entry = maybe_entry
                         .map_err(Error::Storage)?;
                     checked_entries += 1;
-                    match data.index.get(&key_value_pair.key) {
+                    match data.index.get(&iter_entry.key) {
                         None =>
                             return Err(Error::BackwardIterKeyNotFound),
                         Some(..) =>
