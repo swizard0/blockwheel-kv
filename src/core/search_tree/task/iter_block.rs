@@ -110,14 +110,14 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
         }
 
         let maybe_jump_block_ref = match iter_entry.jump_ref {
-            storage::JumpRef::None =>
+            storage::OwnedJumpRef::None =>
                 None,
-            storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
+            storage::OwnedJumpRef::Local { block_id, } =>
                 Some(BlockRef {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                     block_id: block_id.clone(),
                 }),
-            storage::JumpRef::External(storage::ExternalRef { filename, block_id, }) =>
+            storage::OwnedJumpRef::External { filename, block_id, } =>
                 Some(BlockRef {
                     blockwheel_filename: filename.into(),
                     block_id: block_id.clone(),
@@ -148,13 +148,13 @@ pub fn job(JobArgs { block_ref, block_bytes, maybe_search_range, iter_block_entr
         let key_value_pair = kv::KeyValuePair {
             key: iter_entry.key,
             value_cell: match iter_entry.value_cell {
-                storage::IterValueCell { version, cell: storage::IterCell::Value(storage::IterValueRef::Inline(value)), } =>
+                storage::OwnedValueCell { version, cell: storage::OwnedCell::Value(storage::OwnedValueRef::Inline(value)), } =>
                     kv::ValueCell { version, cell: kv::Cell::Value(value.clone()), },
-                storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::Local(..)), .. } =>
+                storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::Local { .. }), .. } =>
                     todo!(),
-                storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::External(..)), .. } =>
+                storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::External { .. }), .. } =>
                     todo!(),
-                storage::IterValueCell { version, cell: storage::IterCell::Tombstone, } =>
+                storage::OwnedValueCell { version, cell: storage::OwnedCell::Tombstone, } =>
                     kv::ValueCell { version, cell: kv::Cell::Tombstone, },
             },
         };

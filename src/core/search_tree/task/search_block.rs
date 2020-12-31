@@ -94,13 +94,13 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                             },
                             Ordering::Equal => {
                                 let value_cell = match iter_entry.value_cell {
-                                    storage::IterValueCell { version, cell: storage::IterCell::Value(storage::IterValueRef::Inline(ref value)), } =>
+                                    storage::OwnedValueCell { version, cell: storage::OwnedCell::Value(storage::OwnedValueRef::Inline(ref value)), } =>
                                         kv::ValueCell { version, cell: kv::Cell::Value(value.clone()), },
-                                    storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::Local(..)), .. } =>
+                                    storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::Local { .. }), .. } =>
                                         todo!(),
-                                    storage::IterValueCell { cell: storage::IterCell::Value(storage::IterValueRef::External(..)), .. } =>
+                                    storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::External { .. }), .. } =>
                                         todo!(),
-                                    storage::IterValueCell { version, cell: storage::IterCell::Tombstone, } =>
+                                    storage::OwnedValueCell { version, cell: storage::OwnedCell::Tombstone, } =>
                                         kv::ValueCell { version, cell: kv::Cell::Tombstone, },
                                 };
                                 outcomes.push(SearchOutcome {
@@ -112,16 +112,16 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                             },
                             Ordering::Greater => {
                                 let outcome = match iter_entry.jump_ref {
-                                    storage::JumpRef::None =>
+                                    storage::OwnedJumpRef::None =>
                                         Outcome::NotFound,
-                                    storage::JumpRef::Local(storage::LocalRef { ref block_id, }) =>
+                                    storage::OwnedJumpRef::Local { ref block_id, } =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
                                                 blockwheel_filename: search_block_ref.blockwheel_filename.clone(),
                                                 block_id: block_id.clone(),
                                             },
                                         },
-                                    storage::JumpRef::External(storage::ExternalRef { filename, ref block_id, }) =>
+                                    storage::OwnedJumpRef::External { filename, ref block_id, } =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
                                                 blockwheel_filename: filename.into(),

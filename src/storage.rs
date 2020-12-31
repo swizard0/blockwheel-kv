@@ -192,30 +192,46 @@ impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     }
 }
 
-pub struct IterEntry<'a> {
-    pub jump_ref: JumpRef<'a>,
+pub struct OwnedEntry<P> {
+    pub jump_ref: OwnedJumpRef<P>,
     pub key: kv::Key,
-    pub value_cell: IterValueCell<'a>,
+    pub value_cell: OwnedValueCell<P>,
 }
 
-pub struct IterValueCell<'a> {
+pub enum OwnedJumpRef<P> {
+    None,
+    Local {
+        block_id: block::Id,
+    },
+    External {
+        filename: P,
+        block_id: block::Id,
+    },
+}
+
+pub struct OwnedValueCell<P> {
     pub version: u64,
-    pub cell: IterCell<'a>,
+    pub cell: OwnedCell<P>,
 }
 
-pub enum IterCell<'a> {
-    Value(IterValueRef<'a>),
+pub enum OwnedCell<P> {
+    Value(OwnedValueRef<P>),
     Tombstone,
 }
 
-pub enum IterValueRef<'a> {
+pub enum OwnedValueRef<P> {
     Inline(kv::Value),
-    Local(LocalRef),
-    External(ExternalRef<'a>),
+    Local {
+        block_id: block::Id,
+    },
+    External {
+        filename: P,
+        block_id: block::Id,
+    },
 }
 
 impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::BincodeRead<'a>, O: Options {
-    type Item = Result<IterEntry<'a>, Error>;
+    type Item = Result<OwnedEntry<&'a str>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.entries_read >= self.block_header.entries_count {
@@ -226,25 +242,32 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
                 .map_err(Error::EntryDeserialize);
             match maybe_entry {
                 Ok(entry) =>
-                    Some(Ok(IterEntry {
-                        jump_ref: entry.jump_ref,
+                    Some(Ok(OwnedEntry {
+                        jump_ref: match entry.jump_ref {
+                            JumpRef::None =>
+                                OwnedJumpRef::None,
+                            JumpRef::Local(LocalRef { block_id, }) =>
+                                OwnedJumpRef::Local { block_id, },
+                            JumpRef::External(ExternalRef { filename, block_id, }) =>
+                                OwnedJumpRef::External { filename, block_id, },
+                        },
                         key: kv::Key {
                             key_bytes: self.subslice_to_bytes(&entry.key),
                         },
-                        value_cell: IterValueCell {
+                        value_cell: OwnedValueCell {
                             version: entry.value_cell.version,
                             cell: match entry.value_cell.cell {
                                 Cell::Tombstone =>
-                                    IterCell::Tombstone,
+                                    OwnedCell::Tombstone,
                                 Cell::Value(ValueRef::Inline { value, }) => {
-                                    IterCell::Value(IterValueRef::Inline(kv::Value {
+                                    OwnedCell::Value(OwnedValueRef::Inline(kv::Value {
                                         value_bytes: self.subslice_to_bytes(value),
                                     }))
                                 },
-                                Cell::Value(ValueRef::Local(local_ref)) =>
-                                    IterCell::Value(IterValueRef::Local(local_ref)),
-                                Cell::Value(ValueRef::External(external_ref)) =>
-                                    IterCell::Value(IterValueRef::External(external_ref)),
+                                Cell::Value(ValueRef::Local(LocalRef { block_id, })) =>
+                                    OwnedCell::Value(OwnedValueRef::Local { block_id, }),
+                                Cell::Value(ValueRef::External(ExternalRef { filename, block_id, })) =>
+                                    OwnedCell::Value(OwnedValueRef::External { filename, block_id, }),
                             },
                         },
                     })),
