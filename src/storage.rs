@@ -97,10 +97,12 @@ pub enum Error {
     BlockMagicSerialize(bincode::Error),
     BlockHeaderSerialize(bincode::Error),
     EntrySerialize(bincode::Error),
+    ValueBlockSerialize(bincode::Error),
     BlockMagicDeserialize(bincode::Error),
     InvalidBlockMagic { expected: u64, provided: u64, },
     BlockHeaderDeserialize(bincode::Error),
     EntryDeserialize(bincode::Error),
+    ValueBlockDeserialize(bincode::Error),
 }
 
 pub struct BlockSerializer<B> {
@@ -179,17 +181,17 @@ impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
     }
+}
 
-    fn subslice_to_bytes(&self, slice: &[u8]) -> Bytes {
-        let ptr = slice.as_ptr();
-        let offset_from = unsafe {
-            // safe because both the starting and other pointer are either in bounds or one
-            // byte past the end of the same allocated object
-            ptr.offset_from(self.block_bytes.as_ptr()) as usize
-        };
-        let offset_to = offset_from + slice.len();
-        self.block_bytes.subrange(offset_from .. offset_to)
-    }
+fn subslice_to_bytes<'a>(block_bytes: &'a Bytes, slice: &'a [u8]) -> Bytes {
+    let ptr = slice.as_ptr();
+    let offset_from = unsafe {
+        // safe because both the starting and other pointer are either in bounds or one
+        // byte past the end of the same allocated object
+        ptr.offset_from(block_bytes.as_ptr()) as usize
+    };
+    let offset_to = offset_from + slice.len();
+    block_bytes.subrange(offset_from .. offset_to)
 }
 
 pub struct OwnedEntry<P> {
@@ -230,6 +232,20 @@ pub enum OwnedValueRef<P> {
     },
 }
 
+impl<P> From<kv::ValueCell> for OwnedValueCell<P> {
+    fn from(value_cell: kv::ValueCell) -> OwnedValueCell<P> {
+        OwnedValueCell {
+            version: value_cell.version,
+            cell: match value_cell.cell {
+                kv::Cell::Value(value) =>
+                    OwnedCell::Value(OwnedValueRef::Inline(value)),
+                kv::Cell::Tombstone =>
+                    OwnedCell::Tombstone,
+            },
+        }
+    }
+}
+
 impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::BincodeRead<'a>, O: Options {
     type Item = Result<OwnedEntry<&'a str>, Error>;
 
@@ -252,7 +268,7 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
                                 OwnedJumpRef::External { filename, block_id, },
                         },
                         key: kv::Key {
-                            key_bytes: self.subslice_to_bytes(&entry.key),
+                            key_bytes: subslice_to_bytes(&self.block_bytes, &entry.key),
                         },
                         value_cell: OwnedValueCell {
                             version: entry.value_cell.version,
@@ -261,7 +277,7 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
                                     OwnedCell::Tombstone,
                                 Cell::Value(ValueRef::Inline { value, }) => {
                                     OwnedCell::Value(OwnedValueRef::Inline(kv::Value {
-                                        value_bytes: self.subslice_to_bytes(value),
+                                        value_bytes: subslice_to_bytes(&self.block_bytes, value),
                                     }))
                                 },
                                 Cell::Value(ValueRef::Local(LocalRef { block_id, })) =>
@@ -276,6 +292,35 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
             }
         }
     }
+}
+
+pub const VALUE_BLOCK_MAGIC: u64 = 0x5df58182f2741b7a;
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct ValueBlock<'a> {
+    magic: u64,
+    value_block: &'a [u8],
+}
+
+pub fn value_block_serialize<B>(value_block: &[u8], mut block_bytes: B) -> Result<(), Error> where B: AsMut<Vec<u8>> {
+    block_bytes.as_mut().clear();
+    bincode_options()
+        .serialize_into(block_bytes.as_mut(), &ValueBlock {
+            magic: VALUE_BLOCK_MAGIC,
+            value_block,
+        })
+        .map_err(Error::ValueBlockSerialize)?;
+    Ok(())
+}
+
+pub fn value_block_deserialize(block_bytes: &Bytes) -> Result<Bytes, Error> {
+    let mut deserializer = bincode::Deserializer::from_slice(block_bytes, bincode_options());
+    let value_block: ValueBlock<'_> = serde::Deserialize::deserialize(&mut deserializer)
+        .map_err(Error::ValueBlockDeserialize)?;
+    if value_block.magic != VALUE_BLOCK_MAGIC {
+        return Err(Error::InvalidBlockMagic { expected: VALUE_BLOCK_MAGIC, provided: value_block.magic, });
+    }
+    Ok(subslice_to_bytes(block_bytes, value_block.value_block))
 }
 
 fn bincode_options() -> impl Options {

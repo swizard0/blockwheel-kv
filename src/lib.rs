@@ -38,6 +38,7 @@ pub struct Params {
     pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
     pub search_tree_iter_send_buffer: usize,
+    pub search_tree_values_inline_size_limit: usize,
 }
 
 impl Default for Params {
@@ -49,6 +50,7 @@ impl Default for Params {
             search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
             search_tree_iter_send_buffer: 4,
+            search_tree_values_inline_size_limit: 128,
         }
     }
 }
@@ -106,6 +108,7 @@ impl GenServer {
                 tree_block_size: params.tree_block_size,
                 remove_tasks_limit: params.search_tree_remove_tasks_limit,
                 iter_send_buffer: params.search_tree_iter_send_buffer,
+                values_inline_size_limit: params.search_tree_values_inline_size_limit,
             },
         };
 

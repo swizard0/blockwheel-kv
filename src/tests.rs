@@ -584,18 +584,23 @@ async fn stress_loop(
                 return Err(Error::WheelsIterBlocksRxDropped),
             Some(wheels::IterBlocksItem::Block { block_bytes, .. }) => {
                 checked_blocks += 1;
-                let deserializer = storage::block_deserialize_iter(&block_bytes)
-                    .map_err(Error::Storage)?;
-                for maybe_entry in deserializer {
-                    let iter_entry = maybe_entry
-                        .map_err(Error::Storage)?;
-                    checked_entries += 1;
-                    match data.index.get(&iter_entry.key) {
-                        None =>
-                            return Err(Error::BackwardIterKeyNotFound),
-                        Some(..) =>
-                            (),
-                    }
+                match storage::block_deserialize_iter(&block_bytes) {
+                    Ok(deserializer) =>
+                        for maybe_entry in deserializer {
+                            let iter_entry = maybe_entry
+                                .map_err(Error::Storage)?;
+                            checked_entries += 1;
+                            match data.index.get(&iter_entry.key) {
+                                None =>
+                                    return Err(Error::BackwardIterKeyNotFound),
+                                Some(..) =>
+                                    (),
+                            }
+                        },
+                    Err(storage::Error::InvalidBlockMagic { provided, .. }) if provided == storage::VALUE_BLOCK_MAGIC =>
+                        (),
+                    Err(error) =>
+                        return Err(Error::Storage(error)),
                 }
             },
             Some(wheels::IterBlocksItem::NoMoreBlocks) =>

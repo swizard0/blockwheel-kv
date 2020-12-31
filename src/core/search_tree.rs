@@ -63,6 +63,7 @@ pub struct Params {
     pub tree_block_size: usize,
     pub remove_tasks_limit: usize,
     pub iter_send_buffer: usize,
+    pub values_inline_size_limit: usize,
 }
 
 impl Default for Params {
@@ -72,6 +73,7 @@ impl Default for Params {
             tree_block_size: 32,
             remove_tasks_limit: 64,
             iter_send_buffer: 4,
+            values_inline_size_limit: 128,
         }
     }
 }
@@ -352,6 +354,7 @@ where J: edeltraud::Job + From<job::Job>,
                         thread_pool: state.thread_pool.clone(),
                         blocks_pool: state.pools.blocks_pool.clone(),
                         wheels_pid: state.wheels_pid.clone(),
+                        values_inline_size_limit: state.params.values_inline_size_limit,
                     }),
                 ),
             );
