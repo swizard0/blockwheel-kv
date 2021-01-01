@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use serde_derive::{
     Serialize,
     Deserialize,
@@ -230,6 +232,47 @@ pub enum OwnedValueRef<P> {
         filename: P,
         block_id: block::Id,
     },
+}
+
+impl<P> OwnedJumpRef<P> {
+    pub fn as_ref<'a>(&'a self) -> JumpRef<'a> where P: Deref<Target = str> {
+        match self {
+            OwnedJumpRef::None =>
+                JumpRef::None,
+            OwnedJumpRef::Local { block_id, } =>
+                JumpRef::Local(LocalRef {
+                    block_id: block_id.clone(),
+                }),
+            OwnedJumpRef::External { filename, block_id, } =>
+                JumpRef::External(ExternalRef {
+                    filename: filename.deref(),
+                    block_id: block_id.clone(),
+                }),
+        }
+    }
+}
+
+impl<P> OwnedValueCell<P> {
+    pub fn as_ref<'a>(&'a self) -> ValueCell<'a> where P: Deref<Target = str> {
+        ValueCell {
+            version: self.version,
+            cell: match &self.cell {
+                OwnedCell::Value(OwnedValueRef::Inline(value)) =>
+                    Cell::Value(ValueRef::Inline { value: &value.value_bytes, }),
+                OwnedCell::Value(OwnedValueRef::Local { block_id, }) =>
+                    Cell::Value(ValueRef::Local(LocalRef {
+                        block_id: block_id.clone(),
+                    })),
+                OwnedCell::Value(OwnedValueRef::External { filename, block_id, }) =>
+                    Cell::Value(ValueRef::External(ExternalRef {
+                        filename: filename.deref(),
+                        block_id: block_id.clone(),
+                    })),
+                OwnedCell::Tombstone =>
+                    Cell::Tombstone,
+            },
+        }
+    }
 }
 
 impl<P> From<kv::ValueCell> for OwnedValueCell<P> {

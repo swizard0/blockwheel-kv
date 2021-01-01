@@ -49,7 +49,7 @@ pub enum Error {
 pub type JobOutput = Result<JobDone, Error>;
 
 pub struct JobArgs {
-    cache: Arc<MemCache>,
+    entries: Vec<Option<storage::OwnedEntry<wheels::WheelFilename>>>,
     blocks_pool: BytesPool,
 }
 
@@ -57,21 +57,24 @@ pub struct JobDone {
     block_bytes: Bytes,
 }
 
-pub fn job(JobArgs { cache, blocks_pool, }: JobArgs) -> JobOutput {
+pub fn job(JobArgs { entries, blocks_pool, }: JobArgs) -> JobOutput {
     let block_bytes = blocks_pool.lend();
     let mut kont = storage::BlockSerializer::start(
-        storage::NodeType::Root { tree_entries_count: cache.len(), },
-        cache.len(),
+        storage::NodeType::Root { tree_entries_count: entries.len(), },
+        entries.len(),
         block_bytes,
     ).map_err(Error::SerializeBlockStorage)?;
-    let mut cache_iter = cache.iter();
+    let mut entries_iter = entries.into_iter();
     loop {
         match kont {
             storage::BlockSerializerContinue::Done(block_bytes) =>
                 return Ok(JobDone { block_bytes: block_bytes.freeze(), }),
             storage::BlockSerializerContinue::More(serializer) => {
-                let (key, value_cell) = cache_iter.next().unwrap();
-                kont = serializer.entry(&key, value_cell.into(), storage::JumpRef::None)
+                let storage::OwnedEntry { jump_ref, key, value_cell, } = entries_iter
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                kont = serializer.entry(&key, value_cell.as_ref(), jump_ref.as_ref())
                     .map_err(Error::SerializeBlockStorage)?;
             },
         }
@@ -152,7 +155,7 @@ where J: edeltraud::Job + From<job::Job>,
         });
     }
 
-    let job_output = thread_pool.spawn(job::Job::SearchTreeBootstrap(JobArgs { cache, blocks_pool, })).await
+    let job_output = thread_pool.spawn(job::Job::SearchTreeBootstrap(JobArgs { entries, blocks_pool, })).await
         .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
     let job_output: job::JobOutput = job_output.into();
     let job::SearchTreeBootstrapDone(job_result) = job_output.into();
