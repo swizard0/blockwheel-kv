@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use serde_derive::{
     Serialize,
     Deserialize,
@@ -11,9 +9,16 @@ use alloc_pool::{
     bytes::Bytes,
 };
 
+use ero_blockwheel_fs::{
+    block,
+};
+
 use crate::{
     kv,
-    blockwheel::block,
+    wheels::{
+        BlockRef,
+        WheelFilename,
+    },
 };
 
 pub const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
@@ -63,7 +68,7 @@ pub enum JumpRef<'a> {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum ValueRef<'a> {
-    Inline { value: &'a [u8], },
+    Inline(&'a [u8]),
     Local(LocalRef),
     #[serde(borrow)]
     External(ExternalRef<'a>),
@@ -76,7 +81,7 @@ pub struct LocalRef {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ExternalRef<'a> {
-    pub filename: &'a str,
+    pub filename: &'a [u8],
     pub block_id: block::Id,
 }
 
@@ -128,12 +133,7 @@ impl<B> BlockSerializer<B> where B: AsMut<Vec<u8>> {
         })
     }
 
-    pub fn entry(mut self, key: &kv::Key, value_cell: ValueCell, jump_ref: JumpRef) -> Result<BlockSerializerContinue<B>, Error> {
-        let entry = Entry {
-            key: &key.key_bytes,
-            value_cell,
-            jump_ref,
-        };
+    pub fn entry(mut self, entry: Entry) -> Result<BlockSerializerContinue<B>, Error> {
         bincode_options()
             .serialize_into(self.block_bytes.as_mut(), &entry)
             .map_err(Error::EntrySerialize)?;
@@ -185,101 +185,130 @@ impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     }
 }
 
-pub struct OwnedEntry<P> {
-    pub jump_ref: OwnedJumpRef<P>,
+#[derive(Clone, Debug)]
+pub struct OwnedEntry {
+    pub jump_ref: OwnedJumpRef,
     pub key: kv::Key,
-    pub value_cell: OwnedValueCell<P>,
+    pub value_cell: kv::ValueCell<OwnedValueRef>,
 }
 
-pub enum OwnedJumpRef<P> {
+impl<'a> From<&'a OwnedEntry> for Entry<'a> {
+    fn from(entry: &'a OwnedEntry) -> Entry<'a> {
+        Entry {
+            jump_ref: entry.jump_ref.into(),
+            key: &entry.key.key_bytes,
+            value_cell: entry.value_cell.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum OwnedJumpRef {
     None,
-    Local {
-        block_id: block::Id,
-    },
-    External {
-        filename: P,
-        block_id: block::Id,
-    },
+    Local(LocalRef),
+    External(BlockRef),
 }
 
-pub struct OwnedValueCell<P> {
-    pub version: u64,
-    pub cell: OwnedCell<P>,
-}
-
-pub enum OwnedCell<P> {
-    Value(OwnedValueRef<P>),
-    Tombstone,
-}
-
-pub enum OwnedValueRef<P> {
-    Inline(kv::Value),
-    Local {
-        block_id: block::Id,
-    },
-    External {
-        filename: P,
-        block_id: block::Id,
-    },
-}
-
-impl<P> OwnedJumpRef<P> {
-    pub fn as_ref<'a>(&'a self) -> JumpRef<'a> where P: Deref<Target = str> {
-        match self {
+impl<'a> From<&'a OwnedJumpRef> for JumpRef<'a> {
+    fn from(jump_ref: &'a OwnedJumpRef) -> JumpRef<'a> {
+        match jump_ref {
             OwnedJumpRef::None =>
                 JumpRef::None,
-            OwnedJumpRef::Local { block_id, } =>
-                JumpRef::Local(LocalRef {
-                    block_id: block_id.clone(),
-                }),
-            OwnedJumpRef::External { filename, block_id, } =>
+            OwnedJumpRef::Local(local_ref) =>
+                JumpRef::Local(local_ref.clone()),
+            OwnedJumpRef::External(BlockRef { blockwheel_filename, block_id, }) =>
                 JumpRef::External(ExternalRef {
-                    filename: filename.deref(),
+                    filename: &*blockwheel_filename,
                     block_id: block_id.clone(),
                 }),
         }
     }
 }
 
-impl<P> OwnedValueCell<P> {
-    pub fn as_ref<'a>(&'a self) -> ValueCell<'a> where P: Deref<Target = str> {
+impl<'a> From<&'a kv::ValueCell<OwnedValueRef>> for ValueCell<'a> {
+    fn from(value_cell: &'a kv::ValueCell<OwnedValueRef>) -> ValueCell<'a> {
         ValueCell {
-            version: self.version,
-            cell: match &self.cell {
-                OwnedCell::Value(OwnedValueRef::Inline(value)) =>
-                    Cell::Value(ValueRef::Inline { value: &value.value_bytes, }),
-                OwnedCell::Value(OwnedValueRef::Local { block_id, }) =>
-                    Cell::Value(ValueRef::Local(LocalRef {
-                        block_id: block_id.clone(),
-                    })),
-                OwnedCell::Value(OwnedValueRef::External { filename, block_id, }) =>
-                    Cell::Value(ValueRef::External(ExternalRef {
-                        filename: filename.deref(),
-                        block_id: block_id.clone(),
-                    })),
-                OwnedCell::Tombstone =>
-                    Cell::Tombstone,
-            },
+            version: value_cell.version,
+            cell: value_cell.cell.into(),
         }
     }
 }
 
-impl<P> From<kv::ValueCell> for OwnedValueCell<P> {
-    fn from(value_cell: kv::ValueCell) -> OwnedValueCell<P> {
-        OwnedValueCell {
+impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<OwnedValueRef> {
+    fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<OwnedValueRef> {
+        kv::ValueCell {
             version: value_cell.version,
-            cell: match value_cell.cell {
-                kv::Cell::Value(value) =>
-                    OwnedCell::Value(OwnedValueRef::Inline(value)),
-                kv::Cell::Tombstone =>
-                    OwnedCell::Tombstone,
-            },
+            cell: value_cell.cell.into(),
+        }
+    }
+}
+
+impl<'a> From<&'a kv::Cell<OwnedValueRef>> for Cell<'a> {
+    fn from(cell: &'a kv::Cell<OwnedValueRef>) -> Cell<'a> {
+        match cell {
+            kv::Cell::Value(value_ref) =>
+                Cell::Value(value_ref.into()),
+            kv::Cell::Tombstone =>
+                Cell::Tombstone,
+        }
+    }
+}
+
+impl From<kv::Cell<kv::Value>> for kv::Cell<OwnedValueRef> {
+    fn from(cell: kv::Cell<kv::Value>) -> kv::Cell<OwnedValueRef> {
+        match cell {
+            kv::Cell::Value(value) =>
+                kv::Cell::Value(OwnedValueRef::Inline(value)),
+            kv::Cell::Tombstone =>
+                kv::Cell::Tombstone,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum OwnedValueRef {
+    Inline(kv::Value),
+    Local(LocalRef),
+    External(BlockRef),
+}
+
+impl<'a> From<&'a OwnedValueRef> for ValueRef<'a> {
+    fn from(value_ref: &'a OwnedValueRef) -> ValueRef<'a> {
+        match value_ref {
+            OwnedValueRef::Inline(value) =>
+                ValueRef::Inline(&value.value_bytes),
+            OwnedValueRef::Local(local_ref) =>
+                ValueRef::Local(local_ref.clone()),
+            OwnedValueRef::External(external_ref) =>
+                ValueRef::External(external_ref.into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum OwnedValueBlockRef {
+    Inline(kv::Value),
+    Ref(BlockRef),
+}
+
+impl OwnedValueBlockRef {
+    pub fn from_owned_value_ref(value_ref: OwnedValueRef, current_blockwheel_filename: &WheelFilename) -> OwnedValueBlockRef {
+        match value_ref {
+            OwnedValueRef::Inline(value) =>
+                OwnedValueBlockRef::Inline(value),
+            OwnedValueRef::Local(LocalRef { block_id, }) =>
+                OwnedValueRef::Ref(BlockRef {
+                    blockwheel_filename: current_blockwheel_filename.clone(),
+                    block_id,
+                }),
+            OwnedValueRef::External(block_ref) =>
+                OwnedValueRef::Ref(block_ref),
         }
     }
 }
 
 impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::BincodeRead<'a>, O: Options {
-    type Item = Result<OwnedEntry<&'a str>, Error>;
+    type Item = Result<OwnedEntry, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.entries_read >= self.block_header.entries_count {
@@ -294,28 +323,34 @@ impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::Bin
                         jump_ref: match entry.jump_ref {
                             JumpRef::None =>
                                 OwnedJumpRef::None,
-                            JumpRef::Local(LocalRef { block_id, }) =>
-                                OwnedJumpRef::Local { block_id, },
+                            JumpRef::Local(local_ref) =>
+                                OwnedJumpRef::Local(local_ref),
                             JumpRef::External(ExternalRef { filename, block_id, }) =>
-                                OwnedJumpRef::External { filename, block_id, },
+                                OwnedJumpRef::External(BlockRef {
+                                    blockwheel_filename: self.block_bytes.clone_subslice(filename).into(),
+                                    block_id: block_id.clone(),
+                                }),
                         },
                         key: kv::Key {
                             key_bytes: self.block_bytes.clone_subslice(&entry.key),
                         },
-                        value_cell: OwnedValueCell {
+                        value_cell: kv::ValueCell {
                             version: entry.value_cell.version,
                             cell: match entry.value_cell.cell {
                                 Cell::Tombstone =>
-                                    OwnedCell::Tombstone,
-                                Cell::Value(ValueRef::Inline { value, }) => {
-                                    OwnedCell::Value(OwnedValueRef::Inline(kv::Value {
+                                    kv::Cell::Tombstone,
+                                Cell::Value(ValueRef::Inline(value)) => {
+                                    kv::Cell::Value(OwnedValueRef::Inline(kv::Value {
                                         value_bytes: self.block_bytes.clone_subslice(value),
                                     }))
                                 },
-                                Cell::Value(ValueRef::Local(LocalRef { block_id, })) =>
-                                    OwnedCell::Value(OwnedValueRef::Local { block_id, }),
+                                Cell::Value(ValueRef::Local(local_ref)) =>
+                                    kv::Cell::Value(OwnedValueRef::Local(local_ref)),
                                 Cell::Value(ValueRef::External(ExternalRef { filename, block_id, })) =>
-                                    OwnedCell::Value(OwnedValueRef::External { filename, block_id, }),
+                                    kv::Cell::Value(OwnedValueRef::External(BlockRef {
+                                        blockwheel_filename: self.block_bytes.clone_subslice(filename).into(),
+                                        block_id: block_id.clone(),
+                                    })),
                             },
                         },
                     })),

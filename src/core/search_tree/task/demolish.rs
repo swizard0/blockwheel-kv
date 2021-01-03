@@ -16,7 +16,7 @@ use crate::{
     core::{
         search_tree::{
             Demolished,
-            SearchTreeIterBlockRefsRx,
+            SearchTreeIterItemsRx,
         },
     },
 };

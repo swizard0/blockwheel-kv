@@ -40,21 +40,21 @@ impl From<BytesMut> for Value {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ValueCell {
+pub struct ValueCell<V> {
     pub version: u64,
-    pub cell: Cell,
+    pub cell: Cell<V>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Cell {
-    Value(Value),
+pub enum Cell<V> {
+    Value(V),
     Tombstone,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct KeyValuePair {
     pub key: Key,
-    pub value_cell: ValueCell,
+    pub value_cell: ValueCell<Value>,
 }
 
 impl Borrow<[u8]> for Key {

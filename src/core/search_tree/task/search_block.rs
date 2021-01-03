@@ -94,14 +94,16 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                             },
                             Ordering::Equal => {
                                 let value_cell = match iter_entry.value_cell {
-                                    storage::OwnedValueCell { version, cell: storage::OwnedCell::Value(storage::OwnedValueRef::Inline(ref value)), } =>
-                                        kv::ValueCell { version, cell: kv::Cell::Value(value.clone()), },
-                                    storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::Local { .. }), .. } =>
-                                        todo!(),
-                                    storage::OwnedValueCell { cell: storage::OwnedCell::Value(storage::OwnedValueRef::External { .. }), .. } =>
-                                        todo!(),
-                                    storage::OwnedValueCell { version, cell: storage::OwnedCell::Tombstone, } =>
-                                        kv::ValueCell { version, cell: kv::Cell::Tombstone, },
+                                    kv::ValueCell { version, cell: kv::Cell::Value(value_ref), } =>
+                                        kv::ValueCell {
+                                            version,
+                                            cell: kv::Cell::Value(storage::OwnedValueBlockRef::from_owned_value_ref(
+                                                value_ref,
+                                                &search_block_ref.blockwheel_filename,
+                                            )),
+                                        },
+                                    value_cell @ kv::ValueCell { cell: kv::Cell::Tombstone, .. } =>
+                                        value_cell,
                                 };
                                 outcomes.push(SearchOutcome {
                                     request: request_key,

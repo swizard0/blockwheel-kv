@@ -14,10 +14,10 @@ use alloc_pool::Unique;
 use crate::{
     kv,
     job,
+    storage,
     core::{
         search_tree::{
             SearchTreeIterItemsRx,
-            SearchTreeIterBlockRefsRx,
         },
         BlockRef,
         SearchRangeBounds,
@@ -41,7 +41,7 @@ pub struct SearchOutcome {
 }
 
 pub enum Outcome {
-    Found { value_cell: kv::ValueCell, },
+    Found { value_cell: kv::ValueCell<storage::OwnedValueBlockRef>, },
     NotFound,
     Jump { block_ref: BlockRef, },
 }
@@ -56,23 +56,20 @@ pub type IterRequestsQueue = Unique<IterRequestsQueueType>;
 
 pub struct IterRequest {
     pub block_ref: BlockRef,
-    pub kind: IterRequestKind,
-}
-
-pub enum IterRequestKind {
-    Items {
-        range: SearchRangeBounds,
-        reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
-    },
-    BlockRefs { reply_tx: oneshot::Sender<SearchTreeIterBlockRefsRx>, },
+    pub range: SearchRangeBounds,
+    pub reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
 }
 
 pub enum BlockEntry {
     OnlyJump(BlockRef),
-    OnlyEntry(kv::KeyValuePair),
+    OnlyEntry {
+        key: kv::Key,
+        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
+    },
     JumpAndEntry {
         jump: BlockRef,
-        key_value_pair: kv::KeyValuePair,
+        key: kv::Key,
+        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
     },
 }
 

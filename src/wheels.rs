@@ -1,6 +1,5 @@
 use std::{
     path,
-    sync::Arc,
     ops::Deref,
     time::Duration,
     collections::{
@@ -23,7 +22,12 @@ use futures::{
 
 use rand::Rng;
 
-use alloc_pool::bytes::Bytes;
+use alloc_pool::{
+    bytes::{
+        Bytes,
+        BytesPool,
+    },
+};
 
 use ero::{
     restart,
@@ -31,51 +35,47 @@ use ero::{
     RestartStrategy,
 };
 
-use super::{
-    blockwheel::{
-        self,
-        block,
-    },
+use ero_blockwheel_fs::{
+    self as blockwheel,
+    block,
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct WheelFilename {
-    pub filename: Arc<String>,
+    filename_bytes: Bytes,
 }
 
-impl<'a> From<&'a str> for WheelFilename {
-    fn from(filename: &'a str) -> WheelFilename {
-        WheelFilename { filename: Arc::new(filename.to_string()), }
+impl From<Bytes> for WheelFilename {
+    fn from(filename_bytes: Bytes) -> WheelFilename {
+        WheelFilename { filename_bytes, }
     }
 }
 
-impl<'a> From<&'a path::Path> for WheelFilename {
-    fn from(filename: &'a path::Path) -> WheelFilename {
+impl WheelFilename {
+    pub fn from_str(filename: &str, blocks_pool: &BytesPool) -> WheelFilename {
+        let mut block_bytes = blocks_pool.lend();
+        block_bytes.extend_from_slice(filename.as_bytes());
         WheelFilename {
-            filename: Arc::new(filename.to_string_lossy().to_string()),
+            filename_bytes: block_bytes.freeze(),
         }
     }
-}
 
-impl From<path::PathBuf> for WheelFilename {
-    fn from(filename: path::PathBuf) -> WheelFilename {
-        WheelFilename {
-            filename: Arc::new(filename.to_string_lossy().to_string()),
-        }
+    pub fn from_path<P>(filename: P, blocks_pool: &BytesPool) -> WheelFilename where P: AsRef<path::Path> {
+        WheelFilename::from_str(&filename.as_ref().to_string_lossy(), blocks_pool)
     }
 }
 
 impl Deref for WheelFilename {
-    type Target = str;
+    type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &*self.filename
+        self.as_ref()
     }
 }
 
 impl AsRef<[u8]> for WheelFilename {
     fn as_ref(&self) -> &[u8] {
-        self.filename.as_bytes()
+        &self.filename_bytes
     }
 }
 

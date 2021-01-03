@@ -45,6 +45,7 @@ use crate::{
     kv,
     job,
     wheels,
+    storage,
     core::{
         BlockRef,
         MemCache,
@@ -172,21 +173,22 @@ pub enum DemolishError {
     GenServer(ero::NoProcError),
 }
 
+pub enum KeyValueRef {
+    Item {
+        key: kv::Key,
+        value_cell: storage::OwnedValueCell,
+    },
+    BlockFinish(BlockRef),
+    NoMore,
+}
+
 pub struct SearchTreeIterItemsTx {
     pub range: SearchRangeBounds,
-    pub items_tx: mpsc::Sender<KeyValueStreamItem>,
+    pub items_tx: mpsc::Sender<KeyValueRef>,
 }
 
 pub struct SearchTreeIterItemsRx {
-    pub items_rx: mpsc::Receiver<KeyValueStreamItem>,
-}
-
-pub struct SearchTreeIterBlockRefsTx {
-    pub block_refs_tx: mpsc::Sender<BlockRef>,
-}
-
-pub struct SearchTreeIterBlockRefsRx {
-    pub block_refs_rx: mpsc::Receiver<BlockRef>,
+    pub items_rx: mpsc::Receiver<KeyValueRef>,
 }
 
 impl Pid {

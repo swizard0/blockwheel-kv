@@ -49,7 +49,7 @@ pub enum Error {
 pub type JobOutput = Result<JobDone, Error>;
 
 pub struct JobArgs {
-    entries: Vec<Option<storage::OwnedEntry<wheels::WheelFilename>>>,
+    entries: Vec<Option<storage::OwnedEntry>>,
     blocks_pool: BytesPool,
 }
 
@@ -70,11 +70,11 @@ pub fn job(JobArgs { entries, blocks_pool, }: JobArgs) -> JobOutput {
             storage::BlockSerializerContinue::Done(block_bytes) =>
                 return Ok(JobDone { block_bytes: block_bytes.freeze(), }),
             storage::BlockSerializerContinue::More(serializer) => {
-                let storage::OwnedEntry { jump_ref, key, value_cell, } = entries_iter
+                let ref owned_entry = entries_iter
                     .next()
                     .unwrap()
                     .unwrap();
-                kont = serializer.entry(&key, value_cell.as_ref(), jump_ref.as_ref())
+                kont = serializer.entry(owned_entry.into())
                     .map_err(Error::SerializeBlockStorage)?;
             },
         }
@@ -139,16 +139,16 @@ where J: edeltraud::Job + From<job::Job>,
         entries[entry_index] = Some(storage::OwnedEntry {
             jump_ref: storage::OwnedJumpRef::None,
             key,
-            value_cell: storage::OwnedValueCell {
+            value_cell: kv::ValueCell {
                 version,
-                cell: storage::OwnedCell::Value(
+                cell: kv::Cell::Value(
                     if blockwheel_filename == wheel_ref.blockwheel_filename {
-                        storage::OwnedValueRef::Local { block_id, }
+                        storage::OwnedValueRef::Local(storage::LocalRef { block_id, })
                     } else {
-                        storage::OwnedValueRef::External {
+                        storage::OwnedValueRef::External(storage::ExternalRef {
                             filename: blockwheel_filename,
                             block_id,
-                        }
+                        })
                     },
                 ),
             },
