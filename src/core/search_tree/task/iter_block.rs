@@ -37,7 +37,6 @@ use crate::{
         BlockRef,
         SearchRangeBounds,
     },
-    KeyValueStreamItem,
 };
 
 pub struct Args<J> where J: edeltraud::Job {
@@ -191,7 +190,7 @@ where J: edeltraud::Job + From<job::Job>,
 {
     assert_eq!(iter_request.block_ref, block_ref);
 
-    let (items_tx, items_rx) = mpsc::channel(iter_send_buffer);
+    let (mut items_tx, items_rx) = mpsc::channel(iter_send_buffer);
     if let Err(_send_error) = iter_request.reply_tx.send(SearchTreeIterItemsRx { items_rx, }) {
         log::warn!("client canceled iter items request");
         return Ok(Done { block_ref, });
@@ -263,7 +262,7 @@ where J: edeltraud::Job + From<job::Job>,
     if let Err(_send_error) = items_tx.send(KeyValueRef::BlockFinish(block_ref.clone())).await {
         log::warn!("client canceled iter items request on BlockFinish");
     }
-    if let Err(_send_error) = items_tx.send(KeyValueStreamItem::NoMore).await {
+    if let Err(_send_error) = items_tx.send(KeyValueRef::NoMore).await {
         log::warn!("client canceled iter items request on NoMore");
     }
 

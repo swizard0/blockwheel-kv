@@ -49,9 +49,9 @@ pub enum Error {
 pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
     log::debug!("spawned task with remove_tasks_limit = {:?}", remove_tasks_limit);
 
-    let SearchTreeIterItemsRx { items_rx, } = block_items_reply_rx.await
+    let SearchTreeIterItemsRx { items_rx: block_items_rx, } = block_items_reply_rx.await
         .map_err(|oneshot::Canceled| Error::IterPeerDisconnected)?;
-    let mut fused_block_items_rx = block_items_reply_rx.fuse();
+    let mut fused_block_items_rx = block_items_rx.fuse();
 
     let mut remove_tasks = FuturesUnordered::new();
     let mut remove_tasks_count = 0;
@@ -93,13 +93,14 @@ pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_
             Event::BlockItem(Some(KeyValueRef::NoMore)) =>
                 items_depleted = true,
 
-            Event::BlockItem(Some(KeyValueRef::Item { value_cell: kv::ValueCell::Value(storage::OwnedValueBlockRef::Ref(block_ref)), .. })) =>
-                todo!(),
-
-            Event::BlockItem(Some(KeyValueRef::Item { .. })) =>
-                todo!(),
-
-            Event::BlockItem(Some(KeyValueRef::BlockFinish(block_ref))) => {
+            Event::BlockItem(Some(KeyValueRef::BlockFinish(block_ref))) |
+            Event::BlockItem(Some(KeyValueRef::Item {
+                value_cell: kv::ValueCell {
+                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                    ..
+                },
+                ..
+            })) => {
                 let mut wheels_pid = wheels_pid.clone();
                 remove_tasks.push(async move {
                     let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
@@ -113,6 +114,9 @@ pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_
                 });
                 remove_tasks_count += 1;
             },
+
+            Event::BlockItem(Some(KeyValueRef::Item { .. })) =>
+                (),
 
             Event::RemoveTask(status) => {
                 let () = status?;

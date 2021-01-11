@@ -11,12 +11,12 @@ use futures::{
 use crate::{
     core::{
         search_tree::{
+            KeyValueRef,
             SearchTreeIterItemsRx,
         },
         MemCache,
         SearchRangeBounds,
     },
-    KeyValueStreamItem,
 };
 
 pub struct Args {
@@ -38,11 +38,15 @@ pub async fn run(Args { cache, range, reply_tx, }: Args) -> Result<Done, Error> 
         log::warn!("client canceled iter request");
     } else {
         for kv_pair in cache.range(range) {
-            if let Err(_send_error) = iter_tx.send(KeyValueStreamItem::KeyValue(kv_pair)).await {
+            let iter_item = KeyValueRef::Item {
+                key: kv_pair.key,
+                value_cell: kv_pair.value_cell.into(),
+            };
+            if let Err(_send_error) = iter_tx.send(iter_item).await {
                 return Ok(Done);
             }
         }
-        iter_tx.send(KeyValueStreamItem::NoMore).await.ok();
+        iter_tx.send(KeyValueRef::NoMore).await.ok();
     }
     Ok(Done)
 }

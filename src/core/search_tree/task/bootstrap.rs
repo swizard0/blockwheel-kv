@@ -145,8 +145,8 @@ where J: edeltraud::Job + From<job::Job>,
                     if blockwheel_filename == wheel_ref.blockwheel_filename {
                         storage::OwnedValueRef::Local(storage::LocalRef { block_id, })
                     } else {
-                        storage::OwnedValueRef::External(storage::ExternalRef {
-                            filename: blockwheel_filename,
+                        storage::OwnedValueRef::External(BlockRef {
+                            blockwheel_filename,
                             block_id,
                         })
                     },

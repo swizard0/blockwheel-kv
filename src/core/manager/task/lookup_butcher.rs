@@ -3,6 +3,7 @@ use o1::set::Ref;
 
 use crate::{
     kv,
+    storage,
     core::{
         butcher,
     },
@@ -16,7 +17,7 @@ pub struct Args {
 
 pub struct Done {
     pub request_ref: Ref,
-    pub found: Option<kv::ValueCell<kv::Value>>,
+    pub found: Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
 }
 
 #[derive(Debug)]
@@ -25,7 +26,12 @@ pub enum Error {
 }
 
 pub async fn run(Args { request_ref, key, mut butcher_pid, }: Args) -> Result<Done, Error> {
-    let maybe_value_cell = butcher_pid.lookup(key).await
-        .map_err(Error::ButcherLookup)?;
-    Ok(Done { request_ref, found: maybe_value_cell, })
+    match butcher_pid.lookup(key).await {
+        Ok(None) =>
+            Ok(Done { request_ref, found: None, }),
+        Ok(Some(value_cell)) =>
+            Ok(Done { request_ref, found: Some(value_cell.into()), }),
+        Err(error) =>
+            Err(Error::ButcherLookup(error)),
+    }
 }
