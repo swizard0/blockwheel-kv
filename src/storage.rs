@@ -85,8 +85,8 @@ pub struct ExternalRef<'a> {
     pub block_id: block::Id,
 }
 
-impl<'a> From<&'a kv::ValueCell> for ValueCell<'a> {
-    fn from(value_cell: &'a kv::ValueCell) -> ValueCell<'a> {
+impl<'a> From<&'a kv::ValueCell<kv::Value>> for ValueCell<'a> {
+    fn from(value_cell: &'a kv::ValueCell<kv::Value>) -> ValueCell<'a> {
         ValueCell {
             version: value_cell.version,
             cell: match value_cell.cell {
@@ -303,6 +303,26 @@ impl OwnedValueBlockRef {
                 }),
             OwnedValueRef::External(block_ref) =>
                 OwnedValueRef::Ref(block_ref),
+        }
+    }
+}
+
+impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<OwnedValueBlockRef> {
+    fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<OwnedValueBlockRef> {
+        kv::ValueCell {
+            version: value_cell.version,
+            cell: value_cell.cell.into(),
+        }
+    }
+}
+
+impl From<kv::Cell<kv::Value>> for kv::Cell<OwnedValueBlockRef> {
+    fn from(cell: kv::Cell<kv::Value>) -> kv::Cell<OwnedValueBlockRef> {
+        match cell {
+            kv::Cell::Value(value) =>
+                kv::Cell::Value(OwnedValueBlockRef::Inline(value)),
+            kv::Cell::Tombstone =>
+                kv::Cell::Tombstone,
         }
     }
 }

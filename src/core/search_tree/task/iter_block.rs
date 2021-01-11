@@ -32,7 +32,6 @@ use crate::{
                 BlockEntry,
             },
             KeyValueRef,
-            SearchTreeIterItemsTx,
             SearchTreeIterItemsRx,
         },
         BlockRef,
@@ -217,7 +216,7 @@ where J: edeltraud::Job + From<job::Job>,
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let send_result = iter_rec_tx.send(IterRequest {
                     block_ref: jump_block_ref.clone(),
-                    range: range.clone(),
+                    range: iter_request.range.clone(),
                     reply_tx,
                 }).await;
                 if let Err(_send_error) = send_result {
@@ -246,7 +245,7 @@ where J: edeltraud::Job + From<job::Job>,
                     }
                 }
             },
-            BlockEntry::OnlyEntry(..) =>
+            BlockEntry::OnlyEntry { .. } =>
                 (),
         }
 

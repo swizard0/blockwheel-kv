@@ -48,7 +48,7 @@ pub enum Outcome {
 
 pub struct LookupRequest {
     pub key: kv::Key,
-    pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell>, SearchTreeLookupError>>,
+    pub reply_tx: oneshot::Sender<Result<Option<kv::ValueCell<storage::OwnedValueBlockRef>>, SearchTreeLookupError>>,
 }
 
 pub type IterRequestsQueueType = Vec<IterRequest>;

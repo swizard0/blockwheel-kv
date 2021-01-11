@@ -53,7 +53,6 @@ use crate::{
     },
     Info,
     Flushed,
-    KeyValueStreamItem,
 };
 
 pub mod task;
@@ -176,7 +175,7 @@ pub enum DemolishError {
 pub enum KeyValueRef {
     Item {
         key: kv::Key,
-        value_cell: storage::OwnedValueCell,
+        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
     },
     BlockFinish(BlockRef),
     NoMore,
@@ -206,7 +205,7 @@ impl Pid {
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<storage::OwnedValueBlockRef>>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -435,7 +434,8 @@ where J: edeltraud::Job + From<job::Job>,
                             let maybe_task_args = async_tree.apply_iter_request(
                                 task::IterRequest {
                                     block_ref: root_block.clone(),
-                                    kind: task::IterRequestKind::BlockRefs { reply_tx, },
+                                    range: SearchRangeBounds::unbounded(),
+                                    reply_tx,
                                 },
                                 &state.pools.lookup_requests_queue_pool,
                                 &state.pools.iter_requests_queue_pool,
@@ -451,7 +451,7 @@ where J: edeltraud::Job + From<job::Job>,
                             }
                             tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
                                 done_reply_tx,
-                                block_refs_rx_reply_rx: reply_rx,
+                                block_items_reply_rx: reply_rx,
                                 wheels_pid: state.wheels_pid.clone(),
                                 remove_tasks_limit: state.params.remove_tasks_limit,
                             })));
@@ -508,7 +508,7 @@ where J: edeltraud::Job + From<job::Job>,
                     Mode::CacheBootstrap { cache, } => {
                         let result = cache.get(&*lookup_request.key.key_bytes)
                             .cloned();
-                        if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result)) {
+                        if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result.map(From::from))) {
                             log::warn!("client canceled lookup request");
                         }
                     },
@@ -542,7 +542,8 @@ where J: edeltraud::Job + From<job::Job>,
                         let maybe_task_args = async_tree.apply_iter_request(
                             task::IterRequest {
                                 block_ref: root_block.clone(),
-                                kind: task::IterRequestKind::Items { range, reply_tx, },
+                                range,
+                                reply_tx,
                             },
                             &state.pools.lookup_requests_queue_pool,
                             &state.pools.iter_requests_queue_pool,

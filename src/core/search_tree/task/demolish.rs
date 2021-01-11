@@ -11,11 +11,14 @@ use futures::{
 };
 
 use crate::{
+    kv,
     wheels,
+    storage,
     blockwheel,
     core::{
         search_tree::{
             Demolished,
+            KeyValueRef,
             SearchTreeIterItemsRx,
         },
     },
@@ -23,7 +26,7 @@ use crate::{
 
 pub struct Args {
     pub done_reply_tx: oneshot::Sender<Demolished>,
-    pub block_refs_rx_reply_rx: oneshot::Receiver<SearchTreeIterBlockRefsRx>,
+    pub block_items_reply_rx: oneshot::Receiver<SearchTreeIterItemsRx>,
     pub wheels_pid: wheels::Pid,
     pub remove_tasks_limit: usize,
 }
@@ -43,28 +46,29 @@ pub enum Error {
     DeleteBlock(blockwheel::DeleteBlockError),
 }
 
-pub async fn run(Args { done_reply_tx, block_refs_rx_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
+pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_tasks_limit, }: Args) -> Result<Done, Error> {
     log::debug!("spawned task with remove_tasks_limit = {:?}", remove_tasks_limit);
 
-    let SearchTreeIterBlockRefsRx { block_refs_rx, } = block_refs_rx_reply_rx.await
+    let SearchTreeIterItemsRx { items_rx, } = block_items_reply_rx.await
         .map_err(|oneshot::Canceled| Error::IterPeerDisconnected)?;
-    let mut fused_block_refs_rx = block_refs_rx.fuse();
+    let mut fused_block_items_rx = block_items_reply_rx.fuse();
 
     let mut remove_tasks = FuturesUnordered::new();
     let mut remove_tasks_count = 0;
     let mut blocks_deleted = 0;
+    let mut items_depleted = false;
 
     loop {
         enum Event<B, T> {
-            BlockRef(Option<B>),
+            BlockItem(Option<B>),
             RemoveTask(T),
         }
         let event = if remove_tasks_count == 0 {
-            Event::BlockRef(fused_block_refs_rx.next().await)
+            Event::BlockItem(fused_block_items_rx.next().await)
         } else if remove_tasks_count < remove_tasks_limit {
             select! {
-                result = fused_block_refs_rx.next() =>
-                    Event::BlockRef(result),
+                result = fused_block_items_rx.next() =>
+                    Event::BlockItem(result),
                 result = remove_tasks.next() => match result {
                     None =>
                         unreachable!(),
@@ -82,10 +86,20 @@ pub async fn run(Args { done_reply_tx, block_refs_rx_reply_rx, wheels_pid, remov
         };
 
         match event {
-            Event::BlockRef(None) =>
-                (),
+            Event::BlockItem(None) => {
+                assert!(items_depleted);
+            },
 
-            Event::BlockRef(Some(block_ref)) => {
+            Event::BlockItem(Some(KeyValueRef::NoMore)) =>
+                items_depleted = true,
+
+            Event::BlockItem(Some(KeyValueRef::Item { value_cell: kv::ValueCell::Value(storage::OwnedValueBlockRef::Ref(block_ref)), .. })) =>
+                todo!(),
+
+            Event::BlockItem(Some(KeyValueRef::Item { .. })) =>
+                todo!(),
+
+            Event::BlockItem(Some(KeyValueRef::BlockFinish(block_ref))) => {
                 let mut wheels_pid = wheels_pid.clone();
                 remove_tasks.push(async move {
                     let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
@@ -103,7 +117,7 @@ pub async fn run(Args { done_reply_tx, block_refs_rx_reply_rx, wheels_pid, remov
             Event::RemoveTask(status) => {
                 let () = status?;
                 blocks_deleted += 1;
-                if remove_tasks_count == 0 && fused_block_refs_rx.is_terminated() {
+                if remove_tasks_count == 0 && fused_block_items_rx.is_terminated() {
                     return Ok(Done { blocks_deleted, done_reply_tx, });
                 }
             },

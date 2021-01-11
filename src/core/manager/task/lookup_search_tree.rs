@@ -3,6 +3,7 @@ use o1::set::Ref;
 
 use crate::{
     kv,
+    storage,
     core::{
         search_tree,
     },
@@ -16,7 +17,7 @@ pub struct Args {
 
 pub struct Done {
     pub request_ref: Ref,
-    pub found: Option<kv::ValueCell>,
+    pub found: Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
 }
 
 #[derive(Debug)]

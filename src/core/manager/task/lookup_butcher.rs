@@ -16,7 +16,7 @@ pub struct Args {
 
 pub struct Done {
     pub request_ref: Ref,
-    pub found: Option<kv::ValueCell>,
+    pub found: Option<kv::ValueCell<kv::Value>>,
 }
 
 #[derive(Debug)]

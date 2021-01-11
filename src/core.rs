@@ -48,7 +48,7 @@ pub struct RequestInsert {
 #[derive(Debug)]
 pub struct RequestLookup {
     key: kv::Key,
-    reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
+    reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
 }
 
 pub struct RequestLookupRange {
@@ -68,7 +68,7 @@ pub struct RequestFlush {
 }
 
 pub struct MemCache {
-    cache: BTreeMap<OrdKey, kv::ValueCell>,
+    cache: BTreeMap<OrdKey, kv::ValueCell<kv::Value>>,
 }
 
 impl MemCache {
@@ -100,7 +100,7 @@ impl MemCache {
 }
 
 impl Deref for MemCache {
-    type Target = BTreeMap<OrdKey, kv::ValueCell>;
+    type Target = BTreeMap<OrdKey, kv::ValueCell<kv::Value>>;
 
     fn deref(&self) -> &Self::Target {
         &self.cache

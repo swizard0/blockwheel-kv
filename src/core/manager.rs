@@ -351,10 +351,10 @@ struct InfoRequest {
 
 struct LookupRequest {
     key: kv::Key,
-    reply_tx: oneshot::Sender<Option<kv::ValueCell>>,
+    reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
     butcher_status: LookupRequestButcherStatus,
     pending_count: usize,
-    found_fold: Option<kv::ValueCell>,
+    found_fold: Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
 }
 
 enum LookupRequestButcherStatus {
@@ -375,7 +375,12 @@ struct FlushRequest {
     search_trees_pending_count: usize,
 }
 
-fn replace_fold_found(current: &Option<kv::ValueCell>, incoming: &Option<kv::ValueCell>) -> bool {
+fn replace_fold_found(
+    current: &Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
+    incoming: &Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
+)
+    -> bool
+{
     match (current, incoming) {
         (None, None) | (Some(..), None) =>
             false,
