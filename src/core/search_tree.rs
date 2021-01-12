@@ -47,8 +47,9 @@ use crate::{
     wheels,
     storage,
     core::{
-        BlockRef,
         MemCache,
+        BlockRef,
+        KeyValueRef,
         SearchRangeBounds,
     },
     Info,
@@ -170,15 +171,6 @@ pub struct Demolished;
 #[derive(Debug)]
 pub enum DemolishError {
     GenServer(ero::NoProcError),
-}
-
-pub enum KeyValueRef {
-    Item {
-        key: kv::Key,
-        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
-    },
-    BlockFinish(BlockRef),
-    NoMore,
 }
 
 pub struct SearchTreeIterItemsTx {

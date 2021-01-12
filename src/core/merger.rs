@@ -13,17 +13,20 @@ use futures::{
 
 use crate::{
     kv,
-    KeyValueStreamItem,
+    storage,
+    core::{
+        KeyValueRef,
+    },
 };
 
 pub struct KeyValuesIter {
-    key_values_rx: mpsc::Receiver<KeyValueStreamItem>,
+    key_values_rx: mpsc::Receiver<KeyValueRef>,
     iter_state: IterState,
     advance_next_idx: Option<usize>,
 }
 
 impl KeyValuesIter {
-    pub fn new(key_values_rx: mpsc::Receiver<KeyValueStreamItem>) -> KeyValuesIter {
+    pub fn new(key_values_rx: mpsc::Receiver<KeyValueRef>) -> KeyValuesIter {
         KeyValuesIter {
             key_values_rx,
             iter_state: IterState::NotReady,
@@ -39,7 +42,7 @@ pub struct ItersMerger<V> {
 
 enum IterState {
     NotReady,
-    FrontItem(kv::KeyValuePair),
+    FrontItem(kv::KeyValuePair<storage::OwnedValueBlockRef>),
 }
 
 #[derive(Debug)]
@@ -57,22 +60,27 @@ impl<V> ItersMerger<V> {
 }
 
 impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIter>> {
-    pub async fn next(&mut self) -> Result<Option<kv::KeyValuePair>, Error> {
+    pub async fn next(&mut self) -> Result<Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>, Error> {
         assert!(self.advance_head_idx.is_none());
         let mut cursor_idx = 0;
         while cursor_idx < self.iters.len() {
             match self.iters[cursor_idx].iter_state {
                 IterState::NotReady => {
                     let current_iter = &mut self.iters[cursor_idx];
-                    match current_iter.key_values_rx.next().await {
-                        None =>
-                            return Err(Error::BackendIterPeerLost),
-                        Some(KeyValueStreamItem::NoMore) => {
-                            self.iters.swap_remove(cursor_idx);
-                        },
-                        Some(KeyValueStreamItem::KeyValue(key_value_pair)) => {
-                            current_iter.iter_state = IterState::FrontItem(key_value_pair);
-                        },
+                    loop {
+                        match current_iter.key_values_rx.next().await {
+                            None =>
+                                return Err(Error::BackendIterPeerLost),
+                            Some(KeyValueRef::NoMore) => {
+                                self.iters.swap_remove(cursor_idx);
+                            },
+                            Some(KeyValueRef::BlockFinish(..)) =>
+                                continue,
+                            Some(KeyValueRef::Item { key, value_cell, }) => {
+                                current_iter.iter_state = IterState::FrontItem(kv::KeyValuePair { key, value_cell, });
+                            },
+                        }
+                        break;
                     }
                     continue;
                 },

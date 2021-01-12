@@ -18,6 +18,7 @@ use futures::{
 
 use super::{
     kv,
+    storage,
     wheels::{
         BlockRef,
     },
@@ -78,7 +79,7 @@ impl MemCache {
         }
     }
 
-    fn range(&self, range: SearchRangeBounds) -> impl Iterator<Item = kv::KeyValuePair> + '_ {
+    fn range(&self, range: SearchRangeBounds) -> impl Iterator<Item = kv::KeyValuePair<kv::Value>> + '_ {
         fn ord_key_map(bound: Bound<kv::Key>) -> Bound<OrdKey> {
             match bound {
                 Bound::Unbounded =>
@@ -111,6 +112,15 @@ impl DerefMut for MemCache {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.cache
     }
+}
+
+pub enum KeyValueRef {
+    Item {
+        key: kv::Key,
+        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
+    },
+    BlockFinish(BlockRef),
+    NoMore,
 }
 
 #[derive(Clone, Debug)]

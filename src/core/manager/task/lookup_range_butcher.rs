@@ -21,14 +21,14 @@ use crate::{
 pub struct Args {
     pub range: SearchRangeBounds,
     pub key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-    pub iter_items_pool: pool::Pool<Vec<kv::KeyValuePair>>,
+    pub iter_items_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     pub butcher_pid: butcher::Pid,
 }
 
 pub struct Done {
     pub range: SearchRangeBounds,
     pub key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-    pub iter_items: Shared<Vec<kv::KeyValuePair>>,
+    pub iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
 }
 
 #[derive(Debug)]

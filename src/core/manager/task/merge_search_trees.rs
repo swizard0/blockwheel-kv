@@ -190,7 +190,12 @@ pub async fn run(
                             block_id: block_id.clone(),
                         }),
                 };
-                let block_serializer_kont = block_serializer.entry(&key, value_cell.into(), jump_ref)
+                let entry = storage::Entry {
+                    jump_ref,
+                    key: &key.key_bytes,
+                    value_cell: storage::ValueCell::from_owned_value_block_ref(value_cell, &wheel_ref.blockwheel_filename),
+                };
+                let block_serializer_kont = block_serializer.entry(entry)
                     .map_err(Error::BlockSerializerEntry)?;
                 let level_seed = LevelSeed::BlockInProgress {
                     block_serializer_kont,

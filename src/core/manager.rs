@@ -245,7 +245,7 @@ impl Pid {
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<kv::Value>>, LookupError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
@@ -365,7 +365,7 @@ enum LookupRequestButcherStatus {
 
 struct LookupRangeRequest {
     key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-    butcher_iter_items: Shared<Vec<kv::KeyValuePair>>,
+    butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
     merger_iters: Unique<Vec<merger::KeyValuesIter>>,
     pending_count: usize,
 }
@@ -772,10 +772,14 @@ where J: edeltraud::Job + From<job::Job>,
                 }
                 if lookup_request.pending_count == 0 {
                     let lookup_request = lookup_requests.remove(request_ref).unwrap();
-                    let lookup_result = lookup_request.found_fold;
-                    if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
-                        log::warn!("client canceled lookup request");
-                    }
+                    tasks.push(task::run_args(task::TaskArgs::RetrieveValue(
+                        task::retrieve_value::Args {
+                            found_fold: lookup_request.found_fold,
+                            reply_tx: lookup_request.reply_tx,
+                            wheels_pid: state.wheels_pid.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
                 }
             },
 
@@ -788,10 +792,14 @@ where J: edeltraud::Job + From<job::Job>,
                 }
                 if lookup_request.pending_count == 0 {
                     let lookup_request = lookup_requests.remove(request_ref).unwrap();
-                    let lookup_result = lookup_request.found_fold;
-                    if let Err(_send_error) = lookup_request.reply_tx.send(lookup_result) {
-                        log::warn!("client canceled lookup request");
-                    }
+                    tasks.push(task::run_args(task::TaskArgs::RetrieveValue(
+                        task::retrieve_value::Args {
+                            found_fold: lookup_request.found_fold,
+                            reply_tx: lookup_request.reply_tx,
+                            wheels_pid: state.wheels_pid.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
                 }
             },
 
@@ -805,6 +813,7 @@ where J: edeltraud::Job + From<job::Job>,
                             key_values_tx,
                             butcher_iter_items: iter_items,
                             merger_iters,
+                            wheels_pid: state.wheels_pid.clone(),
                         },
                     )));
                     tasks_count += 1;
@@ -841,6 +850,7 @@ where J: edeltraud::Job + From<job::Job>,
                             key_values_tx: lookup_range_request.key_values_tx,
                             butcher_iter_items: lookup_range_request.butcher_iter_items,
                             merger_iters: lookup_range_request.merger_iters,
+                            wheels_pid: state.wheels_pid.clone(),
                         },
                     )));
                     tasks_count += 1;

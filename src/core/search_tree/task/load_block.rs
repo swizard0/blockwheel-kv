@@ -1,8 +1,9 @@
 use alloc_pool::bytes::Bytes;
 
+use ero_blockwheel_fs as blockwheel;
+
 use crate::{
     wheels,
-    blockwheel,
     core::{
         BlockRef,
     },

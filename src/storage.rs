@@ -93,7 +93,7 @@ impl<'a> From<&'a kv::ValueCell<kv::Value>> for ValueCell<'a> {
                 kv::Cell::Tombstone =>
                     Cell::Tombstone,
                 kv::Cell::Value(kv::Value { ref value_bytes, }) =>
-                    Cell::Value(ValueRef::Inline { value: value_bytes, }),
+                    Cell::Value(ValueRef::Inline(value_bytes)),
             },
         }
     }
@@ -195,9 +195,9 @@ pub struct OwnedEntry {
 impl<'a> From<&'a OwnedEntry> for Entry<'a> {
     fn from(entry: &'a OwnedEntry) -> Entry<'a> {
         Entry {
-            jump_ref: entry.jump_ref.into(),
+            jump_ref: (&entry.jump_ref).into(),
             key: &entry.key.key_bytes,
-            value_cell: entry.value_cell.into(),
+            value_cell: (&entry.value_cell).into(),
         }
     }
 }
@@ -229,7 +229,7 @@ impl<'a> From<&'a kv::ValueCell<OwnedValueRef>> for ValueCell<'a> {
     fn from(value_cell: &'a kv::ValueCell<OwnedValueRef>) -> ValueCell<'a> {
         ValueCell {
             version: value_cell.version,
-            cell: value_cell.cell.into(),
+            cell: (&value_cell.cell).into(),
         }
     }
 }
@@ -279,13 +279,16 @@ impl<'a> From<&'a OwnedValueRef> for ValueRef<'a> {
                 ValueRef::Inline(&value.value_bytes),
             OwnedValueRef::Local(local_ref) =>
                 ValueRef::Local(local_ref.clone()),
-            OwnedValueRef::External(external_ref) =>
-                ValueRef::External(external_ref.into()),
+            OwnedValueRef::External(block_ref) =>
+                ValueRef::External(ExternalRef {
+                    filename: &block_ref.blockwheel_filename,
+                    block_id: block_ref.block_id.clone(),
+                }),
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum OwnedValueBlockRef {
     Inline(kv::Value),
     Ref(BlockRef),
@@ -297,12 +300,35 @@ impl OwnedValueBlockRef {
             OwnedValueRef::Inline(value) =>
                 OwnedValueBlockRef::Inline(value),
             OwnedValueRef::Local(LocalRef { block_id, }) =>
-                OwnedValueRef::Ref(BlockRef {
+                OwnedValueBlockRef::Ref(BlockRef {
                     blockwheel_filename: current_blockwheel_filename.clone(),
                     block_id,
                 }),
             OwnedValueRef::External(block_ref) =>
-                OwnedValueRef::Ref(block_ref),
+                OwnedValueBlockRef::Ref(block_ref),
+        }
+    }
+}
+
+impl<'a> ValueCell<'a> {
+    pub fn from_owned_value_block_ref(value_cell: &'a kv::ValueCell<OwnedValueBlockRef>, current_blockwheel_filename: &WheelFilename) -> ValueCell<'a> {
+        ValueCell {
+            version: value_cell.version,
+            cell: match &value_cell.cell {
+                kv::Cell::Value(OwnedValueBlockRef::Inline(value)) =>
+                    Cell::Value(ValueRef::Inline(&value.value_bytes)),
+                kv::Cell::Value(OwnedValueBlockRef::Ref(block_ref)) if &block_ref.blockwheel_filename == current_blockwheel_filename =>
+                    Cell::Value(ValueRef::Local(LocalRef {
+                        block_id: block_ref.block_id.clone(),
+                    })),
+                kv::Cell::Value(OwnedValueBlockRef::Ref(block_ref)) =>
+                    Cell::Value(ValueRef::External(ExternalRef {
+                        filename: &block_ref.blockwheel_filename,
+                        block_id: block_ref.block_id.clone(),
+                    })),
+                kv::Cell::Tombstone =>
+                    Cell::Tombstone,
+            },
         }
     }
 }

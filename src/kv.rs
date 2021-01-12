@@ -52,9 +52,9 @@ pub enum Cell<V> {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct KeyValuePair {
+pub struct KeyValuePair<V> {
     pub key: Key,
-    pub value_cell: ValueCell<Value>,
+    pub value_cell: ValueCell<V>,
 }
 
 impl Borrow<[u8]> for Key {

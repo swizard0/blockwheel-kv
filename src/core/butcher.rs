@@ -143,7 +143,7 @@ impl Pid {
         }
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, ero::NoProcError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<kv::Value>>, ero::NoProcError> {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx.send(Request::Lookup(RequestLookup { key: key.clone(), reply_tx, })).await
@@ -161,9 +161,9 @@ impl Pid {
     pub async fn lookup_range(
         &mut self,
         range: SearchRangeBounds,
-        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair>>,
+        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     )
-        -> Result<Shared<Vec<kv::KeyValuePair>>, ero::NoProcError>
+        -> Result<Shared<Vec<kv::KeyValuePair<kv::Value>>>, ero::NoProcError>
     {
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
@@ -227,8 +227,8 @@ enum Request {
     Lookup(RequestLookup),
     LookupRange {
         range: SearchRangeBounds,
-        reply_tx: oneshot::Sender<Shared<Vec<kv::KeyValuePair>>>,
-        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair>>,
+        reply_tx: oneshot::Sender<Shared<Vec<kv::KeyValuePair<kv::Value>>>>,
+        iter_items_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     },
     Remove(RequestRemove),
     Flush(RequestFlush),

@@ -189,7 +189,7 @@ pub struct LookupRange {
 
 #[derive(Clone)]
 pub enum KeyValueStreamItem {
-    KeyValue(kv::KeyValuePair),
+    KeyValue(kv::KeyValuePair<kv::Value>),
     NoMore,
 }
 
@@ -203,7 +203,7 @@ impl Pid {
             .map_err(|core::manager::InsertError::GenServer(ero::NoProcError)| InsertError::GenServer(ero::NoProcError))
     }
 
-    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell>, LookupError> {
+    pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<kv::Value>>, LookupError> {
         self.manager_pid.lookup(key).await
             .map_err(|core::manager::LookupError::GenServer(ero::NoProcError)| LookupError::GenServer(ero::NoProcError))
     }

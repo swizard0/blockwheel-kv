@@ -12,6 +12,7 @@ pub mod flush_search_tree;
 pub mod demolish_search_tree;
 pub mod merge_search_trees;
 pub mod merge_lookup_range;
+pub mod retrieve_value;
 
 pub enum TaskArgs {
     InfoButcher(info_butcher::Args),
@@ -27,6 +28,7 @@ pub enum TaskArgs {
     DemolishSearchTree(demolish_search_tree::Args),
     MergeSearchTrees(merge_search_trees::Args),
     MergeLookupRange(merge_lookup_range::Args),
+    RetrieveValue(retrieve_value::Args),
 }
 
 pub enum TaskDone {
@@ -43,6 +45,7 @@ pub enum TaskDone {
     DemolishSearchTree(demolish_search_tree::Done),
     MergeSearchTrees(merge_search_trees::Done),
     MergeLookupRange(merge_lookup_range::Done),
+    RetrieveValue(retrieve_value::Done),
 }
 
 #[derive(Debug)]
@@ -60,6 +63,7 @@ pub enum Error {
     DemolishSearchTree(demolish_search_tree::Error),
     MergeSearchTrees(merge_search_trees::Error),
     MergeLookupRange(merge_lookup_range::Error),
+    RetrieveValue(retrieve_value::Error),
 }
 
 pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
@@ -128,6 +132,11 @@ pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
             TaskDone::MergeLookupRange(
                 merge_lookup_range::run(args).await
                     .map_err(Error::MergeLookupRange)?,
+            ),
+        TaskArgs::RetrieveValue(args) =>
+            TaskDone::RetrieveValue(
+                retrieve_value::run(args).await
+                    .map_err(Error::RetrieveValue)?,
             ),
     })
 }
