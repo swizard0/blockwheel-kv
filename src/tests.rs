@@ -47,7 +47,7 @@ fn stress() {
         .unwrap();
 
     let limits = Limits {
-        active_tasks: 128,
+        active_tasks: 1,
         actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
@@ -149,7 +149,7 @@ impl Counter {
 
 struct DataIndex {
     index: HashMap<kv::Key, usize>,
-    data: Vec<kv::KeyValuePair>,
+    data: Vec<kv::KeyValuePair<kv::Value>>,
     current_version: u64,
 }
 
@@ -165,16 +165,16 @@ enum Error {
     UnexpectedLookupRangeRxFinish,
     ExpectedValueNotFound {
         key: kv::Key,
-        value_cell: kv::ValueCell,
+        value_cell: kv::ValueCell<kv::Value>,
     },
     UnexpectedValueFound {
         key: kv::Key,
-        expected_value_cell: kv::ValueCell,
-        found_value_cell: kv::ValueCell,
+        expected_value_cell: kv::ValueCell<kv::Value>,
+        found_value_cell: kv::ValueCell<kv::Value>,
     },
     UnexpectedValueForLookupRange {
         key: kv::Key,
-        key_value_pair: kv::KeyValuePair,
+        key_value_pair: kv::KeyValuePair<kv::Value>,
     },
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
@@ -203,8 +203,8 @@ async fn stress_loop(
         .build()
         .map_err(Error::ThreadPool)?;
 
-    let blockwheel_a_filename = params.wheel_a.wheel_filename.clone().into();
-    let blockwheel_b_filename = params.wheel_b.wheel_filename.clone().into();
+    let blockwheel_a_filename = wheels::WheelFilename::from_path(&params.wheel_a.wheel_filename, &blocks_pool);
+    let blockwheel_b_filename = wheels::WheelFilename::from_path(&params.wheel_b.wheel_filename, &blocks_pool);
 
     let wheel_a_gen_server = blockwheel::GenServer::new();
     let mut wheel_a_pid = wheel_a_gen_server.pid();
@@ -256,7 +256,7 @@ async fn stress_loop(
     let mut actions_counter = 0;
 
     enum TaskDone {
-        Lookup { key: kv::Key, found_value_cell: kv::ValueCell, version_snapshot: u64, lookup_kind: LookupKind, },
+        Lookup { key: kv::Key, found_value_cell: kv::ValueCell<kv::Value>, version_snapshot: u64, lookup_kind: LookupKind, },
         Insert { key: kv::Key, value: kv::Value, version: u64, },
         Remove { key: kv::Key, version: u64, },
     }

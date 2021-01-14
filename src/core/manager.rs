@@ -610,6 +610,7 @@ where J: edeltraud::Job + From<job::Job>,
                 // maybe invalidate on-fly butcher requests
                 for (request_ref, LookupRequest { key, butcher_status, pending_count, .. }) in lookup_requests.iter_mut() {
                     if let LookupRequestButcherStatus::NotReady = butcher_status {
+                        log::debug!("lookup request invalidated due to cache flush");
                         *butcher_status = LookupRequestButcherStatus::Invalidated;
                         tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
                             task::lookup_search_tree::Args {
