@@ -11,9 +11,7 @@ use futures::{
 };
 
 use crate::{
-    kv,
     wheels,
-    storage,
     blockwheel,
     core::{
         search_tree::{
@@ -93,14 +91,7 @@ pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_
             Event::BlockItem(Some(KeyValueRef::NoMore)) =>
                 items_depleted = true,
 
-            Event::BlockItem(Some(KeyValueRef::BlockFinish(block_ref))) |
-            Event::BlockItem(Some(KeyValueRef::Item {
-                value_cell: kv::ValueCell {
-                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-                    ..
-                },
-                ..
-            })) => {
+            Event::BlockItem(Some(KeyValueRef::BlockFinish(block_ref))) => {
                 let mut wheels_pid = wheels_pid.clone();
                 remove_tasks.push(async move {
                     let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await

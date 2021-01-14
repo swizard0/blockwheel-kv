@@ -47,7 +47,7 @@ fn stress() {
         .unwrap();
 
     let limits = Limits {
-        active_tasks: 1,
+        active_tasks: 128,
         actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
