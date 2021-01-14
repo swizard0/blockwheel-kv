@@ -27,6 +27,7 @@ pub enum Error {
         blockwheel_filename: wheels::WheelFilename,
     },
     ReadBlock(blockwheel::ReadBlockError),
+    ValueDeserialize(storage::Error),
 }
 
 pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result<Done, Error> {
@@ -43,11 +44,15 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
                 })?;
             let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await
                 .map_err(Error::ReadBlock)?;
+            let value_bytes = storage::value_block_deserialize(&block_bytes)
+                .map_err(Error::ValueDeserialize)?;
             Some(kv::ValueCell {
                 version,
-                cell: kv::Cell::Value(block_bytes.into()),
+                cell: kv::Cell::Value(value_bytes.into()),
             })
         },
+        Some(kv::ValueCell { version, cell: kv::Cell::Tombstone, }) =>
+            Some(kv::ValueCell { version, cell: kv::Cell::Tombstone, }),
     };
     if let Err(_send_error) = reply_tx.send(lookup_result) {
         log::warn!("client canceled lookup request");

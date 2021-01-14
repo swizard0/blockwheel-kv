@@ -949,6 +949,9 @@ where J: edeltraud::Job + From<job::Job>,
                 log::debug!("search tree DEMOLISHED");
             },
 
+            Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done))) =>
+                (),
+
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
         }

@@ -94,16 +94,16 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                             },
                             Ordering::Equal => {
                                 let value_cell = match iter_entry.value_cell {
-                                    kv::ValueCell { version, cell: kv::Cell::Value(value_ref), } =>
+                                    kv::ValueCell { version, cell: kv::Cell::Value(ref value_ref), } =>
                                         kv::ValueCell {
                                             version,
                                             cell: kv::Cell::Value(storage::OwnedValueBlockRef::from_owned_value_ref(
-                                                value_ref,
+                                                value_ref.clone(),
                                                 &search_block_ref.blockwheel_filename,
                                             )),
                                         },
-                                    value_cell @ kv::ValueCell { cell: kv::Cell::Tombstone, .. } =>
-                                        value_cell,
+                                    kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
+                                        kv::ValueCell { version, cell: kv::Cell::Tombstone, },
                                 };
                                 outcomes.push(SearchOutcome {
                                     request: request_key,
@@ -116,20 +116,15 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                 let outcome = match iter_entry.jump_ref {
                                     storage::OwnedJumpRef::None =>
                                         Outcome::NotFound,
-                                    storage::OwnedJumpRef::Local { ref block_id, } =>
+                                    storage::OwnedJumpRef::Local(storage::LocalRef { ref block_id, }) =>
                                         Outcome::Jump {
                                             block_ref: BlockRef {
                                                 blockwheel_filename: search_block_ref.blockwheel_filename.clone(),
                                                 block_id: block_id.clone(),
                                             },
                                         },
-                                    storage::OwnedJumpRef::External { filename, ref block_id, } =>
-                                        Outcome::Jump {
-                                            block_ref: BlockRef {
-                                                blockwheel_filename: filename.into(),
-                                                block_id: block_id.clone(),
-                                            },
-                                        },
+                                    storage::OwnedJumpRef::External(ref block_ref) =>
+                                        Outcome::Jump { block_ref: block_ref.clone(), },
                                 };
                                 outcomes.push(SearchOutcome {
                                     request: request_key,

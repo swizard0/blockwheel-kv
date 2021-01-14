@@ -106,16 +106,13 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
         let maybe_jump_block_ref = match iter_entry.jump_ref {
             storage::OwnedJumpRef::None =>
                 None,
-            storage::OwnedJumpRef::Local { block_id, } =>
+            storage::OwnedJumpRef::Local(storage::LocalRef { block_id, }) =>
                 Some(BlockRef {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                     block_id: block_id.clone(),
                 }),
-            storage::OwnedJumpRef::External { filename, block_id, } =>
-                Some(BlockRef {
-                    blockwheel_filename: filename.into(),
-                    block_id: block_id.clone(),
-                }),
+            storage::OwnedJumpRef::External(block_ref) =>
+                Some(block_ref),
         };
 
         let force_stop = match &search_range {
@@ -147,8 +144,8 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
                         &block_ref.blockwheel_filename,
                     )),
                 },
-            value_cell @ kv::ValueCell { cell: kv::Cell::Tombstone, .. } =>
-                value_cell,
+            kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
+                kv::ValueCell { version, cell: kv::Cell::Tombstone, },
         };
 
         match (maybe_jump_block_ref, force_stop) {

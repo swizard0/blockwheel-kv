@@ -1,6 +1,7 @@
 use futures::{
     select,
     future,
+    pin_mut,
     channel::{
         mpsc,
     },
@@ -43,6 +44,7 @@ pub enum Error {
         blockwheel_filename: wheels::WheelFilename,
     },
     ReadBlock(blockwheel::ReadBlockError),
+    ValueDeserialize(storage::Error),
 }
 
 pub async fn run(Args { mut key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, }: Args) -> Result<Done, Error> {
@@ -70,95 +72,55 @@ pub async fn run(Args { mut key_values_tx, butcher_iter_items, mut merger_iters,
     let mut merger = merger::ItersMerger::new(merger_iters);
 
     let merge_task = async move {
-        enum State<F, I> {
-            Init,
-            RetrieveOnly {
-                retrieve_future: F,
-            },
-            RetrieveWithNextItem {
-                retrieve_future: F,
-                next_item: I,
-            },
-            Finish {
-                retrieve_future: F,
-            },
-        }
+        if let Some(mut merger_key_value) = merger.next().await.map_err(Error::Merger)? {
+            loop {
+                let merger_future = merger.next().fuse();
+                pin_mut!(merger_future);
+                let retrieve_future = schedule_retrieve(merger_key_value, wheels_pid.clone()).fuse();
+                pin_mut!(retrieve_future);
 
-        let mut state = State::Init;
+                enum Event<M, R> {
+                    Merger(M),
+                    Retrieve(R),
+                }
 
-        loop {
-            enum Event<M, R, F, I> {
-                MergerOnInit(M),
-                MergerOnRetrieveOnly {
-                    result: M,
-                    retrieve_future: F,
-                },
-                RetrieveOnRetrieveOnly(R),
-                RetrieveOnRetrieveWithNextItem {
-                    result: R,
-                    next_item: I,
-                },
-                RetrieveOnFinish(R),
-            }
+                let event = select! {
+                    result = &mut merger_future =>
+                        Event::Merger(result.map_err(Error::Merger)?),
+                    result = &mut retrieve_future =>
+                        Event::Retrieve(result?),
+                };
 
-            let event = match state {
-                State::Init =>
-                    Event::MergerOnInit(merger.next().await),
-                State::RetrieveOnly { mut retrieve_future, } =>
-                    select! {
-                        result = merger.next() =>
-                            Event::MergerOnRetrieveOnly { result, retrieve_future, },
-                        result = retrieve_future =>
-                            Event::RetrieveOnRetrieveOnly(result),
+                match event {
+                    Event::Merger(None) => {
+                        let key_value = retrieve_future.await?;
+                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                            log::warn!("client dropped iterator in merger task");
+                            return Ok(());
+                        }
+                        break;
                     },
-                State::RetrieveWithNextItem { mut retrieve_future, next_item, } =>
-                    Event::RetrieveOnRetrieveWithNextItem {
-                        result: retrieve_future.await,
-                        next_item,
+                    Event::Merger(Some(next_key_value)) => {
+                        let key_value = retrieve_future.await?;
+                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                            log::warn!("client dropped iterator in merger task");
+                            return Ok(());
+                        }
+                        merger_key_value = next_key_value;
                     },
-                State::Finish { mut retrieve_future, } =>
-                    Event::RetrieveOnFinish(retrieve_future.await),
-            };
-
-            match event {
-                Event::MergerOnInit(Ok(None)) =>
-                    break,
-                Event::MergerOnInit(Ok(Some(key_value))) =>
-                    state = State::RetrieveOnly {
-                        retrieve_future: schedule_retrieve(key_value, wheels_pid.clone())
-                            .fuse(),
+                    Event::Retrieve(key_value) => {
+                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                            log::warn!("client dropped iterator in merger task");
+                            return Ok(());
+                        }
+                        match merger_future.await.map_err(Error::Merger)? {
+                            None =>
+                                break,
+                            Some(next_key_value) =>
+                                merger_key_value = next_key_value,
+                        }
                     },
-                Event::MergerOnRetrieveOnly { result: Ok(None), retrieve_future, } =>
-                    state = State::Finish { retrieve_future, },
-                Event::MergerOnRetrieveOnly { result: Ok(Some(key_value)), retrieve_future, } =>
-                    state = State::RetrieveWithNextItem {
-                        retrieve_future,
-                        next_item: key_value,
-                    },
-                Event::RetrieveOnRetrieveOnly(Ok(key_value)) => {
-                    if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
-                        log::warn!("client dropped iterator in merger task");
-                        return Ok(());
-                    }
-                    state = State::Init;
-                },
-                Event::RetrieveOnRetrieveWithNextItem { result: Ok(key_value), next_item, } => {
-                    if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
-                        log::warn!("client dropped iterator in merger task");
-                        return Ok(());
-                    }
-                    state = State::RetrieveOnly {
-                        retrieve_future: schedule_retrieve(next_item, wheels_pid.clone())
-                            .fuse(),
-                    };
-                },
-
-                Event::MergerOnInit(Err(error)) |
-                Event::MergerOnRetrieveOnly { result: Err(error), .. } =>
-                    return Err(Error::Merger(error)),
-                Event::RetrieveOnRetrieveOnly(Err(error)) |
-                Event::RetrieveOnRetrieveWithNextItem { result: Err(error), .. } =>
-                    return Err(error),
+                }
             }
         }
         if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::NoMore).await {
@@ -200,13 +162,17 @@ async fn schedule_retrieve(
                 })?;
             let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await
                 .map_err(Error::ReadBlock)?;
+            let value_bytes = storage::value_block_deserialize(&block_bytes)
+                .map_err(Error::ValueDeserialize)?;
             Ok(kv::KeyValuePair {
                 key,
                 value_cell: kv::ValueCell {
                     version,
-                    cell: kv::Cell::Value(block_bytes.into()),
+                    cell: kv::Cell::Value(value_bytes.into()),
                 },
             })
         },
+        kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
+            Ok(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, }),
     }
 }

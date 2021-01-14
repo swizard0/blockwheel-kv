@@ -173,11 +173,6 @@ pub enum DemolishError {
     GenServer(ero::NoProcError),
 }
 
-pub struct SearchTreeIterItemsTx {
-    pub range: SearchRangeBounds,
-    pub items_tx: mpsc::Sender<KeyValueRef>,
-}
-
 pub struct SearchTreeIterItemsRx {
     pub items_rx: mpsc::Receiver<KeyValueRef>,
 }
