@@ -603,7 +603,7 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Task(Ok(task::TaskDone::Bootstrap(task::bootstrap::Done { block_ref: root_block, }))) =>
                 match mem::replace(&mut state.mode, Mode::Regular { root_block: root_block.clone(), }) {
                     Mode::CacheBootstrap { .. } =>
-                        (),
+                        log::debug!("cache flushed with root_block = {:?}", root_block),
                     Mode::Regular { .. } =>
                         unreachable!(),
                 },

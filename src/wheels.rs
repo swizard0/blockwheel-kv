@@ -1,4 +1,6 @@
 use std::{
+    fmt,
+    str,
     path,
     ops::Deref,
     time::Duration,
@@ -40,7 +42,7 @@ use ero_blockwheel_fs::{
     block,
 };
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WheelFilename {
     filename_bytes: Bytes,
 }
@@ -62,6 +64,14 @@ impl WheelFilename {
 
     pub fn from_path<P>(filename: P, blocks_pool: &BytesPool) -> WheelFilename where P: AsRef<path::Path> {
         WheelFilename::from_str(&filename.as_ref().to_string_lossy(), blocks_pool)
+    }
+}
+
+impl fmt::Debug for WheelFilename {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("WheelFilename")
+            .field(&str::from_utf8(&self.filename_bytes).unwrap_or("<invalid utf>"))
+            .finish()
     }
 }
 
