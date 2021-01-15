@@ -364,24 +364,20 @@ impl OwnedValueBlockRef {
     }
 }
 
-impl<'a> ValueCell<'a> {
-    pub fn from_owned_value_block_ref(value_cell: &'a kv::ValueCell<OwnedValueBlockRef>, current_blockwheel_filename: &WheelFilename) -> ValueCell<'a> {
-        ValueCell {
-            version: value_cell.version,
-            cell: match &value_cell.cell {
+impl kv::ValueCell<OwnedValueBlockRef> {
+    pub fn into_owned_value_ref(self, current_blockwheel_filename: &WheelFilename) -> kv::ValueCell<OwnedValueRef> {
+        kv::ValueCell {
+            version: self.version,
+            cell: match self.cell {
                 kv::Cell::Value(OwnedValueBlockRef::Inline(value)) =>
-                    Cell::Value(ValueRef::Inline(&value.value_bytes)),
-                kv::Cell::Value(OwnedValueBlockRef::Ref(block_ref)) if &block_ref.blockwheel_filename == current_blockwheel_filename =>
-                    Cell::Value(ValueRef::Local(LocalRef {
-                        block_id: block_ref.block_id.clone(),
-                    })),
+                    kv::Cell::Value(OwnedValueRef::Inline(value)),
+                kv::Cell::Value(OwnedValueBlockRef::Ref(BlockRef { blockwheel_filename, block_id, }))
+                    if &blockwheel_filename == current_blockwheel_filename =>
+                    kv::Cell::Value(OwnedValueRef::Local(LocalRef { block_id, })),
                 kv::Cell::Value(OwnedValueBlockRef::Ref(block_ref)) =>
-                    Cell::Value(ValueRef::External(ExternalRef {
-                        filename: &block_ref.blockwheel_filename,
-                        block_id: block_ref.block_id.clone(),
-                    })),
+                    kv::Cell::Value(OwnedValueRef::External(block_ref)),
                 kv::Cell::Tombstone =>
-                    Cell::Tombstone,
+                    kv::Cell::Tombstone,
             },
         }
     }
