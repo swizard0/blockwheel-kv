@@ -81,7 +81,7 @@ pub enum TaskArgs<J> where J: edeltraud::Job {
     Bootstrap(bootstrap::Args<J>),
     LoadBlock(load_block::Args),
     SearchBlock(search_block::Args<J>),
-    IterCache(iter_cache::Args),
+    IterCache(iter_cache::Args<J>),
     IterBlock(iter_block::Args<J>),
     Demolish(demolish::Args),
 }

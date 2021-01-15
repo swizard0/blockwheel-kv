@@ -85,6 +85,7 @@ pub struct Pools {
     lookup_requests_queue_pool: pool::Pool<task::LookupRequestsQueueType>,
     iter_requests_queue_pool: pool::Pool<task::IterRequestsQueueType>,
     outcomes_pool: pool::Pool<Vec<task::SearchOutcome>>,
+    iter_cache_entries_pool: pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
     iter_block_entries_pool: pool::Pool<Vec<task::BlockEntry>>,
 }
 
@@ -95,6 +96,7 @@ impl Pools {
             lookup_requests_queue_pool: pool::Pool::new(),
             iter_requests_queue_pool: pool::Pool::new(),
             outcomes_pool: pool::Pool::new(),
+            iter_cache_entries_pool: pool::Pool::new(),
             iter_block_entries_pool: pool::Pool::new(),
         }
     }
@@ -520,7 +522,11 @@ where J: edeltraud::Job + From<job::Job>,
                         tasks.push(task::run_args(task::TaskArgs::IterCache(
                             task::iter_cache::Args {
                                 cache: cache.clone(),
-                                range, reply_tx,
+                                thread_pool: state.thread_pool.clone(),
+                                iter_cache_entries_pool: state.pools.iter_cache_entries_pool.clone(),
+                                range,
+                                reply_tx,
+                                iter_send_buffer: state.params.iter_send_buffer,
                             },
                         )));
                         tasks_count += 1;

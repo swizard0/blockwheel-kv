@@ -9,6 +9,7 @@ pub enum Job {
     SearchTreeBootstrapBlock(core::search_tree::task::bootstrap::BlockJobArgs),
     SearchTreeBootstrapLayout(core::search_tree::task::bootstrap::LayoutJobArgs),
     SearchTreeSearchBlock(core::search_tree::task::search_block::JobArgs),
+    SearchTreeIterCache(core::search_tree::task::iter_cache::JobArgs),
     SearchTreeIterBlock(core::search_tree::task::iter_block::JobArgs),
 }
 
@@ -17,6 +18,7 @@ pub enum JobOutput {
     SearchTreeBootstrapBlock(SearchTreeBootstrapBlockDone),
     SearchTreeBootstrapLayout(SearchTreeBootstrapLayoutDone),
     SearchTreeSearchBlock(SearchTreeSearchBlockDone),
+    SearchTreeIterCache(SearchTreeIterCacheDone),
     SearchTreeIterBlock(SearchTreeIterBlockDone),
 }
 
@@ -38,6 +40,10 @@ impl edeltraud::Job for Job {
             Job::SearchTreeSearchBlock(args) =>
                 JobOutput::SearchTreeSearchBlock(SearchTreeSearchBlockDone(
                     core::search_tree::task::search_block::job(args),
+                )),
+            Job::SearchTreeIterCache(args) =>
+                JobOutput::SearchTreeIterCache(SearchTreeIterCacheDone(
+                    core::search_tree::task::iter_cache::job(args),
                 )),
             Job::SearchTreeIterBlock(args) =>
                 JobOutput::SearchTreeIterBlock(SearchTreeIterBlockDone(
@@ -88,6 +94,21 @@ impl From<JobOutput> for SearchTreeSearchBlockDone {
                 done,
             _other =>
                 panic!("expected JobOutput::SearchTreeSearchBlock but got other"),
+        }
+    }
+}
+
+pub struct SearchTreeIterCacheDone(
+    pub core::search_tree::task::iter_cache::JobOutput,
+);
+
+impl From<JobOutput> for SearchTreeIterCacheDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::SearchTreeIterCache(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::SearchTreeIterCache but got other"),
         }
     }
 }
