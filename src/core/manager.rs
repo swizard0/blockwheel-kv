@@ -68,7 +68,7 @@ use crate::{
     KeyValueStreamItem,
 };
 
-mod task;
+pub mod task;
 
 #[derive(Clone, Debug)]
 pub struct Params {

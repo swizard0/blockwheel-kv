@@ -19,6 +19,7 @@ use bntree::{
 use alloc_pool::{
     pool,
     bytes::{
+        Bytes,
         BytesPool,
     },
     Unique,
@@ -66,6 +67,7 @@ pub enum Error {
     },
     WheelsGone,
     WheelsEmpty,
+    ThreadPoolGone,
     BuildTree(fold::Error),
     BuildTreeUnexpectedLevelSeedOnVisitBlockStart,
     BuildTreeUnexpectedLevelSeedOnVisitItem,
@@ -147,6 +149,41 @@ where J: edeltraud::Job + From<job::Job>,
     );
     let (done, ()) = join_task.await?;
     Ok(done)
+}
+
+pub type JobOutput = Result<JobDone, Error>;
+
+pub struct JobArgs {
+    block_entries: Unique<Vec<storage::OwnedEntry>>,
+    node_type: storage::NodeType,
+    blocks_pool: BytesPool,
+}
+
+pub struct JobDone {
+    block_bytes: Bytes,
+}
+
+pub fn job(JobArgs { mut block_entries, node_type, blocks_pool, }: JobArgs) -> JobOutput {
+    let block_bytes = blocks_pool.lend();
+    let items_count = block_entries.len();
+    let mut block_serializer_kont = storage::BlockSerializer::start(node_type, items_count, block_bytes)
+        .map_err(Error::BlockSerializerStart)?;
+    for ref owned_entry in block_entries.drain(..) {
+        match block_serializer_kont {
+            storage::BlockSerializerContinue::More(block_serializer) => {
+                block_serializer_kont = block_serializer.entry(owned_entry.into())
+                    .map_err(Error::BlockSerializerEntry)?;
+            },
+            storage::BlockSerializerContinue::Done(..) =>
+                unreachable!(),
+        }
+    }
+    match block_serializer_kont {
+        storage::BlockSerializerContinue::Done(block_bytes) =>
+            Ok(JobDone { block_bytes: block_bytes.freeze(), }),
+        storage::BlockSerializerContinue::More(..) =>
+            unreachable!(),
+    }
 }
 
 async fn perform_merge<J>(
@@ -277,7 +314,7 @@ where J: edeltraud::Job + From<job::Job>,
             // VisitBlockFinish
             fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
                 level_seed: LevelSeed::BlockInProgress {
-                    mut block_entries,
+                    block_entries,
                     mut wheel_ref,
                     node_type,
                 },
@@ -290,28 +327,18 @@ where J: edeltraud::Job + From<job::Job>,
                     return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index, block_index, });
                 }
 
-                let block_bytes = blocks_pool.lend();
-                let items_count = block_entries.len();
-                let mut block_serializer_kont = storage::BlockSerializer::start(node_type, items_count, block_bytes)
-                    .map_err(Error::BlockSerializerStart)?;
-                for ref owned_entry in block_entries.drain(..) {
-                    match block_serializer_kont {
-                        storage::BlockSerializerContinue::More(block_serializer) => {
-                            block_serializer_kont = block_serializer.entry(owned_entry.into())
-                                .map_err(Error::BlockSerializerEntry)?;
-                        },
-                        storage::BlockSerializerContinue::Done(..) =>
-                            unreachable!(),
-                    }
-                }
-                let block_bytes = match block_serializer_kont {
-                    storage::BlockSerializerContinue::More(..) =>
-                        unreachable!(),
-                    storage::BlockSerializerContinue::Done(block_bytes) =>
-                        block_bytes,
+                let job_args = JobArgs {
+                    block_entries,
+                    node_type,
+                    blocks_pool: blocks_pool.clone(),
                 };
+                let job_output = thread_pool.spawn(job::Job::MergeSearchTrees(job_args)).await
+                    .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                let job_output: job::JobOutput = job_output.into();
+                let job::MergeSearchTreesDone(job_result) = job_output.into();
+                let JobDone { block_bytes, } = job_result?;
 
-                let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes.freeze()).await
+                let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
                     .map_err(Error::WriteBlock)?;
                 child_ref = Some(BlockRef {
                     blockwheel_filename: wheel_ref.blockwheel_filename,

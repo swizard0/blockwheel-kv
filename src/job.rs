@@ -11,6 +11,7 @@ pub enum Job {
     SearchTreeSearchBlock(core::search_tree::task::search_block::JobArgs),
     SearchTreeIterCache(core::search_tree::task::iter_cache::JobArgs),
     SearchTreeIterBlock(core::search_tree::task::iter_block::JobArgs),
+    MergeSearchTrees(core::manager::task::merge_search_trees::JobArgs),
 }
 
 pub enum JobOutput {
@@ -20,6 +21,7 @@ pub enum JobOutput {
     SearchTreeSearchBlock(SearchTreeSearchBlockDone),
     SearchTreeIterCache(SearchTreeIterCacheDone),
     SearchTreeIterBlock(SearchTreeIterBlockDone),
+    MergeSearchTrees(MergeSearchTreesDone),
 }
 
 impl edeltraud::Job for Job {
@@ -48,6 +50,10 @@ impl edeltraud::Job for Job {
             Job::SearchTreeIterBlock(args) =>
                 JobOutput::SearchTreeIterBlock(SearchTreeIterBlockDone(
                     core::search_tree::task::iter_block::job(args),
+                )),
+            Job::MergeSearchTrees(args) =>
+                JobOutput::MergeSearchTrees(MergeSearchTreesDone(
+                    core::manager::task::merge_search_trees::job(args),
                 )),
         }
     }
@@ -124,6 +130,21 @@ impl From<JobOutput> for SearchTreeIterBlockDone {
                 done,
             _other =>
                 panic!("expected JobOutput::SearchTreeIterBlock but got other"),
+        }
+    }
+}
+
+pub struct MergeSearchTreesDone(
+    pub core::manager::task::merge_search_trees::JobOutput,
+);
+
+impl From<JobOutput> for MergeSearchTreesDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::MergeSearchTrees(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::MergeSearchTrees but got other"),
         }
     }
 }
