@@ -6,14 +6,16 @@ use crate::{
 
 pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
-    SearchTreeBootstrap(core::search_tree::task::bootstrap::JobArgs),
+    SearchTreeBootstrapBlock(core::search_tree::task::bootstrap::BlockJobArgs),
+    SearchTreeBootstrapLayout(core::search_tree::task::bootstrap::LayoutJobArgs),
     SearchTreeSearchBlock(core::search_tree::task::search_block::JobArgs),
     SearchTreeIterBlock(core::search_tree::task::iter_block::JobArgs),
 }
 
 pub enum JobOutput {
     BlockwheelFs(blockwheel::job::JobOutput),
-    SearchTreeBootstrap(SearchTreeBootstrapDone),
+    SearchTreeBootstrapBlock(SearchTreeBootstrapBlockDone),
+    SearchTreeBootstrapLayout(SearchTreeBootstrapLayoutDone),
     SearchTreeSearchBlock(SearchTreeSearchBlockDone),
     SearchTreeIterBlock(SearchTreeIterBlockDone),
 }
@@ -25,9 +27,13 @@ impl edeltraud::Job for Job {
         match self {
             Job::BlockwheelFs(job) =>
                 JobOutput::BlockwheelFs(job.run()),
-            Job::SearchTreeBootstrap(args) =>
-                JobOutput::SearchTreeBootstrap(SearchTreeBootstrapDone(
-                    core::search_tree::task::bootstrap::job(args),
+            Job::SearchTreeBootstrapBlock(args) =>
+                JobOutput::SearchTreeBootstrapBlock(SearchTreeBootstrapBlockDone(
+                    core::search_tree::task::bootstrap::block_job(args),
+                )),
+            Job::SearchTreeBootstrapLayout(args) =>
+                JobOutput::SearchTreeBootstrapLayout(SearchTreeBootstrapLayoutDone(
+                    core::search_tree::task::bootstrap::layout_job(args),
                 )),
             Job::SearchTreeSearchBlock(args) =>
                 JobOutput::SearchTreeSearchBlock(SearchTreeSearchBlockDone(
@@ -41,17 +47,32 @@ impl edeltraud::Job for Job {
     }
 }
 
-pub struct SearchTreeBootstrapDone(
-    pub core::search_tree::task::bootstrap::JobOutput,
+pub struct SearchTreeBootstrapBlockDone(
+    pub core::search_tree::task::bootstrap::BlockJobOutput,
 );
 
-impl From<JobOutput> for SearchTreeBootstrapDone {
+impl From<JobOutput> for SearchTreeBootstrapBlockDone {
     fn from(output: JobOutput) -> Self {
         match output {
-            JobOutput::SearchTreeBootstrap(done) =>
+            JobOutput::SearchTreeBootstrapBlock(done) =>
                 done,
             _other =>
-                panic!("expected JobOutput::SearchTreeBootstrap but got other"),
+                panic!("expected JobOutput::SearchTreeBootstrapBlock but got other"),
+        }
+    }
+}
+
+pub struct SearchTreeBootstrapLayoutDone(
+    pub core::search_tree::task::bootstrap::LayoutJobOutput,
+);
+
+impl From<JobOutput> for SearchTreeBootstrapLayoutDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::SearchTreeBootstrapLayout(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::SearchTreeBootstrapLayout but got other"),
         }
     }
 }
