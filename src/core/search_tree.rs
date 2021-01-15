@@ -90,13 +90,18 @@ pub struct Pools {
 }
 
 impl Pools {
-    pub fn new(blocks_pool: BytesPool) -> Pools {
+    pub fn new(
+        blocks_pool: BytesPool,
+        iter_entries_pool: pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
+    )
+        -> Pools
+    {
         Pools {
             blocks_pool,
             lookup_requests_queue_pool: pool::Pool::new(),
             iter_requests_queue_pool: pool::Pool::new(),
             outcomes_pool: pool::Pool::new(),
-            iter_cache_entries_pool: pool::Pool::new(),
+            iter_cache_entries_pool: iter_entries_pool,
             iter_block_entries_pool: pool::Pool::new(),
         }
     }

@@ -143,6 +143,7 @@ impl GenServer {
                 parent_supervisor,
                 thread_pool,
                 blocks_pool,
+                iter_entries_pool: pool::Pool::new(),
                 butcher_pid,
                 wheels_pid,
                 params,
@@ -169,6 +170,7 @@ struct State<J> where J: edeltraud::Job {
     parent_supervisor: SupervisorPid,
     thread_pool: edeltraud::Edeltraud<J>,
     blocks_pool: BytesPool,
+    iter_entries_pool: pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
     butcher_pid: butcher::Pid,
     wheels_pid: wheels::Pid,
     params: Params,
@@ -400,7 +402,7 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
-    let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
+    let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone(), state.iter_entries_pool.clone());
     let mut search_trees = Set::new();
     let mut search_tree_refs = BinMerger::new();
     let mut blocks_total = 0;
@@ -504,7 +506,9 @@ where J: edeltraud::Job + From<job::Job>,
         let maybe_task_args = maybe_merge_search_trees(
             &mut search_tree_refs,
             &search_trees,
+            &state.thread_pool,
             &state.blocks_pool,
+            &state.iter_entries_pool,
             &merger_iters_pool,
             &state.wheels_pid,
             state.params.search_tree_params.tree_block_size,
@@ -597,7 +601,9 @@ where J: edeltraud::Job + From<job::Job>,
                 let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
                     &search_trees,
+                    &state.thread_pool,
                     &state.blocks_pool,
+                    &state.iter_entries_pool,
                     &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
@@ -935,7 +941,9 @@ where J: edeltraud::Job + From<job::Job>,
                 let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
                     &search_trees,
+                    &state.thread_pool,
                     &state.blocks_pool,
+                    &state.iter_entries_pool,
                     &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
@@ -1007,15 +1015,18 @@ impl BinMerger {
     }
 }
 
-fn maybe_merge_search_trees(
+fn maybe_merge_search_trees<J>(
     search_tree_refs: &mut BinMerger,
     search_trees: &Set<search_tree::Pid>,
+    thread_pool: &edeltraud::Edeltraud<J>,
     blocks_pool: &BytesPool,
+    iter_entries_pool: &pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
     merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIter>>,
     wheels_pid: &wheels::Pid,
     tree_block_size: usize,
 )
-    -> Option<task::TaskArgs>
+    -> Option<task::TaskArgs<J>>
+where J: edeltraud::Job
 {
     let (search_tree_a_ref, search_tree_b_ref) = search_tree_refs.pop()?;
     let search_tree_a_pid = search_trees.get(search_tree_a_ref.search_tree_ref).unwrap().clone();
@@ -1026,7 +1037,9 @@ fn maybe_merge_search_trees(
             search_tree_b_ref: search_tree_b_ref.search_tree_ref,
             search_tree_a_pid,
             search_tree_b_pid,
+            thread_pool: thread_pool.clone(),
             blocks_pool: blocks_pool.clone(),
+            iter_entries_pool: iter_entries_pool.clone(),
             merger_iters_pool: merger_iters_pool.clone(),
             wheels_pid: wheels_pid.clone(),
             tree_block_size,

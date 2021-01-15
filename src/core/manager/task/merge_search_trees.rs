@@ -26,6 +26,7 @@ use alloc_pool::{
 
 use crate::{
     kv,
+    job,
     wheels,
     storage,
     blockwheel,
@@ -37,12 +38,14 @@ use crate::{
     },
 };
 
-pub struct Args {
+pub struct Args<J> where J: edeltraud::Job {
     pub search_tree_a_ref: Ref,
     pub search_tree_b_ref: Ref,
     pub search_tree_a_pid: search_tree::Pid,
     pub search_tree_b_pid: search_tree::Pid,
+    pub thread_pool: edeltraud::Edeltraud<J>,
     pub blocks_pool: BytesPool,
+    pub iter_entries_pool: pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
     pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIter>>,
     pub wheels_pid: wheels::Pid,
     pub tree_block_size: usize,
@@ -85,10 +88,13 @@ pub enum Error {
     DeleteBlock(blockwheel::DeleteBlockError),
 }
 
-pub async fn run(
-    mut args: Args,
+pub async fn run<J>(
+    mut args: Args<J>,
 )
     -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
 {
     let mut remove_tasks = FuturesUnordered::new();
 
@@ -145,20 +151,25 @@ pub async fn run(
     Ok(done)
 }
 
-async fn perform_merge(
+async fn perform_merge<J>(
     Args {
         search_tree_a_ref,
         search_tree_b_ref,
         mut search_tree_a_pid,
         mut search_tree_b_pid,
+        thread_pool,
         blocks_pool,
+        iter_entries_pool,
         merger_iters_pool,
         mut wheels_pid,
         tree_block_size,
-    }: Args,
+    }: Args<J>,
     tree_items_count: usize,
 )
     -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
 {
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(

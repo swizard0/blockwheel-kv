@@ -1,3 +1,6 @@
+use crate::{
+    job,
+};
 
 pub mod info_butcher;
 pub mod insert_butcher;
@@ -14,7 +17,7 @@ pub mod merge_search_trees;
 pub mod merge_lookup_range;
 pub mod retrieve_value;
 
-pub enum TaskArgs {
+pub enum TaskArgs<J> where J: edeltraud::Job {
     InfoButcher(info_butcher::Args),
     InsertButcher(insert_butcher::Args),
     LookupButcher(lookup_butcher::Args),
@@ -26,7 +29,7 @@ pub enum TaskArgs {
     LookupRangeSearchTree(lookup_range_search_tree::Args),
     FlushSearchTree(flush_search_tree::Args),
     DemolishSearchTree(demolish_search_tree::Args),
-    MergeSearchTrees(merge_search_trees::Args),
+    MergeSearchTrees(merge_search_trees::Args<J>),
     MergeLookupRange(merge_lookup_range::Args),
     RetrieveValue(retrieve_value::Args),
 }
@@ -66,7 +69,11 @@ pub enum Error {
     RetrieveValue(retrieve_value::Error),
 }
 
-pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
+pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     Ok(match args {
         TaskArgs::InfoButcher(args) =>
             TaskDone::InfoButcher(
