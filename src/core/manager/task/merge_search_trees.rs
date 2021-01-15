@@ -1,3 +1,10 @@
+use futures::{
+    future,
+    stream::{
+        FuturesUnordered,
+    },
+    StreamExt,
+};
 
 use o1::set::Ref;
 
@@ -72,9 +79,73 @@ pub enum Error {
     BlockSerializerEntry(storage::Error),
     WriteBlock(blockwheel::WriteBlockError),
     Merger(merger::Error),
+    WheelNotFound {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    DeleteBlock(blockwheel::DeleteBlockError),
 }
 
 pub async fn run(
+    mut args: Args,
+)
+    -> Result<Done, Error>
+{
+    let mut remove_tasks = FuturesUnordered::new();
+
+    let mut tree_items_count = 0;
+
+    let mut merger = merger_start(
+        args.search_tree_a_ref,
+        args.search_tree_b_ref,
+        &mut args.search_tree_a_pid,
+        &mut args.search_tree_b_pid,
+        &args.merger_iters_pool,
+    ).await?;
+
+    let remove_add = |key_value| {
+        match key_value {
+            kv::KeyValuePair {
+                value_cell: kv::ValueCell {
+                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                    ..
+                },
+                ..
+            } => {
+                let mut wheels_pid = args.wheels_pid.clone();
+                remove_tasks.push(async move {
+                    let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
+                        .map_err(|ero::NoProcError| Error::WheelsGone)?
+                        .ok_or_else(|| Error::WheelNotFound {
+                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                        })?;
+                    let blockwheel::Deleted = wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await
+                        .map_err(Error::DeleteBlock)?;
+                    Ok(())
+                });
+            },
+            _ =>
+                (),
+        }
+    };
+
+    while let Some(..) = merger.next_with_deprecated(remove_add).await.map_err(Error::Merger)? {
+        tree_items_count += 1;
+    }
+
+    let join_task = future::try_join(
+        perform_merge(args, tree_items_count),
+        async move {
+            while let Some(result) = remove_tasks.next().await {
+                let () = result?;
+            }
+            Ok(())
+        },
+    );
+    let (done, ()) = join_task.await?;
+    Ok(done)
+}
+
+async fn perform_merge(
     Args {
         search_tree_a_ref,
         search_tree_b_ref,
@@ -85,23 +156,10 @@ pub async fn run(
         mut wheels_pid,
         tree_block_size,
     }: Args,
+    tree_items_count: usize,
 )
     -> Result<Done, Error>
 {
-    let mut tree_items_count = 0;
-
-    let mut merger = merger_start(
-        search_tree_a_ref,
-        search_tree_b_ref,
-        &mut search_tree_a_pid,
-        &mut search_tree_b_pid,
-        &merger_iters_pool,
-    ).await?;
-
-    while let Some(..) = merger.next().await.map_err(Error::Merger)? {
-        tree_items_count += 1;
-    }
-
     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
     let mut fold_ctx = fold::Context::new(
         plan::Context::new(&sketch),

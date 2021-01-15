@@ -61,6 +61,16 @@ impl<V> ItersMerger<V> {
 
 impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIter>> {
     pub async fn next(&mut self) -> Result<Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>, Error> {
+        self.next_with_deprecated(|_| ()).await
+    }
+
+    pub async fn next_with_deprecated<F>(
+        &mut self,
+        mut deprecated: F,
+    )
+        -> Result<Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>, Error>
+    where F: FnMut(kv::KeyValuePair<storage::OwnedValueBlockRef>)
+    {
         assert!(self.advance_head_idx.is_none());
         let mut cursor_idx = 0;
         while cursor_idx < self.iters.len() {
@@ -127,10 +137,14 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIter>> {
                     match best_item {
                         None =>
                             best_item = Some(front_item),
-                        Some(kv::KeyValuePair { ref value_cell, .. }) if value_cell.version < front_item.value_cell.version =>
-                            best_item = Some(front_item),
-                        Some(..) =>
-                            (),
+                        Some(prev_best) =>
+                            if prev_best.value_cell.version < front_item.value_cell.version {
+                                deprecated(prev_best);
+                                best_item = Some(front_item);
+                            } else {
+                                deprecated(front_item);
+                                best_item = Some(prev_best);
+                            },
                     },
             }
             self.advance_head_idx = current_iter.advance_next_idx;
