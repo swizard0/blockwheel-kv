@@ -87,13 +87,14 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                 block_ref: search_block_ref.clone(),
                                 error,
                             })?;
-                        match iter_entry.key.key_bytes.cmp(&request_key.key.key_bytes) {
+                        match iter_entry.key.cmp(&request_key.key.key_bytes) {
                             Ordering::Less => {
                                 maybe_request = Some(request_key);
                                 maybe_entry = entries_iter.next();
                             },
                             Ordering::Equal => {
-                                let value_cell = match iter_entry.value_cell {
+                                let owned_entry = entries_iter.to_owned_entry(&iter_entry);
+                                let value_cell = match owned_entry.value_cell {
                                     kv::ValueCell { version, cell: kv::Cell::Value(ref value_ref), } =>
                                         kv::ValueCell {
                                             version,
@@ -113,7 +114,8 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
                                 maybe_entry = Some(Ok(iter_entry));
                             },
                             Ordering::Greater => {
-                                let outcome = match iter_entry.jump_ref {
+                                let owned_jump_ref = entries_iter.to_owned_jump_ref(&iter_entry.jump_ref);
+                                let outcome = match owned_jump_ref {
                                     storage::OwnedJumpRef::None =>
                                         Outcome::NotFound,
                                     storage::OwnedJumpRef::Local(storage::LocalRef { ref block_id, }) =>

@@ -88,14 +88,14 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
             SearchRangeBounds { range_from: Bound::Unbounded, .. } =>
                 (),
             SearchRangeBounds { range_from: Bound::Excluded(key), .. } =>
-                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                match key.key_bytes[..].cmp(iter_entry.key) {
                     Ordering::Less =>
                         (),
                     Ordering::Equal | Ordering::Greater =>
                         continue,
                 },
             SearchRangeBounds { range_from: Bound::Included(key), .. } =>
-                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                match key.key_bytes[..].cmp(iter_entry.key) {
                     Ordering::Less | Ordering::Equal =>
                         (),
                     Ordering::Greater =>
@@ -103,7 +103,8 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
                 },
         }
 
-        let maybe_jump_block_ref = match iter_entry.jump_ref {
+        let owned_jump_ref = storage::OwnedJumpRef::from_jump_ref(&iter_entry.jump_ref, &block_bytes);
+        let maybe_jump_block_ref = match owned_jump_ref {
             storage::OwnedJumpRef::None =>
                 None,
             storage::OwnedJumpRef::Local(storage::LocalRef { block_id, }) =>
@@ -119,14 +120,14 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
             SearchRangeBounds { range_to: Bound::Unbounded, .. } =>
                 false,
             SearchRangeBounds { range_to: Bound::Excluded(key), .. } =>
-                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                match key.key_bytes[..].cmp(iter_entry.key) {
                     Ordering::Less | Ordering::Equal =>
                         true,
                     Ordering::Greater =>
                         false,
                 },
             SearchRangeBounds { range_to: Bound::Included(key), .. } =>
-                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                match key.key_bytes[..].cmp(iter_entry.key) {
                     Ordering::Less  =>
                         true,
                     Ordering::Equal | Ordering::Greater =>
@@ -134,8 +135,9 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
                 },
         };
 
-        let key = iter_entry.key;
-        let value_cell = match iter_entry.value_cell {
+        let owned_entry = storage::OwnedEntry::from_entry(&iter_entry, &block_bytes);
+        let key = owned_entry.key;
+        let value_cell = match owned_entry.value_cell {
             kv::ValueCell { version, cell: kv::Cell::Value(value_ref), } =>
                 kv::ValueCell {
                     version,

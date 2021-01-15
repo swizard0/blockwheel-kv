@@ -590,7 +590,7 @@ async fn stress_loop(
                             let iter_entry = maybe_entry
                                 .map_err(Error::Storage)?;
                             checked_entries += 1;
-                            match data.index.get(&iter_entry.key) {
+                            match data.index.get(iter_entry.key) {
                                 None =>
                                     return Err(Error::BackwardIterKeyNotFound),
                                 Some(..) =>
