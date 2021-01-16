@@ -1047,6 +1047,7 @@ where J: edeltraud::Job + From<job::Job>,
                     merge_search_trees_tasks_count += 1;
                 }
 
+                merge_search_trees_tasks_count -= 1;
                 log::info!(
                     "two search_tree merged: currently {} in action, {} merging and BinMerger = {:?}, need_merge = {}",
                     search_trees.len(),
