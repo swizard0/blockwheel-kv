@@ -704,15 +704,18 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 log::info!(
-                    "cache flushed: {} invalidated, currently {} in action and BinMerger = {:?}",
+                    "cache flushed: {} invalidated, currently {} in action and BinMerger = {:?}, need_merge = {}",
                     invalidated_count,
                     search_trees.len(),
                     search_tree_refs.powers
                         .iter()
-                        .map(|(power, refs)| {
-                            format!("{{ power: {}, trees: {} }}", power, refs.len())
+                        .flat_map(|(power, refs)| if refs.is_empty() {
+                            None
+                        } else {
+                            Some(format!("{{ power: {}, trees: {} }}", power, refs.len()))
                         })
                         .collect::<Vec<_>>(),
+                    search_tree_refs.need_merge.len(),
                 );
             },
 
@@ -1039,14 +1042,17 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 log::info!(
-                    "two search_tree merged: currently {} in action and BinMerger = {:?}",
+                    "two search_tree merged: currently {} in action and BinMerger = {:?}, need_merge = {}",
                     search_trees.len(),
                     search_tree_refs.powers
                         .iter()
-                        .map(|(power, refs)| {
-                            format!("{{ power: {}, trees: {} }}", power, refs.len())
+                        .flat_map(|(power, refs)| if refs.is_empty() {
+                            None
+                        } else {
+                            Some(format!("{{ power: {}, trees: {} }}", power, refs.len()))
                         })
                         .collect::<Vec<_>>(),
+                    search_tree_refs.need_merge.len(),
                 );
             },
 
