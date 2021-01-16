@@ -1,3 +1,10 @@
+use std::{
+    time::{
+        Instant,
+        Duration,
+    },
+};
+
 use futures::{
     future,
     stream::{
@@ -52,11 +59,19 @@ pub struct Args<J> where J: edeltraud::Job {
     pub tree_block_size: usize,
 }
 
+#[derive(Default, Debug)]
+pub struct Timings {
+    pub count: Duration,
+    pub merge: Duration,
+    pub total: Duration,
+}
+
 pub struct Done {
     pub search_tree_a_ref: Ref,
     pub search_tree_b_ref: Ref,
     pub root_block: BlockRef,
     pub items_count: usize,
+    pub timings: Timings,
 }
 
 #[derive(Debug)]
@@ -96,6 +111,9 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    let run_start = Instant::now();
+    let mut timings = Timings::default();
+
     let mut remove_tasks = FuturesUnordered::new();
 
     let mut tree_items_count = 0;
@@ -137,7 +155,9 @@ where J: edeltraud::Job + From<job::Job>,
     while let Some(..) = merger.next_with_deprecated(remove_add).await.map_err(Error::Merger)? {
         tree_items_count += 1;
     }
+    timings.count += run_start.elapsed();
 
+    let merge_start = Instant::now();
     let join_task = future::try_join(
         perform_merge(args, tree_items_count),
         async move {
@@ -147,7 +167,12 @@ where J: edeltraud::Job + From<job::Job>,
             Ok(())
         },
     );
-    let (done, ()) = join_task.await?;
+    let (mut done, ()) = join_task.await?;
+    timings.merge += merge_start.elapsed();
+
+    timings.total += run_start.elapsed();
+    done.timings = timings;
+
     Ok(done)
 }
 
@@ -369,6 +394,7 @@ where J: edeltraud::Job + From<job::Job>,
         search_tree_b_ref,
         root_block,
         items_count: tree_items_count,
+        timings: Timings::default(),
     })
 }
 
