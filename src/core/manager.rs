@@ -683,6 +683,8 @@ where J: edeltraud::Job + From<job::Job>,
                     bg_tasks_count += 1;
                 }
 
+                let mut invalidated_count = 0;
+
                 // maybe invalidate on-fly butcher requests
                 for (request_ref, LookupRequest { key, butcher_status, pending_count, .. }) in lookup_requests.iter_mut() {
                     if let LookupRequestButcherStatus::NotReady = butcher_status {
@@ -697,8 +699,21 @@ where J: edeltraud::Job + From<job::Job>,
                         )));
                         tasks_count += 1;
                         *pending_count += 1;
+                        invalidated_count += 1;
                     }
                 }
+
+                log::info!(
+                    "cache flushed: {} invalidated, currently {} in action and BinMerger = {:?}",
+                    invalidated_count,
+                    search_trees.len(),
+                    search_tree_refs.powers
+                        .iter()
+                        .map(|(power, refs)| {
+                            format!("{{ power: {}, trees: {} }}", power, refs.len())
+                        })
+                        .collect::<Vec<_>>(),
+                );
             },
 
             Event::Request(None) => {
@@ -1022,6 +1037,17 @@ where J: edeltraud::Job + From<job::Job>,
                     bg_tasks_push(task_args);
                     bg_tasks_count += 1;
                 }
+
+                log::info!(
+                    "two search_tree merged: currently {} in action and BinMerger = {:?}",
+                    search_trees.len(),
+                    search_tree_refs.powers
+                        .iter()
+                        .map(|(power, refs)| {
+                            format!("{{ power: {}, trees: {} }}", power, refs.len())
+                        })
+                        .collect::<Vec<_>>(),
+                );
             },
 
             Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) => {
