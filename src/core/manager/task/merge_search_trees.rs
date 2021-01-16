@@ -63,6 +63,9 @@ pub struct Args<J> where J: edeltraud::Job {
 pub struct Timings {
     pub count: Duration,
     pub merge: Duration,
+    pub merge_next: Duration,
+    pub block_prepare: Duration,
+    pub block_write: Duration,
     pub total: Duration,
 }
 
@@ -159,7 +162,7 @@ where J: edeltraud::Job + From<job::Job>,
 
     let merge_start = Instant::now();
     let join_task = future::try_join(
-        perform_merge(args, tree_items_count),
+        perform_merge(args, tree_items_count, timings),
         async move {
             while let Some(result) = remove_tasks.next().await {
                 let () = result?;
@@ -168,11 +171,9 @@ where J: edeltraud::Job + From<job::Job>,
         },
     );
     let (mut done, ()) = join_task.await?;
-    timings.merge += merge_start.elapsed();
+    done.timings.merge += merge_start.elapsed();
 
-    timings.total += run_start.elapsed();
-    done.timings = timings;
-
+    done.timings.total += run_start.elapsed();
     Ok(done)
 }
 
@@ -225,6 +226,7 @@ async fn perform_merge<J>(
         tree_block_size,
     }: Args<J>,
     tree_items_count: usize,
+    mut timings: Timings,
 )
     -> Result<Done, Error>
 where J: edeltraud::Job + From<job::Job>,
@@ -307,9 +309,12 @@ where J: edeltraud::Job + From<job::Job>,
                 next,
                 ..
             })) => {
+                let now = Instant::now();
                 let kv::KeyValuePair { key, value_cell, } = merger.next().await
                     .map_err(Error::Merger)?
                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
+                timings.merge_next += now.elapsed();
+
                 let child_ref_taken = child_ref.take();
                 let owned_jump_ref = match child_ref_taken {
                     None =>
@@ -352,6 +357,7 @@ where J: edeltraud::Job + From<job::Job>,
                     return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index, block_index, });
                 }
 
+                let now = Instant::now();
                 let job_args = JobArgs {
                     block_entries,
                     node_type,
@@ -362,9 +368,12 @@ where J: edeltraud::Job + From<job::Job>,
                 let job_output: job::JobOutput = job_output.into();
                 let job::MergeSearchTreesDone(job_result) = job_output.into();
                 let JobDone { block_bytes, } = job_result?;
+                timings.block_prepare += now.elapsed();
 
+                let now = Instant::now();
                 let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
                     .map_err(Error::WriteBlock)?;
+                timings.block_write += now.elapsed();
                 child_ref = Some(BlockRef {
                     blockwheel_filename: wheel_ref.blockwheel_filename,
                     block_id,
@@ -394,7 +403,7 @@ where J: edeltraud::Job + From<job::Job>,
         search_tree_b_ref,
         root_block,
         items_count: tree_items_count,
-        timings: Timings::default(),
+        timings,
     })
 }
 
