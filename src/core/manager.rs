@@ -509,6 +509,8 @@ where J: edeltraud::Job + From<job::Job>,
         });
     };
 
+    let mut merge_search_trees_tasks_count = 0;
+
     enum Mode {
         Regular,
         Flushing { done_reply_tx: oneshot::Sender<Flushed>, },
@@ -530,6 +532,7 @@ where J: edeltraud::Job + From<job::Job>,
         if let Some(task_args) = maybe_task_args {
             bg_tasks_push(task_args);
             bg_tasks_count += 1;
+            merge_search_trees_tasks_count += 1;
             continue;
         }
         break;
@@ -681,6 +684,7 @@ where J: edeltraud::Job + From<job::Job>,
                 if let Some(task_args) = maybe_task_args {
                     bg_tasks_push(task_args);
                     bg_tasks_count += 1;
+                    merge_search_trees_tasks_count += 1;
                 }
 
                 let mut invalidated_count = 0;
@@ -704,9 +708,10 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 log::info!(
-                    "cache flushed: {} invalidated, currently {} in action and BinMerger = {:?}, need_merge = {}",
+                    "cache flushed: {} invalidated, currently {} in action, {} merging and BinMerger = {:?}, need_merge = {}",
                     invalidated_count,
                     search_trees.len(),
+                    merge_search_trees_tasks_count,
                     search_tree_refs.powers
                         .iter()
                         .flat_map(|(power, refs)| if refs.is_empty() {
@@ -1039,11 +1044,13 @@ where J: edeltraud::Job + From<job::Job>,
                 if let Some(task_args) = maybe_task_args {
                     bg_tasks_push(task_args);
                     bg_tasks_count += 1;
+                    merge_search_trees_tasks_count += 1;
                 }
 
                 log::info!(
-                    "two search_tree merged: currently {} in action and BinMerger = {:?}, need_merge = {}",
+                    "two search_tree merged: currently {} in action, {} merging and BinMerger = {:?}, need_merge = {}",
                     search_trees.len(),
+                    merge_search_trees_tasks_count,
                     search_tree_refs.powers
                         .iter()
                         .flat_map(|(power, refs)| if refs.is_empty() {
