@@ -8,6 +8,7 @@ pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
     SearchTreeBootstrapBlock(core::search_tree::task::bootstrap::BlockJobArgs),
     SearchTreeBootstrapLayout(core::search_tree::task::bootstrap::LayoutJobArgs),
+    SearchTreeSearchCache(core::search_tree::task::search_cache::JobArgs),
     SearchTreeSearchBlock(core::search_tree::task::search_block::JobArgs),
     SearchTreeIterCache(core::search_tree::task::iter_cache::JobArgs),
     SearchTreeIterBlock(core::search_tree::task::iter_block::JobArgs),
@@ -18,6 +19,7 @@ pub enum JobOutput {
     BlockwheelFs(blockwheel::job::JobOutput),
     SearchTreeBootstrapBlock(SearchTreeBootstrapBlockDone),
     SearchTreeBootstrapLayout(SearchTreeBootstrapLayoutDone),
+    SearchTreeSearchCache(SearchTreeSearchCacheDone),
     SearchTreeSearchBlock(SearchTreeSearchBlockDone),
     SearchTreeIterCache(SearchTreeIterCacheDone),
     SearchTreeIterBlock(SearchTreeIterBlockDone),
@@ -38,6 +40,10 @@ impl edeltraud::Job for Job {
             Job::SearchTreeBootstrapLayout(args) =>
                 JobOutput::SearchTreeBootstrapLayout(SearchTreeBootstrapLayoutDone(
                     core::search_tree::task::bootstrap::layout_job(args),
+                )),
+            Job::SearchTreeSearchCache(args) =>
+                JobOutput::SearchTreeSearchCache(SearchTreeSearchCacheDone(
+                    core::search_tree::task::search_cache::job(args),
                 )),
             Job::SearchTreeSearchBlock(args) =>
                 JobOutput::SearchTreeSearchBlock(SearchTreeSearchBlockDone(
@@ -85,6 +91,21 @@ impl From<JobOutput> for SearchTreeBootstrapLayoutDone {
                 done,
             _other =>
                 panic!("expected JobOutput::SearchTreeBootstrapLayout but got other"),
+        }
+    }
+}
+
+pub struct SearchTreeSearchCacheDone(
+    pub core::search_tree::task::search_cache::JobOutput,
+);
+
+impl From<JobOutput> for SearchTreeSearchCacheDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::SearchTreeSearchCache(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::SearchTreeSearchCache but got other"),
         }
     }
 }

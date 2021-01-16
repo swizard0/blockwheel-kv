@@ -562,11 +562,12 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Lookup(lookup_request))) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        let result = cache.get(&*lookup_request.key.key_bytes)
-                            .cloned();
-                        if let Err(_send_error) = lookup_request.reply_tx.send(Ok(result.map(From::from))) {
-                            log::warn!("client canceled lookup request");
-                        }
+                        tasks.push(task::run_args(task::TaskArgs::SearchCache(task::search_cache::Args {
+                            lookup_request,
+                            cache: cache.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                        })));
+                        tasks_count += 1;
                     },
                     Mode::Regular { root_block, } => {
                         let maybe_task_args = async_tree.apply_lookup_request(
@@ -746,6 +747,9 @@ where J: edeltraud::Job + From<job::Job>,
                     },
                 }
             },
+
+            Event::Task(Ok(task::TaskDone::SearchCache(task::search_cache::Done))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, mut outcomes, }))) => {
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
