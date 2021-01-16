@@ -14,10 +14,7 @@ use std::{
 
 use futures::{
     select,
-    stream::{
-        self,
-        FuturesUnordered,
-    },
+    stream,
     channel::{
         mpsc,
         oneshot,
@@ -324,29 +321,38 @@ enum Error {
     Task(task::Error),
 }
 
-async fn busyloop<J>(_child_supervisor_pid: SupervisorPid, mut state: State<J>) -> Result<(), ErrorSeverity<State<J>, Error>>
+async fn busyloop<J>(mut child_supervisor_pid: SupervisorPid, mut state: State<J>) -> Result<(), ErrorSeverity<State<J>, Error>>
 where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
     let mut async_tree = AsyncTree::new();
-    let mut tasks = FuturesUnordered::new();
-    let mut tasks_count = 0;
 
     let (iter_rec_tx, mut iter_rec_rx) = mpsc::channel(0);
 
+    let (tasks_tx, tasks_rx) = mpsc::channel(0);
+    let mut fused_tasks_rx = tasks_rx.fuse();
+    let mut tasks_count = 0;
+
+    let mut tasks_push = |args| {
+        let mut tasks_tx = tasks_tx.clone();
+        let task = task::run_args(args);
+        child_supervisor_pid.spawn_link_temporary(async move {
+            let task_result = task.await;
+            tasks_tx.send(task_result).await.ok();
+        });
+    };
+
     match &state.mode {
         Mode::CacheBootstrap { cache, } => {
-            tasks.push(
-                task::run_args(
-                    task::TaskArgs::Bootstrap(task::bootstrap::Args {
-                        cache: cache.clone(),
-                        thread_pool: state.thread_pool.clone(),
-                        blocks_pool: state.pools.blocks_pool.clone(),
-                        wheels_pid: state.wheels_pid.clone(),
-                        values_inline_size_limit: state.params.values_inline_size_limit,
-                    }),
-                ),
+            tasks_push(
+                task::TaskArgs::Bootstrap(task::bootstrap::Args {
+                    cache: cache.clone(),
+                    thread_pool: state.thread_pool.clone(),
+                    blocks_pool: state.pools.blocks_pool.clone(),
+                    wheels_pid: state.wheels_pid.clone(),
+                    values_inline_size_limit: state.params.values_inline_size_limit,
+                }),
             );
             tasks_count += 1;
         },
@@ -389,7 +395,7 @@ where J: edeltraud::Job + From<job::Job>,
                 select! {
                     result = state.fused_request_rx.next() =>
                         Event::Request(result),
-                    result = tasks.next() => match result {
+                    result = fused_tasks_rx.next() => match result {
                         None =>
                             unreachable!(),
                         Some(task) => {
@@ -435,15 +441,17 @@ where J: edeltraud::Job + From<job::Job>,
                                 state.params.iter_send_buffer,
                             );
                             if let Some(task_args) = maybe_task_args {
-                                tasks.push(task::run_args(task_args));
+                                tasks_push(task_args);
                                 tasks_count += 1;
                             }
-                            tasks.push(task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
-                                done_reply_tx,
-                                block_items_reply_rx: reply_rx,
-                                wheels_pid: state.wheels_pid.clone(),
-                                remove_tasks_limit: state.params.remove_tasks_limit,
-                            })));
+                            tasks_push(
+                                task::TaskArgs::Demolish(task::demolish::Args {
+                                    done_reply_tx,
+                                    block_items_reply_rx: reply_rx,
+                                    wheels_pid: state.wheels_pid.clone(),
+                                    remove_tasks_limit: state.params.remove_tasks_limit,
+                                }),
+                            );
                             tasks_count += 1;
                         },
                         Mode::CacheBootstrap { .. } =>
@@ -458,7 +466,7 @@ where J: edeltraud::Job + From<job::Job>,
                 log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
                 flush_mode = FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, };
                 select! {
-                    result = tasks.next() => match result {
+                    result = fused_tasks_rx.next() => match result {
                         None =>
                             unreachable!(),
                         Some(task) => {
@@ -510,7 +518,7 @@ where J: edeltraud::Job + From<job::Job>,
                             &state.wheels_pid,
                         );
                         if let Some(task_args) = maybe_task_args {
-                            tasks.push(task::run_args(task_args));
+                            tasks_push(task_args);
                             tasks_count += 1;
                         }
                     },
@@ -519,16 +527,16 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Iter { range, reply_tx, })) =>
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
-                        tasks.push(task::run_args(task::TaskArgs::IterCache(
-                            task::iter_cache::Args {
+                        tasks_push(
+                            task::TaskArgs::IterCache(task::iter_cache::Args {
                                 cache: cache.clone(),
                                 thread_pool: state.thread_pool.clone(),
                                 iter_cache_entries_pool: state.pools.iter_cache_entries_pool.clone(),
                                 range,
                                 reply_tx,
                                 iter_send_buffer: state.params.iter_send_buffer,
-                            },
-                        )));
+                            }),
+                        );
                         tasks_count += 1;
                     },
                     Mode::Regular { root_block, } => {
@@ -547,7 +555,7 @@ where J: edeltraud::Job + From<job::Job>,
                             state.params.iter_send_buffer,
                         );
                         if let Some(task_args) = maybe_task_args {
-                            tasks.push(task::run_args(task_args));
+                            tasks_push(task_args);
                             tasks_count += 1;
                         }
                     }
@@ -601,7 +609,7 @@ where J: edeltraud::Job + From<job::Job>,
                     state.params.iter_send_buffer,
                 );
                 if let Some(task_args) = maybe_task_args {
-                    tasks.push(task::run_args(task_args));
+                    tasks_push(task_args);
                     tasks_count += 1;
                 }
             },
@@ -627,32 +635,28 @@ where J: edeltraud::Job + From<job::Job>,
                         if !lookup_requests_queue.is_empty() {
                             let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
-                            tasks.push(
-                                task::run_args(
-                                    task::TaskArgs::SearchBlock(task::search_block::Args {
-                                        block_ref: block_ref.clone(),
-                                        thread_pool: state.thread_pool.clone(),
-                                        block_bytes: block_bytes.clone(),
-                                        lookup_requests_queue,
-                                        outcomes,
-                                    }),
-                                ),
+                            tasks_push(
+                                task::TaskArgs::SearchBlock(task::search_block::Args {
+                                    block_ref: block_ref.clone(),
+                                    thread_pool: state.thread_pool.clone(),
+                                    block_bytes: block_bytes.clone(),
+                                    lookup_requests_queue,
+                                    outcomes,
+                                }),
                             );
                             tasks_count += 1;
                         }
                         for iter_request in iter_requests_queue.drain(..) {
-                            tasks.push(
-                                task::run_args(
-                                    task::TaskArgs::IterBlock(task::iter_block::Args {
-                                        block_ref: block_ref.clone(),
-                                        iter_request,
-                                        iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
-                                        thread_pool: state.thread_pool.clone(),
-                                        block_bytes: block_bytes.clone(),
-                                        iter_rec_tx: iter_rec_tx.clone(),
-                                        iter_send_buffer: state.params.iter_send_buffer,
-                                    }),
-                                ),
+                            tasks_push(
+                                task::TaskArgs::IterBlock(task::iter_block::Args {
+                                    block_ref: block_ref.clone(),
+                                    iter_request,
+                                    iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
+                                    thread_pool: state.thread_pool.clone(),
+                                    block_bytes: block_bytes.clone(),
+                                    iter_rec_tx: iter_rec_tx.clone(),
+                                    iter_send_buffer: state.params.iter_send_buffer,
+                                }),
                             );
                             tasks_count += 1;
                         }
@@ -683,7 +687,7 @@ where J: edeltraud::Job + From<job::Job>,
                                 &state.wheels_pid,
                             );
                             if let Some(task_args) = maybe_task_args {
-                                tasks.push(task::run_args(task_args));
+                                tasks_push(task_args);
                                 tasks_count += 1;
                             }
                         },
@@ -695,7 +699,7 @@ where J: edeltraud::Job + From<job::Job>,
                     &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
-                    tasks.push(task::run_args(task_args));
+                    tasks_push(task_args);
                     tasks_count += 1;
                 }
             },
@@ -710,7 +714,7 @@ where J: edeltraud::Job + From<job::Job>,
                     &state.pools.outcomes_pool,
                 );
                 if let Some(task_args) = maybe_task_args {
-                    tasks.push(task::run_args(task_args));
+                    tasks_push(task_args);
                     tasks_count += 1;
                 }
             },
