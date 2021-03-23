@@ -1,5 +1,8 @@
 use std::{
     fs,
+    path::{
+        PathBuf,
+    },
     collections::{
         HashMap,
     },
@@ -71,18 +74,25 @@ fn stress() {
     };
     let work_block_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * kv.tree_block_size;
 
+    let wheel_filename_a: PathBuf = "/tmp/blockwheel_kv_a_stress".into();
+    let wheel_filename_b: PathBuf = "/tmp/blockwheel_kv_b_stress".into();
+
     let params = Params {
         wheel_a: blockwheel::Params {
-            wheel_filename: "/tmp/blockwheel_kv_a_stress".into(),
-            init_wheel_size_bytes,
+            interpreter: blockwheel::InterpreterParams::FixedFile(blockwheel::FixedFileInterpreterParams {
+                wheel_filename: wheel_filename_a.clone(),
+                init_wheel_size_bytes,
+            }),
             work_block_size_bytes,
             lru_cache_size_bytes: 0,
             defrag_parallel_tasks_limit: 8,
             ..Default::default()
         },
         wheel_b: blockwheel::Params {
-            wheel_filename: "/tmp/blockwheel_kv_b_stress".into(),
-            init_wheel_size_bytes,
+            interpreter: blockwheel::InterpreterParams::FixedFile(blockwheel::FixedFileInterpreterParams {
+                wheel_filename: wheel_filename_b.clone(),
+                init_wheel_size_bytes,
+            }),
             work_block_size_bytes,
             lru_cache_size_bytes: 0,
             defrag_parallel_tasks_limit: 8,
@@ -99,16 +109,16 @@ fn stress() {
     };
     let mut counter = Counter::default();
 
-    fs::remove_file(&params.wheel_a.wheel_filename).ok();
-    fs::remove_file(&params.wheel_b.wheel_filename).ok();
+    fs::remove_file(&wheel_filename_a).ok();
+    fs::remove_file(&wheel_filename_b).ok();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
     // next load existing wheel and repeat stress
     counter.clear();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
-    fs::remove_file(&params.wheel_a.wheel_filename).ok();
-    fs::remove_file(&params.wheel_b.wheel_filename).ok();
+    fs::remove_file(&wheel_filename_a).ok();
+    fs::remove_file(&wheel_filename_b).ok();
 }
 
 #[derive(Clone)]
@@ -185,6 +195,33 @@ enum Error {
     BackwardIterKeyNotFound,
 }
 
+fn make_wheel_ref(
+    params: blockwheel::Params,
+    blocks_pool: &BytesPool,
+    supervisor_pid: &mut SupervisorPid,
+    thread_pool: &edeltraud::Edeltraud<job::Job>,
+)
+    -> wheels::WheelRef
+{
+    let blockwheel_filename = match &params.interpreter {
+        blockwheel::InterpreterParams::FixedFile(interpreter_params) =>
+            wheels::WheelFilename::from_path(&interpreter_params.wheel_filename, blocks_pool),
+        blockwheel::InterpreterParams::Ram(..) => {
+            let mut rng = rand::thread_rng();
+            let filename: String = (0 .. 16).map(|_| rng.gen::<char>()).collect();
+            wheels::WheelFilename::from_path(&filename, blocks_pool)
+        },
+    };
+
+    let wheel_gen_server = blockwheel::GenServer::new();
+    let blockwheel_pid = wheel_gen_server.pid();
+    supervisor_pid.spawn_link_permanent(
+        wheel_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params),
+    );
+
+    wheels::WheelRef { blockwheel_filename, blockwheel_pid, }
+}
+
 async fn stress_loop(
     params: Params,
     version_provider: &version::Provider,
@@ -203,37 +240,16 @@ async fn stress_loop(
         .build()
         .map_err(Error::ThreadPool)?;
 
-    let blockwheel_a_filename = wheels::WheelFilename::from_path(&params.wheel_a.wheel_filename, &blocks_pool);
-    let blockwheel_b_filename = wheels::WheelFilename::from_path(&params.wheel_b.wheel_filename, &blocks_pool);
+    let wheel_ref_a = make_wheel_ref(params.wheel_a, &blocks_pool, &mut supervisor_pid, &thread_pool);
+    let wheel_ref_b = make_wheel_ref(params.wheel_b, &blocks_pool, &mut supervisor_pid, &thread_pool);
 
-    let wheel_a_gen_server = blockwheel::GenServer::new();
-    let mut wheel_a_pid = wheel_a_gen_server.pid();
-    supervisor_pid.spawn_link_permanent(
-        wheel_a_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params.wheel_a),
-    );
-
-    let wheel_b_gen_server = blockwheel::GenServer::new();
-    let mut wheel_b_pid = wheel_b_gen_server.pid();
-    supervisor_pid.spawn_link_permanent(
-        wheel_b_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params.wheel_b),
-    );
+    let mut wheel_a_pid = wheel_ref_a.blockwheel_pid.clone();
+    let mut wheel_b_pid = wheel_ref_b.blockwheel_pid.clone();
 
     let wheels_gen_server = wheels::GenServer::new();
     let mut wheels_pid = wheels_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
-        wheels_gen_server.run(
-            vec![
-                wheels::WheelRef {
-                    blockwheel_filename: blockwheel_a_filename,
-                    blockwheel_pid: wheel_a_pid.clone(),
-                },
-                wheels::WheelRef {
-                    blockwheel_filename: blockwheel_b_filename,
-                    blockwheel_pid: wheel_b_pid.clone(),
-                },
-            ],
-            wheels::Params::default(),
-        ),
+        wheels_gen_server.run(vec![wheel_ref_a, wheel_ref_b], wheels::Params::default()),
     );
 
     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
@@ -399,18 +415,18 @@ async fn stress_loop(
             .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
         let info_b = wheel_b_pid.info().await
             .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
-        if data.data.is_empty() || rng.gen_range(0.0, 1.0) < 0.5 {
+        if data.data.is_empty() || rng.gen_range(0.0 .. 1.0) < 0.5 {
             // insert or remove task
             let prob_space = (info_a.wheel_size_bytes + info_b.wheel_size_bytes) as f64;
             let insert_prob_space = (info_a.bytes_free + info_b.bytes_free) as f64;
             let insert_prob = insert_prob_space / prob_space;
-            let dice = rng.gen_range(0.0, 1.0);
+            let dice = rng.gen_range(0.0 .. 1.0);
             if data.data.is_empty() || dice < insert_prob {
                 // insert task
                 let mut wheel_kv_pid = wheel_kv_pid.clone();
                 let blocks_pool = blocks_pool.clone();
-                let key_amount = rng.gen_range(1, limits.key_size_bytes);
-                let value_amount = rng.gen_range(1, limits.value_size_bytes);
+                let key_amount = rng.gen_range(1 .. limits.key_size_bytes);
+                let value_amount = rng.gen_range(1 .. limits.value_size_bytes);
 
                 log::debug!(
                     "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
@@ -453,7 +469,7 @@ async fn stress_loop(
             } else {
                 // remove task
                 let (key, value) = loop {
-                    let key_index = rng.gen_range(0, data.data.len());
+                    let key_index = rng.gen_range(0 .. data.data.len());
                     let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
                     match &value_cell.cell {
                         kv::Cell::Value(value) =>
@@ -488,11 +504,11 @@ async fn stress_loop(
             }
         } else {
             // lookup task
-            let key_index = rng.gen_range(0, data.data.len());
+            let key_index = rng.gen_range(0 .. data.data.len());
             let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
             let version_snapshot = data.current_version;
 
-            let lookup_kind = if rng.gen_range(0.0, 1.0) < 0.5 {
+            let lookup_kind = if rng.gen_range(0.0 .. 1.0) < 0.5 {
                 LookupKind::Single
             } else {
                 LookupKind::Range
