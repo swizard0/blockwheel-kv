@@ -287,7 +287,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                     None
                 } else {
                     let mut rng = rand::thread_rng();
-                    let offset = rng.gen_range(0, state.wheels.len());
+                    let offset = rng.gen_range(0 .. state.wheels.len());
                     Some(state.wheels[offset].clone())
                 };
                 if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
