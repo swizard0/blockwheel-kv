@@ -514,7 +514,7 @@ where J: edeltraud::Job + From<job::Job>,
     enum Mode {
         Regular,
         Flushing { done_reply_tx: oneshot::Sender<Flushed>, },
-    };
+    }
 
     let mut current_mode = Mode::Regular;
 

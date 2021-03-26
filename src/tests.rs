@@ -278,7 +278,7 @@ async fn stress_loop(
     }
 
     #[derive(Debug)]
-    enum LookupKind { Single, Range, };
+    enum LookupKind { Single, Range, }
 
     fn spawn_task<T>(
         supervisor_pid: &mut SupervisorPid,

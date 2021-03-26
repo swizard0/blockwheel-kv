@@ -372,7 +372,7 @@ where J: edeltraud::Job + From<job::Job>,
             flush_reply_tx: Option<oneshot::Sender<Flushed>>,
             demolish_reply_tx: Option<oneshot::Sender<Demolished>>,
         },
-    };
+    }
     let mut flush_mode = FlushMode::NoFlush;
 
     loop {
