@@ -3,10 +3,6 @@ use std::{
     sync::Arc,
     time::Duration,
     ops::RangeBounds,
-    collections::{
-        hash_map,
-        HashMap,
-    },
 };
 
 use futures::{
@@ -50,6 +46,7 @@ use crate::{
     core::{
         merger,
         butcher,
+        bin_merger,
         search_tree,
         MemCache,
         RequestInfo,
@@ -402,7 +399,7 @@ where J: edeltraud::Job + From<job::Job>,
 {
     let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
     let mut search_trees = Set::new();
-    let mut search_tree_refs = BinMerger::new();
+    let mut search_tree_refs = bin_merger::BinMerger::new();
     let mut blocks_total = 0;
 
     log::info!("loading search_tree roots from wheels");
@@ -446,10 +443,13 @@ where J: edeltraud::Job + From<job::Job>,
                             ),
                         );
                         let search_tree_ref = search_trees.insert(search_tree_pid);
-                        search_tree_refs.push(SearchTreeRef {
-                            search_tree_ref,
-                            items_count: tree_entries_count,
-                        });
+                        search_tree_refs.push(
+                            SearchTreeRef {
+                                search_tree_ref,
+                                items_count: tree_entries_count,
+                            },
+                            tree_entries_count,
+                        );
                     },
                     storage::NodeType::Leaf =>
                         (),
@@ -474,7 +474,7 @@ where J: edeltraud::Job + From<job::Job>,
 async fn busyloop<J>(
     mut child_supervisor_pid: SupervisorPid,
     mut search_trees: Set<search_tree::Pid>,
-    mut search_tree_refs: BinMerger,
+    mut search_tree_refs: bin_merger::BinMerger<SearchTreeRef>,
     search_tree_pools: search_tree::Pools,
     mut state: State<J>,
 )
@@ -670,7 +670,7 @@ where J: edeltraud::Job + From<job::Job>,
                     ),
                 );
                 let search_tree_ref = search_trees.insert(search_tree_pid.clone());
-                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count, });
+                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count, }, items_count);
                 let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
                     &search_trees,
@@ -708,19 +708,10 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 log::info!(
-                    "cache flushed: {} invalidated, currently {} in action, {} merging and BinMerger = {:?}, need_merge = {}",
+                    "cache flushed: {} invalidated, currently {} in action, {} merging",
                     invalidated_count,
                     search_trees.len(),
                     merge_search_trees_tasks_count,
-                    search_tree_refs.powers
-                        .iter()
-                        .flat_map(|(power, refs)| if refs.is_empty() {
-                            None
-                        } else {
-                            Some(format!("{{ power: {}, trees: {} }}", power, refs.len()))
-                        })
-                        .collect::<Vec<_>>(),
-                    search_tree_refs.need_merge.len(),
                 );
             },
 
@@ -1030,7 +1021,7 @@ where J: edeltraud::Job + From<job::Job>,
                     ),
                 );
                 let search_tree_ref = search_trees.insert(search_tree_pid);
-                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count: done.items_count, });
+                search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count: done.items_count, }, done.items_count);
                 let maybe_task_args = maybe_merge_search_trees(
                     &mut search_tree_refs,
                     &search_trees,
@@ -1049,20 +1040,11 @@ where J: edeltraud::Job + From<job::Job>,
 
                 merge_search_trees_tasks_count -= 1;
                 log::info!(
-                    "two search_tree of {} merged in {:?}: currently {} in action, {} merging and BinMerger = {:?}, need_merge = {}",
+                    "two search_tree of {} merged in {:?}: currently {} in action, {} merging",
                     done.items_count,
                     done.timings,
                     search_trees.len(),
                     merge_search_trees_tasks_count,
-                    search_tree_refs.powers
-                        .iter()
-                        .flat_map(|(power, refs)| if refs.is_empty() {
-                            None
-                        } else {
-                            Some(format!("{{ power: {}, trees: {} }}", power, refs.len()))
-                        })
-                        .collect::<Vec<_>>(),
-                    search_tree_refs.need_merge.len(),
                 );
             },
 
@@ -1085,50 +1067,8 @@ struct SearchTreeRef {
     search_tree_ref: Ref,
 }
 
-
-struct BinMerger {
-    powers: HashMap<usize, Vec<SearchTreeRef>>,
-    need_merge: Vec<usize>,
-}
-
-impl BinMerger {
-    fn new() -> BinMerger {
-        BinMerger {
-            powers: HashMap::new(),
-            need_merge: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, search_tree_ref: SearchTreeRef) {
-        let power_of_2 = search_tree_ref.items_count.next_power_of_two();
-        match self.powers.entry(power_of_2) {
-            hash_map::Entry::Vacant(ve) => {
-                ve.insert(vec![search_tree_ref]);
-            },
-            hash_map::Entry::Occupied(mut oe) => {
-                let powers = oe.get_mut();
-                powers.push(search_tree_ref);
-                if powers.len() >= 2 {
-                    self.need_merge.push(power_of_2);
-                }
-            },
-        }
-    }
-
-    fn pop(&mut self) -> Option<(SearchTreeRef, SearchTreeRef)> {
-        let power_of_2 = self.need_merge.pop()?;
-        let powers = self.powers.get_mut(&power_of_2).unwrap();
-        let search_tree_a_ref = powers.pop().unwrap();
-        let search_tree_b_ref = powers.pop().unwrap();
-        if powers.len() >= 2 {
-            self.need_merge.push(power_of_2);
-        }
-        Some((search_tree_a_ref, search_tree_b_ref))
-    }
-}
-
 fn maybe_merge_search_trees<J>(
-    search_tree_refs: &mut BinMerger,
+    search_tree_refs: &mut bin_merger::BinMerger<SearchTreeRef>,
     search_trees: &Set<search_tree::Pid>,
     thread_pool: &edeltraud::Edeltraud<J>,
     blocks_pool: &BytesPool,
