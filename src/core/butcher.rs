@@ -295,6 +295,7 @@ async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
                 let mut iter_items = iter_items_pool.lend(Vec::new);
                 iter_items.clear();
                 iter_items.extend(memcache.range(range));
+                iter_items.shrink_to_fit();
                 if let Err(_send_error) = reply_tx.send(iter_items.freeze()) {
                     log::warn!("client canceled lookup range request");
                 }

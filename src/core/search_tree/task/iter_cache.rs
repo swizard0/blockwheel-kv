@@ -66,6 +66,8 @@ pub fn job(JobArgs { cache, iter_cache_entries_pool, range, }: JobArgs) -> JobOu
             value_cell: kv_pair.value_cell.into(),
         });
     }
+
+    items.shrink_to_fit();
     Ok(JobDone { items, })
 }
 

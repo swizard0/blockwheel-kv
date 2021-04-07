@@ -168,6 +168,7 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
         }
     }
 
+    block_entries.shrink_to_fit();
     Ok(JobDone { block_entries, })
 }
 

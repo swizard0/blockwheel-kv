@@ -66,6 +66,7 @@ pub fn job(JobArgs { search_block_ref, block_bytes, mut lookup_requests_queue, m
             error,
         })?;
     let mut maybe_entry = entries_iter.next();
+    lookup_requests_queue.shrink_to_fit();
     let mut maybe_request = lookup_requests_queue.pop();
     loop {
         match maybe_request {

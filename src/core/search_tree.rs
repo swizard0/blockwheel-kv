@@ -730,6 +730,7 @@ where J: edeltraud::Job + From<job::Job>,
                             );
                             tasks_count += 1;
                         }
+                        iter_requests_queue.shrink_to_fit();
                         for iter_request in iter_requests_queue.drain(..) {
                             bg_tasks_push(
                                 task::TaskArgs::IterBlock(task::iter_block::Args {
@@ -752,6 +753,7 @@ where J: edeltraud::Job + From<job::Job>,
                 (),
 
             Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, mut outcomes, }))) => {
+                outcomes.shrink_to_fit();
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
                     match outcome {
                         task::Outcome::Found { value_cell, } => {

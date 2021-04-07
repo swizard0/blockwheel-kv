@@ -192,6 +192,8 @@ pub struct JobDone {
 pub fn job(JobArgs { mut block_entries, node_type, blocks_pool, }: JobArgs) -> JobOutput {
     let block_bytes = blocks_pool.lend();
     let items_count = block_entries.len();
+    block_entries.shrink_to_fit();
+
     let mut block_serializer_kont = storage::BlockSerializer::start(node_type, items_count, block_bytes)
         .map_err(Error::BlockSerializerStart)?;
     for ref owned_entry in block_entries.drain(..) {
@@ -433,6 +435,7 @@ async fn merger_start(
     iters.clear();
     iters.push(merger::KeyValuesIter::new(items_a_rx));
     iters.push(merger::KeyValuesIter::new(items_b_rx));
+    iters.shrink_to_fit();
 
     Ok(merger::ItersMerger::new(iters))
 }

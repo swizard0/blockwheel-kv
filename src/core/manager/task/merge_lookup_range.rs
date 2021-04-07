@@ -68,6 +68,7 @@ pub async fn run(Args { mut key_values_tx, butcher_iter_items, mut merger_iters,
         Ok::<_, Error>(())
     };
     merger_iters.push(merger::KeyValuesIter::new(butcher_iter_rx));
+    merger_iters.shrink_to_fit();
 
     let mut merger = merger::ItersMerger::new(merger_iters);
 
