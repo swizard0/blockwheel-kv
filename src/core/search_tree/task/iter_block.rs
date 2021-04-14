@@ -10,7 +10,6 @@ use futures::{
         oneshot,
     },
     SinkExt,
-    StreamExt,
 };
 
 use alloc_pool::{
@@ -29,10 +28,11 @@ use crate::{
         search_tree::{
             task::{
                 IterRequest,
+                IterRecRequest,
+                IterRequestData,
                 BlockEntry,
             },
             KeyValueRef,
-            SearchTreeIterItemsRx,
         },
         BlockRef,
         SearchRangeBounds,
@@ -40,13 +40,11 @@ use crate::{
 };
 
 pub struct Args<J> where J: edeltraud::Job {
-    pub block_ref: BlockRef,
     pub iter_request: IterRequest,
     pub iter_block_entries_pool: pool::Pool<Vec<BlockEntry>>,
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub block_bytes: Bytes,
-    pub iter_rec_tx: mpsc::Sender<IterRequest>,
-    pub iter_send_buffer: usize,
+    pub iter_rec_tx: mpsc::Sender<IterRecRequest>,
 }
 
 pub struct Done {
@@ -174,13 +172,18 @@ pub fn job(JobArgs { block_ref, block_bytes, search_range, iter_block_entries_po
 
 pub async fn run<J>(
     Args {
-        block_ref,
-        iter_request,
+        iter_request: IterRequest {
+            block_ref,
+            data: IterRequestData {
+                range,
+                mut iter_items_tx,
+                repay_iter_items_tx,
+            },
+        },
         iter_block_entries_pool,
         thread_pool,
         block_bytes,
         mut iter_rec_tx,
-        iter_send_buffer,
     }: Args<J>,
 )
     -> Result<Done, Error>
@@ -188,18 +191,10 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
-    assert_eq!(iter_request.block_ref, block_ref);
-
-    let (mut items_tx, items_rx) = mpsc::channel(iter_send_buffer);
-    if let Err(_send_error) = iter_request.reply_tx.send(SearchTreeIterItemsRx { items_rx, }) {
-        log::warn!("client canceled iter items request");
-        return Ok(Done { block_ref, });
-    }
-
     let job_task = thread_pool.spawn(job::Job::SearchTreeIterBlock(JobArgs {
         block_ref: block_ref.clone(),
         block_bytes: block_bytes.clone(),
-        search_range: iter_request.range.clone(),
+        search_range: range.clone(),
         iter_block_entries_pool,
     }));
     let job_output = job_task.await
@@ -212,36 +207,26 @@ where J: edeltraud::Job + From<job::Job>,
 
         match &block_entry_action {
             BlockEntry::OnlyJump(jump_block_ref) | BlockEntry::JumpAndEntry { jump: jump_block_ref, .. } => {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                let send_result = iter_rec_tx.send(IterRequest {
-                    block_ref: jump_block_ref.clone(),
-                    range: iter_request.range.clone(),
-                    reply_tx,
+                let (repay_iter_items_tx, repay_iter_items_rx) = oneshot::channel();
+                let send_result = iter_rec_tx.send(IterRecRequest {
+                    maybe_block_ref: Some(jump_block_ref.clone()),
+                    data: IterRequestData {
+                        range: range.clone(),
+                        iter_items_tx,
+                        repay_iter_items_tx,
+                    },
                 }).await;
                 if let Err(_send_error) = send_result {
                     log::warn!("search_tree has gone, terminating iter task");
                     return Err(Error::SearchTreeGone);
                 }
-                let mut items_rec_rx = match reply_rx.await {
-                    Ok(SearchTreeIterItemsRx { items_rx }) =>
-                        items_rx,
+                match repay_iter_items_rx.await {
+                    Ok(repayed_iter_items_tx) =>
+                        iter_items_tx = repayed_iter_items_tx,
                     Err(oneshot::Canceled) => {
-                        log::warn!("search_tree has gone, terminating iter task");
-                        return Err(Error::SearchTreeGone);
+                        log::warn!("client canceled recursive iter items request");
+                        return Ok(Done { block_ref, })
                     },
-                };
-                loop {
-                    match items_rec_rx.next().await {
-                        None =>
-                            return Err(Error::IterRecPeerLost),
-                        Some(KeyValueRef::NoMore) =>
-                            break,
-                        Some(key_value_ref) =>
-                            if let Err(_send_error) = items_tx.send(key_value_ref).await {
-                                log::warn!("client canceled iter items request");
-                                return Ok(Done { block_ref, });
-                            },
-                    }
                 }
             },
             BlockEntry::OnlyEntry { .. } =>
@@ -250,7 +235,7 @@ where J: edeltraud::Job + From<job::Job>,
 
         match block_entry_action {
             BlockEntry::OnlyEntry { key, value_cell, } | BlockEntry::JumpAndEntry { key, value_cell, .. } =>
-                if let Err(_send_error) = items_tx.send(KeyValueRef::Item { key, value_cell, }).await {
+                if let Err(_send_error) = iter_items_tx.items_tx.send(KeyValueRef::Item { key, value_cell, }).await {
                     log::warn!("client canceled iter items request");
                     return Ok(Done { block_ref, });
                 },
@@ -259,11 +244,12 @@ where J: edeltraud::Job + From<job::Job>,
         }
     }
 
-    if let Err(_send_error) = items_tx.send(KeyValueRef::BlockFinish(block_ref.clone())).await {
+    if let Err(_send_error) = iter_items_tx.items_tx.send(KeyValueRef::BlockFinish(block_ref.clone())).await {
         log::warn!("client canceled iter items request on BlockFinish");
     }
-    if let Err(_send_error) = items_tx.send(KeyValueRef::NoMore).await {
-        log::warn!("client canceled iter items request on NoMore");
+
+    if let Err(_send_error) = repay_iter_items_tx.send(iter_items_tx) {
+        log::warn!("client canceled iter items request on repay");
     }
 
     Ok(Done { block_ref, })

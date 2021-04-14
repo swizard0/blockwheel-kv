@@ -175,6 +175,10 @@ pub enum DemolishError {
     GenServer(ero::NoProcError),
 }
 
+pub struct SearchTreeIterItemsTx {
+    pub items_tx: mpsc::Sender<KeyValueRef>,
+}
+
 pub struct SearchTreeIterItemsRx {
     pub items_rx: mpsc::Receiver<KeyValueRef>,
 }
@@ -444,49 +448,31 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 if let Some(done_reply_tx) = demolish_reply_tx {
-                    match &state.mode {
-                        Mode::Regular { root_block, } => {
-                            log::debug!("starting demolish on root_block = {:?}", root_block);
-                            let (reply_tx, reply_rx) = oneshot::channel();
-                            let maybe_task_args = async_tree.apply_iter_request(
-                                task::IterRequest {
-                                    block_ref: root_block.clone(),
-                                    range: SearchRangeBounds::unbounded(),
-                                    reply_tx,
-                                },
-                                &state.pools.lookup_requests_queue_pool,
-                                &state.pools.iter_requests_queue_pool,
-                                &state.pools.iter_block_entries_pool,
-                                &state.thread_pool,
-                                &state.wheels_pid,
-                                &iter_rec_tx,
-                                state.params.iter_send_buffer,
-                            );
-                            match maybe_task_args {
-                                TaskKind::None =>
-                                    (),
-                                TaskKind::Local(task_args) => {
-                                    tasks.push(task::run_args(task_args));
-                                    tasks_count += 1;
-                                },
-                                TaskKind::Spawn(task_args) => {
-                                    bg_tasks_push(task_args);
-                                    bg_tasks_count += 1;
-                                },
-                            }
-                            bg_tasks_push(
-                                task::TaskArgs::Demolish(task::demolish::Args {
-                                    done_reply_tx,
-                                    block_items_reply_rx: reply_rx,
-                                    wheels_pid: state.wheels_pid.clone(),
-                                    remove_tasks_limit: state.params.remove_tasks_limit,
-                                }),
-                            );
-                            bg_tasks_count += 1;
-                        },
-                        Mode::CacheBootstrap { .. } =>
-                            unreachable!(),
-                    }
+                    let (items_tx, items_rx) = mpsc::channel(state.params.iter_send_buffer);
+                    let iter_items_tx = SearchTreeIterItemsTx { items_tx, };
+                    let iter_items_rx = SearchTreeIterItemsRx { items_rx, };
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    assert!(reply_tx.send(iter_items_rx).is_ok());
+
+                    tasks.push(
+                        task::run_args(task::TaskArgs::IterDriver(task::iter_driver::Args {
+                            iter_rec_tx: iter_rec_tx.clone(),
+                            maybe_block_ref: None,
+                            range: SearchRangeBounds::unbounded(),
+                            iter_items_tx,
+                        })),
+                    );
+                    tasks_count += 1;
+
+                    bg_tasks_push(
+                        task::TaskArgs::Demolish(task::demolish::Args {
+                            done_reply_tx,
+                            block_items_reply_rx: reply_rx,
+                            wheels_pid: state.wheels_pid.clone(),
+                            remove_tasks_limit: state.params.remove_tasks_limit,
+                        }),
+                    );
+                    bg_tasks_count += 1;
                 }
 
                 continue;
@@ -592,50 +578,25 @@ where J: edeltraud::Job + From<job::Job>,
                     },
                 },
 
-            Event::Request(Some(Request::Iter { range, reply_tx, })) =>
-                match &state.mode {
-                    Mode::CacheBootstrap { cache, } => {
-                        tasks.push(
-                            task::run_args(task::TaskArgs::IterCache(task::iter_cache::Args {
-                                cache: cache.clone(),
-                                thread_pool: state.thread_pool.clone(),
-                                iter_cache_entries_pool: state.pools.iter_cache_entries_pool.clone(),
-                                range,
-                                reply_tx,
-                                iter_send_buffer: state.params.iter_send_buffer,
-                            })),
-                        );
-                        tasks_count += 1;
-                    },
-                    Mode::Regular { root_block, } => {
-                        let maybe_task_args = async_tree.apply_iter_request(
-                            task::IterRequest {
-                                block_ref: root_block.clone(),
-                                range,
-                                reply_tx,
-                            },
-                            &state.pools.lookup_requests_queue_pool,
-                            &state.pools.iter_requests_queue_pool,
-                            &state.pools.iter_block_entries_pool,
-                            &state.thread_pool,
-                            &state.wheels_pid,
-                            &iter_rec_tx,
-                            state.params.iter_send_buffer,
-                        );
-                        match maybe_task_args {
-                            TaskKind::None =>
-                                (),
-                            TaskKind::Local(task_args) => {
-                                tasks.push(task::run_args(task_args));
-                                tasks_count += 1;
-                            },
-                            TaskKind::Spawn(task_args) => {
-                                bg_tasks_push(task_args);
-                                bg_tasks_count += 1;
-                            },
-                        }
-                    }
-                },
+            Event::Request(Some(Request::Iter { range, reply_tx, })) => {
+                let (items_tx, items_rx) = mpsc::channel(state.params.iter_send_buffer);
+                let iter_items_tx = SearchTreeIterItemsTx { items_tx, };
+                let iter_items_rx = SearchTreeIterItemsRx { items_rx, };
+
+                if let Err(_send_error) = reply_tx.send(iter_items_rx) {
+                    log::warn!("client canceled iter request");
+                } else {
+                    tasks.push(
+                        task::run_args(task::TaskArgs::IterDriver(task::iter_driver::Args {
+                            iter_rec_tx: iter_rec_tx.clone(),
+                            maybe_block_ref: None,
+                            range,
+                            iter_items_tx,
+                        })),
+                    );
+                    tasks_count += 1;
+                }
+            },
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
                 log::debug!("Request::Flush received: waiting for {} tasks to finish", bg_tasks_count + tasks_count);
@@ -667,33 +628,49 @@ where J: edeltraud::Job + From<job::Job>,
                 }
             },
 
-            Event::IterRec(iter_request) => {
-                match &state.mode {
-                    Mode::CacheBootstrap { .. } =>
-                        unreachable!(),
-                    Mode::Regular { .. } =>
-                        (),
-                }
-                let maybe_task_args = async_tree.apply_iter_request(
-                    iter_request,
-                    &state.pools.lookup_requests_queue_pool,
-                    &state.pools.iter_requests_queue_pool,
-                    &state.pools.iter_block_entries_pool,
-                    &state.thread_pool,
-                    &state.wheels_pid,
-                    &iter_rec_tx,
-                    state.params.iter_send_buffer,
-                );
-                match maybe_task_args {
-                    TaskKind::None =>
-                        (),
-                    TaskKind::Local(task_args) => {
-                        tasks.push(task::run_args(task_args));
+            Event::IterRec(task::IterRecRequest { maybe_block_ref, data: iter_request_data, }) => {
+                match (&state.mode, &maybe_block_ref) {
+                    (Mode::CacheBootstrap { cache, }, None) => {
+                        tasks.push(
+                            task::run_args(task::TaskArgs::IterCache(task::iter_cache::Args {
+                                cache: cache.clone(),
+                                thread_pool: state.thread_pool.clone(),
+                                iter_cache_entries_pool: state.pools.iter_cache_entries_pool.clone(),
+                                iter_request_data,
+                            })),
+                        );
                         tasks_count += 1;
                     },
-                    TaskKind::Spawn(task_args) => {
-                        bg_tasks_push(task_args);
-                        bg_tasks_count += 1;
+                    (Mode::CacheBootstrap { .. }, Some(..)) =>
+                        unreachable!(),
+                    (Mode::Regular { root_block, }, maybe_block_ref) => {
+                        let block_ref = maybe_block_ref.as_ref()
+                            .unwrap_or_else(|| root_block);
+
+                        let maybe_task_args = async_tree.apply_iter_request(
+                            task::IterRequest {
+                                block_ref: block_ref.clone(),
+                                data: iter_request_data,
+                            },
+                            &state.pools.lookup_requests_queue_pool,
+                            &state.pools.iter_requests_queue_pool,
+                            &state.pools.iter_block_entries_pool,
+                            &state.thread_pool,
+                            &state.wheels_pid,
+                            &iter_rec_tx,
+                        );
+                        match maybe_task_args {
+                            TaskKind::None =>
+                                (),
+                            TaskKind::Local(task_args) => {
+                                tasks.push(task::run_args(task_args));
+                                tasks_count += 1;
+                            },
+                            TaskKind::Spawn(task_args) => {
+                                bg_tasks_push(task_args);
+                                bg_tasks_count += 1;
+                            },
+                        }
                     },
                 }
             },
@@ -734,13 +711,11 @@ where J: edeltraud::Job + From<job::Job>,
                         for iter_request in iter_requests_queue.drain(..) {
                             bg_tasks_push(
                                 task::TaskArgs::IterBlock(task::iter_block::Args {
-                                    block_ref: block_ref.clone(),
                                     iter_request,
                                     iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
                                     thread_pool: state.thread_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     iter_rec_tx: iter_rec_tx.clone(),
-                                    iter_send_buffer: state.params.iter_send_buffer,
                                 }),
                             );
                             bg_tasks_count += 1;
@@ -808,6 +783,9 @@ where J: edeltraud::Job + From<job::Job>,
                     },
                 }
             },
+
+            Event::Task(Ok(task::TaskDone::IterDriver(task::iter_driver::Done))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
                 (),
@@ -931,8 +909,7 @@ impl AsyncTree {
         iter_block_entries_pool: &pool::Pool<Vec<task::BlockEntry>>,
         thread_pool: &edeltraud::Edeltraud<J>,
         wheels_pid: &wheels::Pid,
-        iter_rec_tx: &mpsc::Sender<task::IterRequest>,
-        iter_send_buffer: usize,
+        iter_rec_tx: &mpsc::Sender<task::IterRecRequest>,
     )
         -> TaskKind<J>
     where J: edeltraud::Job + From<job::Job>,
@@ -949,13 +926,11 @@ impl AsyncTree {
                     },
                     AsyncBlock::Ready { block_bytes, .. } => {
                         TaskKind::Spawn(task::TaskArgs::IterBlock(task::iter_block::Args {
-                            block_ref,
                             iter_request,
                             iter_block_entries_pool: iter_block_entries_pool.clone(),
                             thread_pool: thread_pool.clone(),
                             block_bytes: block_bytes.clone(),
                             iter_rec_tx: iter_rec_tx.clone(),
-                            iter_send_buffer,
                         }))
                     },
                 },

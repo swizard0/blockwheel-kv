@@ -2,10 +2,6 @@ use std::sync::Arc;
 
 use futures::{
     stream,
-    channel::{
-        mpsc,
-        oneshot,
-    },
     SinkExt,
 };
 
@@ -21,7 +17,9 @@ use crate::{
     core::{
         search_tree::{
             KeyValueRef,
-            SearchTreeIterItemsRx,
+            task::{
+                IterRequestData,
+            },
         },
         MemCache,
         SearchRangeBounds,
@@ -32,9 +30,7 @@ pub struct Args<J> where J: edeltraud::Job {
     pub cache: Arc<MemCache>,
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub iter_cache_entries_pool: pool::Pool<Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>>,
-    pub range: SearchRangeBounds,
-    pub reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
-    pub iter_send_buffer: usize,
+    pub iter_request_data: IterRequestData,
 }
 
 pub struct Done;
@@ -76,9 +72,11 @@ pub async fn run<J>(
         cache,
         thread_pool,
         iter_cache_entries_pool,
-        range,
-        reply_tx,
-        iter_send_buffer,
+        iter_request_data: IterRequestData {
+            range,
+            mut iter_items_tx,
+            repay_iter_items_tx,
+        },
     }: Args<J>,
 )
     -> Result<Done, Error>
@@ -86,13 +84,6 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
-    let (mut iter_tx, iter_rx) = mpsc::channel(iter_send_buffer);
-    let iter = SearchTreeIterItemsRx { items_rx: iter_rx, };
-    if let Err(_send_error) = reply_tx.send(iter) {
-        log::warn!("client canceled iter request");
-        return Ok(Done);
-    }
-
     let job_output = thread_pool.spawn(job::Job::SearchTreeIterCache(JobArgs { cache, iter_cache_entries_pool, range, })).await
         .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
     let job_output: job::JobOutput = job_output.into();
@@ -105,11 +96,11 @@ where J: edeltraud::Job + From<job::Job>,
             value_cell: key_value.value_cell,
         }));
     let mut key_value_refs_stream = stream::iter(key_value_refs);
-    if let Err(_send_error) = iter_tx.send_all(&mut key_value_refs_stream).await {
+    if let Err(_send_error) = iter_items_tx.items_tx.send_all(&mut key_value_refs_stream).await {
         log::warn!("client canceled iter request");
         return Ok(Done);
     }
 
-    iter_tx.send(KeyValueRef::NoMore).await.ok();
+    repay_iter_items_tx.send(iter_items_tx).ok();
     Ok(Done)
 }

@@ -17,7 +17,7 @@ use crate::{
     storage,
     core::{
         search_tree::{
-            SearchTreeIterItemsRx,
+            SearchTreeIterItemsTx,
         },
         BlockRef,
         SearchRangeBounds,
@@ -30,6 +30,7 @@ pub mod search_cache;
 pub mod search_block;
 pub mod iter_cache;
 pub mod iter_block;
+pub mod iter_driver;
 pub mod demolish;
 
 pub type LookupRequestsQueueType = BinaryHeap<LookupRequest>;
@@ -55,10 +56,20 @@ pub struct LookupRequest {
 pub type IterRequestsQueueType = Vec<IterRequest>;
 pub type IterRequestsQueue = Unique<IterRequestsQueueType>;
 
+pub struct IterRequestData {
+    pub range: SearchRangeBounds,
+    pub iter_items_tx: SearchTreeIterItemsTx,
+    pub repay_iter_items_tx: oneshot::Sender<SearchTreeIterItemsTx>,
+}
+
+pub struct IterRecRequest {
+    pub maybe_block_ref: Option<BlockRef>,
+    pub data: IterRequestData,
+}
+
 pub struct IterRequest {
     pub block_ref: BlockRef,
-    pub range: SearchRangeBounds,
-    pub reply_tx: oneshot::Sender<SearchTreeIterItemsRx>,
+    pub data: IterRequestData,
 }
 
 pub enum BlockEntry {
@@ -85,6 +96,7 @@ pub enum TaskArgs<J> where J: edeltraud::Job {
     SearchBlock(search_block::Args<J>),
     IterCache(iter_cache::Args<J>),
     IterBlock(iter_block::Args<J>),
+    IterDriver(iter_driver::Args),
     Demolish(demolish::Args),
 }
 
@@ -95,6 +107,7 @@ pub enum TaskDone {
     SearchBlock(search_block::Done),
     IterCache(iter_cache::Done),
     IterBlock(iter_block::Done),
+    IterDriver(iter_driver::Done),
     Demolish(demolish::Done),
 }
 
@@ -106,6 +119,7 @@ pub enum Error {
     SearchBlock(search_block::Error),
     IterCache(iter_cache::Error),
     IterBlock(iter_block::Error),
+    IterDriver(iter_driver::Error),
     Demolish(demolish::Error),
 }
 
@@ -144,6 +158,11 @@ where J: edeltraud::Job + From<job::Job>,
             TaskDone::IterBlock(
                 iter_block::run(args).await
                     .map_err(Error::IterBlock)?,
+            ),
+        TaskArgs::IterDriver(args) =>
+            TaskDone::IterDriver(
+                iter_driver::run(args).await
+                    .map_err(Error::IterDriver)?,
             ),
         TaskArgs::Demolish(args) =>
             TaskDone::Demolish(
