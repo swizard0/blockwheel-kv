@@ -94,25 +94,29 @@ pub async fn run(Args { mut key_values_tx, butcher_iter_items, mut merger_iters,
 
                 match event {
                     Event::Merger(None) => {
-                        let key_value = retrieve_future.await?;
-                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
-                            log::warn!("client dropped iterator in merger task");
-                            return Ok(());
+                        if let Some(key_value) = retrieve_future.await? {
+                            if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                                log::warn!("client dropped iterator in merger task");
+                                return Ok(());
+                            }
                         }
                         break;
                     },
                     Event::Merger(Some(next_key_value)) => {
-                        let key_value = retrieve_future.await?;
-                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
-                            log::warn!("client dropped iterator in merger task");
-                            return Ok(());
+                        if let Some(key_value) = retrieve_future.await? {
+                            if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                                log::warn!("client dropped iterator in merger task");
+                                return Ok(());
+                            }
                         }
                         merger_key_value = next_key_value;
                     },
-                    Event::Retrieve(key_value) => {
-                        if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
-                            log::warn!("client dropped iterator in merger task");
-                            return Ok(());
+                    Event::Retrieve(maybe_key_value) => {
+                        if let Some(key_value) = maybe_key_value {
+                            if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                                log::warn!("client dropped iterator in merger task");
+                                return Ok(());
+                            }
                         }
                         match merger_future.await.map_err(Error::Merger)? {
                             None =>
@@ -138,7 +142,7 @@ async fn schedule_retrieve(
     key_value: kv::KeyValuePair<storage::OwnedValueBlockRef>,
     mut wheels_pid: wheels::Pid,
 )
-    -> Result<kv::KeyValuePair<kv::Value>, Error>
+    -> Result<Option<kv::KeyValuePair<kv::Value>>, Error>
 {
     match key_value {
         kv::KeyValuePair {
@@ -148,7 +152,7 @@ async fn schedule_retrieve(
                 cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
             },
         } =>
-            Ok(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, }),
+            Ok(Some(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, })),
         kv::KeyValuePair {
             key,
             value_cell: kv::ValueCell {
@@ -161,19 +165,26 @@ async fn schedule_retrieve(
                 .ok_or_else(|| Error::WheelNotFound {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                 })?;
-            let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await
-                .map_err(Error::ReadBlock)?;
+            let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await {
+                Ok(block_bytes) =>
+                    block_bytes,
+                Err(blockwheel::ReadBlockError::NotFound) =>
+                    // value is already gone: assume kv pair has been deleted
+                    return Ok(None),
+                Err(error) =>
+                    return Err(Error::ReadBlock(error)),
+            };
             let value_bytes = storage::value_block_deserialize(&block_bytes)
                 .map_err(Error::ValueDeserialize)?;
-            Ok(kv::KeyValuePair {
+            Ok(Some(kv::KeyValuePair {
                 key,
                 value_cell: kv::ValueCell {
                     version,
                     cell: kv::Cell::Value(value_bytes.into()),
                 },
-            })
+            }))
         },
         kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
-            Ok(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, }),
+            Ok(Some(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, })),
     }
 }
