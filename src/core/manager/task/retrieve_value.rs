@@ -42,14 +42,21 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
                 .ok_or_else(|| Error::WheelNotFound {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                 })?;
-            let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await
-                .map_err(Error::ReadBlock)?;
-            let value_bytes = storage::value_block_deserialize(&block_bytes)
-                .map_err(Error::ValueDeserialize)?;
-            Some(kv::ValueCell {
-                version,
-                cell: kv::Cell::Value(value_bytes.into()),
-            })
+            match wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await {
+                Ok(block_bytes) => {
+                    let value_bytes = storage::value_block_deserialize(&block_bytes)
+                        .map_err(Error::ValueDeserialize)?;
+                    Some(kv::ValueCell {
+                        version,
+                        cell: kv::Cell::Value(value_bytes.into()),
+                    })
+                },
+                Err(blockwheel::ReadBlockError::NotFound) =>
+                    // value is already gone: assume kv pair has been deleted
+                    None,
+                Err(error) =>
+                    return Err(Error::ReadBlock(error)),
+            }
         },
         Some(kv::ValueCell { version, cell: kv::Cell::Tombstone, }) =>
             Some(kv::ValueCell { version, cell: kv::Cell::Tombstone, }),
