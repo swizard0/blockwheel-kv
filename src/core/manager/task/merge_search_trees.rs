@@ -147,6 +147,7 @@ where J: edeltraud::Job + From<job::Job>,
                         })?;
                     let blockwheel::Deleted = wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await
                         .map_err(Error::DeleteBlock)?;
+                    log::debug!("deleted: {:?}", block_ref);
                     Ok(())
                 });
             },
