@@ -165,12 +165,14 @@ async fn schedule_retrieve(
                 .ok_or_else(|| Error::WheelNotFound {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                 })?;
-            let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await {
+            let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
                 Ok(block_bytes) =>
                     block_bytes,
-                Err(blockwheel::ReadBlockError::NotFound) =>
+                Err(blockwheel::ReadBlockError::NotFound) => {
                     // value is already gone: assume kv pair has been deleted
-                    return Ok(None),
+                    log::debug!("externally refereced block {:?} but blockwheel read returns none", block_ref);
+                    return Ok(None);
+                },
                 Err(error) =>
                     return Err(Error::ReadBlock(error)),
             };

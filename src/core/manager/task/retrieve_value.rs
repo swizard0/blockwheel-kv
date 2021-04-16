@@ -42,7 +42,7 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
                 .ok_or_else(|| Error::WheelNotFound {
                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                 })?;
-            match wheel_ref.blockwheel_pid.read_block(block_ref.block_id).await {
+            match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
                 Ok(block_bytes) => {
                     let value_bytes = storage::value_block_deserialize(&block_bytes)
                         .map_err(Error::ValueDeserialize)?;
@@ -51,9 +51,11 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
                         cell: kv::Cell::Value(value_bytes.into()),
                     })
                 },
-                Err(blockwheel::ReadBlockError::NotFound) =>
+                Err(blockwheel::ReadBlockError::NotFound) => {
+                    log::debug!("externally refereced block {:?} but blockwheel read returns none", block_ref);
                     // value is already gone: assume kv pair has been deleted
-                    None,
+                    None
+                },
                 Err(error) =>
                     return Err(Error::ReadBlock(error)),
             }
