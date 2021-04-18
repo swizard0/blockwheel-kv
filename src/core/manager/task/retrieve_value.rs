@@ -13,12 +13,19 @@ use crate::{
 };
 
 pub struct Args {
+    pub key: kv::Key,
     pub found_fold: Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
     pub reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
     pub wheels_pid: wheels::Pid,
 }
 
-pub struct Done;
+pub enum Done {
+    RetrieveSuccess,
+    DeprecatedResults {
+        key: kv::Key,
+        reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
+    },
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -30,7 +37,7 @@ pub enum Error {
     ValueDeserialize(storage::Error),
 }
 
-pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result<Done, Error> {
+pub async fn run(Args { key, found_fold, reply_tx, mut wheels_pid, }: Args) -> Result<Done, Error> {
     let lookup_result = match found_fold {
         None =>
             None,
@@ -51,11 +58,8 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
                         cell: kv::Cell::Value(value_bytes.into()),
                     })
                 },
-                Err(blockwheel::ReadBlockError::NotFound) => {
-                    log::debug!("externally refereced block {:?} but blockwheel read returns none", block_ref);
-                    // value is already gone: assume kv pair has been deleted
-                    None
-                },
+                Err(blockwheel::ReadBlockError::NotFound) =>
+                    return Ok(Done::DeprecatedResults { key, reply_tx, }),
                 Err(error) =>
                     return Err(Error::ReadBlock(error)),
             }
@@ -66,5 +70,5 @@ pub async fn run(Args { found_fold, reply_tx, mut wheels_pid, }: Args) -> Result
     if let Err(_send_error) = reply_tx.send(lookup_result) {
         log::warn!("client canceled lookup request");
     }
-    Ok(Done)
+    Ok(Done::RetrieveSuccess)
 }

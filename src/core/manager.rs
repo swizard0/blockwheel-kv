@@ -754,33 +754,18 @@ where J: edeltraud::Job + From<job::Job>,
                 tasks_count += 1;
             },
 
-            Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) => {
-                let request_ref = lookup_requests.insert(LookupRequest {
-                    key: key.clone(),
+            Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) =>
+                launch_lookup_request(
+                    key,
                     reply_tx,
-                    butcher_status: LookupRequestButcherStatus::NotReady,
-                    pending_count: 1 + search_trees.len(),
-                    found_fold: None,
-                });
-                tasks.push(task::run_args(task::TaskArgs::LookupButcher(
-                    task::lookup_butcher::Args {
-                        key: key.clone(),
-                        request_ref: request_ref.clone(),
-                        butcher_pid: state.butcher_pid.clone(),
+                    &mut lookup_requests,
+                    &search_trees,
+                    &state.butcher_pid,
+                    |args| {
+                        tasks.push(task::run_args(args));
+                        tasks_count += 1;
                     },
-                )));
-                tasks_count += 1;
-                for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-                    tasks.push(task::run_args(task::TaskArgs::LookupSearchTree(
-                        task::lookup_search_tree::Args {
-                            key: key.clone(),
-                            request_ref: request_ref.clone(),
-                            search_tree_pid: search_tree_pid.clone(),
-                        },
-                    )));
-                    tasks_count += 1;
-                }
-            },
+                ),
 
             Event::Request(Some(Request::LookupRange(RequestLookupRange { range, reply_tx, }))) => {
                 let (key_values_tx, key_values_rx) =
@@ -865,6 +850,7 @@ where J: edeltraud::Job + From<job::Job>,
                     let lookup_request = lookup_requests.remove(request_ref).unwrap();
                     tasks.push(task::run_args(task::TaskArgs::RetrieveValue(
                         task::retrieve_value::Args {
+                            key: lookup_request.key,
                             found_fold: lookup_request.found_fold,
                             reply_tx: lookup_request.reply_tx,
                             wheels_pid: state.wheels_pid.clone(),
@@ -885,6 +871,7 @@ where J: edeltraud::Job + From<job::Job>,
                     let lookup_request = lookup_requests.remove(request_ref).unwrap();
                     tasks.push(task::run_args(task::TaskArgs::RetrieveValue(
                         task::retrieve_value::Args {
+                            key: lookup_request.key,
                             found_fold: lookup_request.found_fold,
                             reply_tx: lookup_request.reply_tx,
                             wheels_pid: state.wheels_pid.clone(),
@@ -1052,12 +1039,63 @@ where J: edeltraud::Job + From<job::Job>,
                 log::debug!("search tree DEMOLISHED");
             },
 
-            Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done))) =>
+            Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done::RetrieveSuccess))) =>
                 (),
+
+            Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done::DeprecatedResults { key, reply_tx, }))) => {
+                log::debug!("task::TaskDone::RetrieveValue deprecated results: retrying LOOKUP request");
+                launch_lookup_request(
+                    key,
+                    reply_tx,
+                    &mut lookup_requests,
+                    &search_trees,
+                    &state.butcher_pid,
+                    |args| {
+                        tasks.push(task::run_args(args));
+                        tasks_count += 1;
+                    },
+                );
+            },
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
         }
+    }
+}
+
+fn launch_lookup_request<T, J>(
+    key: kv::Key,
+    reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
+    lookup_requests: &mut Set<LookupRequest>,
+    search_trees: &Set<search_tree::Pid>,
+    butcher_pid: &butcher::Pid,
+    mut tasks_push: T,
+)
+where T: FnMut(task::TaskArgs<J>),
+      J: edeltraud::Job,
+{
+    let request_ref = lookup_requests.insert(LookupRequest {
+        key: key.clone(),
+        reply_tx,
+        butcher_status: LookupRequestButcherStatus::NotReady,
+        pending_count: 1 + search_trees.len(),
+        found_fold: None,
+    });
+    tasks_push(task::TaskArgs::LookupButcher(
+        task::lookup_butcher::Args {
+            key: key.clone(),
+            request_ref: request_ref.clone(),
+            butcher_pid: butcher_pid.clone(),
+        },
+    ));
+    for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+        tasks_push(task::TaskArgs::LookupSearchTree(
+            task::lookup_search_tree::Args {
+                key: key.clone(),
+                request_ref: request_ref.clone(),
+                search_tree_pid: search_tree_pid.clone(),
+            },
+        ));
     }
 }
 
