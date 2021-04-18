@@ -882,6 +882,9 @@ impl AsyncTree {
                         TaskKind::None
                     },
                     AsyncBlock::Ready { more_lookup_requests: more @ None, .. } => {
+
+                        log::debug!("occupied in ready (first): pushing {:?}", lookup_request.key);
+
                         let mut lookup_requests_queue =
                             lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                         lookup_requests_queue.clear();
@@ -892,6 +895,9 @@ impl AsyncTree {
                 },
 
             hash_map::Entry::Vacant(ve) => {
+
+                log::debug!("vacant: pushing {:?}", lookup_request.key);
+
                 let mut lookup_requests_queue =
                     lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                 lookup_requests_queue.clear();
@@ -987,14 +993,18 @@ impl AsyncTree {
                                 oe.remove();
                                 TaskKind::None
                             },
-                            Some(lookup_requests_queue) =>
+                            Some(lookup_requests_queue) => {
+
+                                log::debug!("drop_or_search_more: proceeding with {} more requests", lookup_requests_queue.len());
+
                                 TaskKind::Local(task::TaskArgs::SearchBlock(task::search_block::Args {
                                     block_ref: block_ref.clone(),
                                     thread_pool: thread_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     lookup_requests_queue,
                                     outcomes: outcomes_pool.lend(Vec::new),
-                                })),
+                                }))
+                            },
                         },
                 },
 
