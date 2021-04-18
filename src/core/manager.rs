@@ -361,6 +361,7 @@ enum LookupRequestButcherStatus {
 }
 
 struct LookupRangeRequest {
+    range: SearchRangeBounds,
     key_values_tx: mpsc::Sender<KeyValueStreamItem>,
     butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
     merger_iters: Unique<Vec<merger::KeyValuesIter>>,
@@ -888,6 +889,7 @@ where J: edeltraud::Job + From<job::Job>,
                 if search_trees.is_empty() {
                     bg_tasks_push(task::TaskArgs::MergeLookupRange(
                         task::merge_lookup_range::Args {
+                            range,
                             key_values_tx,
                             butcher_iter_items: iter_items,
                             merger_iters,
@@ -897,6 +899,7 @@ where J: edeltraud::Job + From<job::Job>,
                     bg_tasks_count += 1;
                 } else {
                     let lookup_range_request = LookupRangeRequest {
+                        range: range.clone(),
                         key_values_tx,
                         butcher_iter_items: iter_items,
                         merger_iters,
@@ -925,6 +928,7 @@ where J: edeltraud::Job + From<job::Job>,
                     let lookup_range_request = lookup_range_requests.remove(request_ref).unwrap();
                     bg_tasks_push(task::TaskArgs::MergeLookupRange(
                         task::merge_lookup_range::Args {
+                            range: lookup_range_request.range,
                             key_values_tx: lookup_range_request.key_values_tx,
                             butcher_iter_items: lookup_range_request.butcher_iter_items,
                             merger_iters: lookup_range_request.merger_iters,
@@ -935,8 +939,24 @@ where J: edeltraud::Job + From<job::Job>,
                 }
             },
 
-            Event::Task(Ok(task::TaskDone::MergeLookupRange(task::merge_lookup_range::Done))) =>
+            Event::Task(Ok(task::TaskDone::MergeLookupRange(task::merge_lookup_range::Done::MergeSuccess))) =>
                 (),
+
+            Event::Task(Ok(task::TaskDone::MergeLookupRange(task::merge_lookup_range::Done::DeprecatedResults {
+                modified_range,
+                key_values_tx,
+            }))) => {
+                log::debug!("task::TaskDone::MergeLookupRange deprecated results: retrying LOOKUP RANGE request");
+                tasks.push(task::run_args(task::TaskArgs::LookupRangeButcher(
+                    task::lookup_range_butcher::Args {
+                        range: modified_range,
+                        key_values_tx,
+                        iter_items_pool: iter_items_pool.clone(),
+                        butcher_pid: state.butcher_pid.clone(),
+                    },
+                )));
+                tasks_count += 1;
+            },
 
             Event::Task(Ok(task::TaskDone::RemoveButcher(task::remove_butcher::Done))) =>
                 (),
