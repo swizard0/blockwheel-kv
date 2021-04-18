@@ -707,6 +707,14 @@ where J: edeltraud::Job + From<job::Job>,
                     AsyncBlock::Ready { .. } =>
                         unreachable!(),
                     AsyncBlock::Awaiting { lookup_requests_queue, mut iter_requests_queue, } => {
+
+                        log::debug!(
+                            "LoadBlock done for {:?}, #lookup_requests_queue = {}, #iter_requests_queue = {}",
+                            block_ref,
+                            lookup_requests_queue.len(),
+                            iter_requests_queue.len(),
+                        );
+
                         if !lookup_requests_queue.is_empty() {
                             let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
