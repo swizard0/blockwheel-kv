@@ -378,6 +378,7 @@ where J: edeltraud::Job + From<job::Job>,
         },
     }
     let mut flush_mode = FlushMode::NoFlush;
+    let mut self_destruct_in_progress = false;
 
     loop {
         assert!(tasks_count + bg_tasks_count != 0 || async_tree.tree.is_empty());
@@ -473,6 +474,8 @@ where J: edeltraud::Job + From<job::Job>,
                         }),
                     );
                     bg_tasks_count += 1;
+
+                    self_destruct_in_progress = true;
                 }
 
                 continue;
@@ -537,6 +540,8 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Event::Request(Some(Request::Info { reply_tx, })) => {
+                assert!(!self_destruct_in_progress);
+
                 let info = Info::default();
                 if let Err(_send_error) = reply_tx.send(info) {
                     log::warn!("client canceled info request");
@@ -545,7 +550,9 @@ where J: edeltraud::Job + From<job::Job>,
                 unimplemented!()
             },
 
-            Event::Request(Some(Request::Lookup(lookup_request))) =>
+            Event::Request(Some(Request::Lookup(lookup_request))) => {
+                assert!(!self_destruct_in_progress);
+
                 match &state.mode {
                     Mode::CacheBootstrap { cache, } => {
                         tasks.push(task::run_args(task::TaskArgs::SearchCache(task::search_cache::Args {
@@ -576,9 +583,12 @@ where J: edeltraud::Job + From<job::Job>,
                             },
                         }
                     },
-                },
+                }
+            },
 
             Event::Request(Some(Request::Iter { range, reply_tx, })) => {
+                assert!(!self_destruct_in_progress);
+
                 let (items_tx, items_rx) = mpsc::channel(state.params.iter_send_buffer);
                 let iter_items_tx = SearchTreeIterItemsTx { items_tx, };
                 let iter_items_rx = SearchTreeIterItemsRx { items_rx, };
@@ -599,6 +609,8 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Event::Request(Some(Request::Flush { reply_tx, })) => {
+                assert!(!self_destruct_in_progress);
+
                 log::debug!("Request::Flush received: waiting for {} tasks to finish", bg_tasks_count + tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
@@ -614,6 +626,8 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Event::Request(Some(Request::Demolish { reply_tx, })) => {
+                assert!(!self_destruct_in_progress);
+
                 log::debug!("Request::Demolish received: waiting for {} tasks to finish", bg_tasks_count + tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
