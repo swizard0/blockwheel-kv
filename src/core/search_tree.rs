@@ -868,7 +868,17 @@ impl AsyncTree {
                 match oe.get_mut() {
                     AsyncBlock::Awaiting { lookup_requests_queue, .. } |
                     AsyncBlock::Ready { more_lookup_requests: Some(lookup_requests_queue), .. } => {
+
+                        let key = lookup_request.key.clone();
+
                         lookup_requests_queue.push(lookup_request);
+
+                        log::debug!(
+                            "occupied in {}: pushing {:?}",
+                            match oe.get() { AsyncBlock::Awaiting { .. } => "AWAITING", AsyncBlock::Ready { .. } => "READY", },
+                            key,
+                        );
+
                         TaskKind::None
                     },
                     AsyncBlock::Ready { more_lookup_requests: more @ None, .. } => {
