@@ -955,6 +955,15 @@ impl AsyncTree {
           J::Output: From<job::JobOutput>,
           job::JobOutput: From<J::Output>,
     {
+
+        use std::ops::Bound;
+        match (&iter_request.data.range.range_from, &iter_request.data.range.range_to) {
+            (Bound::Included(key_a), Bound::Included(key_b)) =>
+                assert!(&*key_a.key_bytes <= &*key_b.key_bytes),
+            _ =>
+                (),
+        }
+
         let block_ref = iter_request.block_ref.clone();
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
