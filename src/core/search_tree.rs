@@ -707,14 +707,6 @@ where J: edeltraud::Job + From<job::Job>,
                     AsyncBlock::Ready { .. } =>
                         unreachable!(),
                     AsyncBlock::Awaiting { lookup_requests_queue, mut iter_requests_queue, } => {
-
-                        log::debug!(
-                            "LoadBlock done for {:?}, #lookup_requests_queue = {}, #iter_requests_queue = {}",
-                            block_ref,
-                            lookup_requests_queue.len(),
-                            iter_requests_queue.len(),
-                        );
-
                         if !lookup_requests_queue.is_empty() {
                             let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
                             outcomes.clear();
@@ -890,24 +882,10 @@ impl AsyncTree {
                 match oe.get_mut() {
                     AsyncBlock::Awaiting { lookup_requests_queue, .. } |
                     AsyncBlock::Ready { more_lookup_requests: Some(lookup_requests_queue), .. } => {
-
-                        let key = lookup_request.key.clone();
-
                         lookup_requests_queue.push(lookup_request);
-
-                        log::debug!(
-                            "s| occupied in {:?}/{}: pushing {:?}",
-                            block_ref,
-                            match oe.get() { AsyncBlock::Awaiting { .. } => "AWAITING", AsyncBlock::Ready { .. } => "READY", },
-                            key,
-                        );
-
                         TaskKind::None
                     },
                     AsyncBlock::Ready { more_lookup_requests: more @ None, .. } => {
-
-                        log::debug!("s| occupied in ready/{:?} (first): pushing {:?}", block_ref, lookup_request.key);
-
                         let mut lookup_requests_queue =
                             lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                         lookup_requests_queue.clear();
@@ -918,9 +896,6 @@ impl AsyncTree {
                 },
 
             hash_map::Entry::Vacant(ve) => {
-
-                log::debug!("s| vacant in {:?}: pushing {:?}", block_ref, lookup_request.key);
-
                 let mut lookup_requests_queue =
                     lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                 lookup_requests_queue.clear();
@@ -955,44 +930,25 @@ impl AsyncTree {
           J::Output: From<job::JobOutput>,
           job::JobOutput: From<J::Output>,
     {
-
-        use std::ops::Bound;
-        match (&iter_request.data.range.range_from, &iter_request.data.range.range_to) {
-            (Bound::Included(key_a), Bound::Included(key_b)) =>
-                assert!(&*key_a.key_bytes <= &*key_b.key_bytes),
-            _ =>
-                (),
-        }
-
         let block_ref = iter_request.block_ref.clone();
         match self.tree.entry(block_ref.clone()) {
             hash_map::Entry::Occupied(mut oe) =>
                 match oe.get_mut() {
                     AsyncBlock::Awaiting { iter_requests_queue, .. } => {
-
-                        log::debug!("i| occupied in awaiting/{:?}: pushing {:?}", block_ref, iter_request.data.range);
-
                         iter_requests_queue.push(iter_request);
                         TaskKind::None
                     },
-                    AsyncBlock::Ready { block_bytes, .. } => {
-
-                        log::debug!("i| occupied in ready/{:?}: pushing {:?}", block_ref, iter_request.data.range);
-
+                    AsyncBlock::Ready { block_bytes, .. } =>
                         TaskKind::Spawn(task::TaskArgs::IterBlock(task::iter_block::Args {
                             iter_request,
                             iter_block_entries_pool: iter_block_entries_pool.clone(),
                             thread_pool: thread_pool.clone(),
                             block_bytes: block_bytes.clone(),
                             iter_rec_tx: iter_rec_tx.clone(),
-                        }))
-                    },
+                        })),
                 },
 
             hash_map::Entry::Vacant(ve) => {
-
-                log::debug!("i| vacant in {:?}: pushing {:?}", block_ref, iter_request.data.range);
-
                 let mut iter_requests_queue =
                     iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                 iter_requests_queue.clear();
@@ -1034,20 +990,14 @@ impl AsyncTree {
                                 oe.remove();
                                 TaskKind::None
                             },
-                            Some(lookup_requests_queue) => {
-
-                                for lookup_request in lookup_requests_queue.iter() {
-                                    log::debug!("drop_or_search_more: proceeding with {:?}", lookup_request.key);
-                                }
-
+                            Some(lookup_requests_queue) =>
                                 TaskKind::Local(task::TaskArgs::SearchBlock(task::search_block::Args {
                                     block_ref: block_ref.clone(),
                                     thread_pool: thread_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     lookup_requests_queue,
                                     outcomes: outcomes_pool.lend(Vec::new),
-                                }))
-                            },
+                                })),
                         },
                 },
 
