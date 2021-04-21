@@ -62,18 +62,23 @@ pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_
             RemoveTask(T),
         }
         let event = if remove_tasks_count == 0 {
-            Event::BlockItem(fused_block_items_rx.next().await)
+            if fused_block_items_rx.is_terminated() {
+                return Ok(Done { blocks_deleted, done_reply_tx, });
+            } else {
+                Event::BlockItem(fused_block_items_rx.next().await)
+            }
         } else if remove_tasks_count < remove_tasks_limit {
             select! {
                 result = fused_block_items_rx.next() =>
                     Event::BlockItem(result),
-                result = remove_tasks.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(remove_task) => {
-                        remove_tasks_count -= 1;
-                        Event::RemoveTask(remove_task)
-                    },
+                result = remove_tasks.next() =>
+                    match result {
+                        None =>
+                            unreachable!(),
+                        Some(remove_task) => {
+                            remove_tasks_count -= 1;
+                            Event::RemoveTask(remove_task)
+                        },
                 },
             }
         } else {
@@ -112,9 +117,6 @@ pub async fn run(Args { done_reply_tx, block_items_reply_rx, wheels_pid, remove_
             Event::RemoveTask(status) => {
                 let () = status?;
                 blocks_deleted += 1;
-                if remove_tasks_count == 0 && fused_block_items_rx.is_terminated() {
-                    return Ok(Done { blocks_deleted, done_reply_tx, });
-                }
             },
         }
     }
