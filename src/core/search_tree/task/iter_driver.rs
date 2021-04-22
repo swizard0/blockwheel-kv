@@ -33,7 +33,6 @@ pub struct Done;
 #[derive(Debug)]
 pub enum Error {
     IterSearchTreeGenServerGone,
-    IterSearchTreeEndpointDropped,
 }
 
 pub async fn run(
@@ -59,11 +58,13 @@ pub async fn run(
     iter_rec_tx.send(iter_request).await
         .map_err(|_send_error| Error::IterSearchTreeGenServerGone)?;
 
-    let mut iter_items_tx = repay_iter_items_rx.await
-        .map_err(|oneshot::Canceled| Error::IterSearchTreeEndpointDropped)?;
-    if let Err(_send_error) = iter_items_tx.items_tx.send(KeyValueRef::NoMore).await {
-        log::warn!("client canceled iter request");
+    match repay_iter_items_rx.await {
+        Ok(mut iter_items_tx) =>
+            if let Err(_send_error) = iter_items_tx.items_tx.send(KeyValueRef::NoMore).await {
+                log::warn!("client canceled iter request");
+            },
+        Err(oneshot::Canceled) =>
+            log::debug!("repay_iter_items_rx canceled: assume iter request cancel"),
     }
-
     Ok(Done)
 }
