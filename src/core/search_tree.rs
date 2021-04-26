@@ -36,7 +36,6 @@ use ero::{
 use alloc_pool::{
     pool,
     bytes::{
-        Bytes,
         BytesPool,
     },
 };
@@ -606,10 +605,7 @@ where J: edeltraud::Job + From<job::Job>,
                             },
                             &state.pools.lookup_requests_queue_pool,
                             &state.pools.iter_requests_queue_pool,
-                            &state.pools.iter_block_entries_pool,
-                            &state.thread_pool,
                             &state.wheels_pid,
-                            &iter_rec_tx,
                         );
                         match maybe_task_args {
                             TaskKind::None =>
@@ -632,50 +628,41 @@ where J: edeltraud::Job + From<job::Job>,
                 },
 
             Event::Task(Ok(task::TaskDone::LoadBlock(task::load_block::Done { block_ref, block_bytes, }))) => {
-                let async_block = async_tree.get_mut(&block_ref).unwrap();
-                let prev_async_block = mem::replace(async_block, AsyncBlock::Ready {
-                    block_bytes: block_bytes.clone(),
-                    more_lookup_requests: None,
-                });
-                match prev_async_block {
-                    AsyncBlock::Ready { .. } =>
-                        unreachable!(),
-                    AsyncBlock::Awaiting { lookup_requests_queue, mut iter_requests_queue, } => {
-                        if !lookup_requests_queue.is_empty() {
-                            let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
-                            outcomes.clear();
-                            tasks.push(
-                                task::run_args(task::TaskArgs::SearchBlock(task::search_block::Args {
-                                    block_ref: block_ref.clone(),
-                                    thread_pool: state.thread_pool.clone(),
-                                    block_bytes: block_bytes.clone(),
-                                    lookup_requests_queue,
-                                    outcomes,
-                                })),
-                            );
-                            tasks_count += 1;
-                        }
-                        iter_requests_queue.shrink_to_fit();
-                        for iter_request in iter_requests_queue.drain(..) {
-                            tasks.push(
-                                task::run_args(task::TaskArgs::IterBlock(task::iter_block::Args {
-                                    iter_request,
-                                    iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
-                                    thread_pool: state.thread_pool.clone(),
-                                    block_bytes: block_bytes.clone(),
-                                    iter_rec_tx: iter_rec_tx.clone(),
-                                })),
-                            );
-                            tasks_count += 1;
-                        }
-                    },
+                let AsyncBlock { lookup_requests_queue, mut iter_requests_queue, } =
+                    async_tree.remove(&block_ref).unwrap();
+                if !lookup_requests_queue.is_empty() {
+                    let mut outcomes = state.pools.outcomes_pool.lend(Vec::new);
+                    outcomes.clear();
+                    tasks.push(
+                        task::run_args(task::TaskArgs::SearchBlock(task::search_block::Args {
+                            block_ref: block_ref.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                            block_bytes: block_bytes.clone(),
+                            lookup_requests_queue,
+                            outcomes,
+                        })),
+                    );
+                    tasks_count += 1;
+                }
+                iter_requests_queue.shrink_to_fit();
+                for iter_request in iter_requests_queue.drain(..) {
+                    tasks.push(
+                        task::run_args(task::TaskArgs::IterBlock(task::iter_block::Args {
+                            iter_request,
+                            iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                            block_bytes: block_bytes.clone(),
+                            iter_rec_tx: iter_rec_tx.clone(),
+                        })),
+                    );
+                    tasks_count += 1;
                 }
             },
 
             Event::Task(Ok(task::TaskDone::SearchCache(task::search_cache::Done))) =>
                 (),
 
-            Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { block_ref, mut outcomes, }))) => {
+            Event::Task(Ok(task::TaskDone::SearchBlock(task::search_block::Done { mut outcomes, .. }))) => {
                 outcomes.shrink_to_fit();
                 for task::SearchOutcome { request: lookup_request, outcome, } in outcomes.drain(..) {
                     match outcome {
@@ -709,19 +696,6 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     }
                 }
-                let maybe_task_args = async_tree.drop_or_search_more(
-                    &block_ref,
-                    &state.thread_pool,
-                    &state.pools.outcomes_pool,
-                );
-                match maybe_task_args {
-                    TaskKind::None =>
-                        (),
-                    TaskKind::Local(task_args) => {
-                        tasks.push(task::run_args(task_args));
-                        tasks_count += 1;
-                    },
-                }
             },
 
             Event::Task(Ok(task::TaskDone::IterDriver(task::iter_driver::Done))) =>
@@ -730,21 +704,8 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Task(Ok(task::TaskDone::IterCache(task::iter_cache::Done))) =>
                 (),
 
-            Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { block_ref, }))) => {
-                let maybe_task_args = async_tree.drop_or_search_more(
-                    &block_ref,
-                    &state.thread_pool,
-                    &state.pools.outcomes_pool,
-                );
-                match maybe_task_args {
-                    TaskKind::None =>
-                        (),
-                    TaskKind::Local(task_args) => {
-                        tasks.push(task::run_args(task_args));
-                        tasks_count += 1;
-                    },
-                }
-            },
+            Event::Task(Ok(task::TaskDone::IterBlock(task::iter_block::Done { .. }))) =>
+                (),
 
             Event::Task(Ok(task::TaskDone::Demolish(task::demolish::Done { blocks_deleted, done_reply_tx, }))) => {
                 log::debug!("demolished, {} blocks actually deleted", blocks_deleted);
@@ -764,15 +725,9 @@ struct AsyncTree {
     tree: HashMap<BlockRef, AsyncBlock>,
 }
 
-enum AsyncBlock {
-    Awaiting {
-        lookup_requests_queue: task::LookupRequestsQueue,
-        iter_requests_queue: task::IterRequestsQueue,
-    },
-    Ready {
-        block_bytes: Bytes,
-        more_lookup_requests: Option<task::LookupRequestsQueue>,
-    },
+struct AsyncBlock {
+    lookup_requests_queue: task::LookupRequestsQueue,
+    iter_requests_queue: task::IterRequestsQueue,
 }
 
 enum TaskKind<J> where J: edeltraud::Job {
@@ -799,23 +754,11 @@ impl AsyncTree {
     where J: edeltraud::Job
     {
         match self.tree.entry(block_ref.clone()) {
-            hash_map::Entry::Occupied(mut oe) =>
-                match oe.get_mut() {
-                    AsyncBlock::Awaiting { lookup_requests_queue, .. } |
-                    AsyncBlock::Ready { more_lookup_requests: Some(lookup_requests_queue), .. } => {
-                        lookup_requests_queue.push(lookup_request);
-                        TaskKind::None
-                    },
-                    AsyncBlock::Ready { more_lookup_requests: more @ None, .. } => {
-                        let mut lookup_requests_queue =
-                            lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
-                        lookup_requests_queue.clear();
-                        lookup_requests_queue.push(lookup_request);
-                        *more = Some(lookup_requests_queue);
-                        TaskKind::None
-                    },
-                },
-
+            hash_map::Entry::Occupied(mut oe) => {
+                let AsyncBlock { lookup_requests_queue, .. } = oe.get_mut();
+                lookup_requests_queue.push(lookup_request);
+                TaskKind::None
+            },
             hash_map::Entry::Vacant(ve) => {
                 let mut lookup_requests_queue =
                     lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
@@ -824,10 +767,7 @@ impl AsyncTree {
                 let mut iter_requests_queue =
                     iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
                 iter_requests_queue.clear();
-                ve.insert(AsyncBlock::Awaiting {
-                    lookup_requests_queue,
-                    iter_requests_queue,
-                });
+                ve.insert(AsyncBlock { lookup_requests_queue, iter_requests_queue, });
                 TaskKind::Local(task::TaskArgs::LoadBlock(task::load_block::Args {
                     block_ref,
                     wheels_pid: wheels_pid.clone(),
@@ -841,10 +781,7 @@ impl AsyncTree {
         iter_request: task::IterRequest,
         lookup_requests_queue_pool: &pool::Pool<task::LookupRequestsQueueType>,
         iter_requests_queue_pool: &pool::Pool<task::IterRequestsQueueType>,
-        iter_block_entries_pool: &pool::Pool<Vec<task::BlockEntry>>,
-        thread_pool: &edeltraud::Edeltraud<J>,
         wheels_pid: &wheels::Pid,
-        iter_rec_tx: &mpsc::Sender<task::IterRecRequest>,
     )
         -> TaskKind<J>
     where J: edeltraud::Job + From<job::Job>,
@@ -853,22 +790,11 @@ impl AsyncTree {
     {
         let block_ref = iter_request.block_ref.clone();
         match self.tree.entry(block_ref.clone()) {
-            hash_map::Entry::Occupied(mut oe) =>
-                match oe.get_mut() {
-                    AsyncBlock::Awaiting { iter_requests_queue, .. } => {
-                        iter_requests_queue.push(iter_request);
-                        TaskKind::None
-                    },
-                    AsyncBlock::Ready { block_bytes, .. } =>
-                        TaskKind::Local(task::TaskArgs::IterBlock(task::iter_block::Args {
-                            iter_request,
-                            iter_block_entries_pool: iter_block_entries_pool.clone(),
-                            thread_pool: thread_pool.clone(),
-                            block_bytes: block_bytes.clone(),
-                            iter_rec_tx: iter_rec_tx.clone(),
-                        })),
-                },
-
+            hash_map::Entry::Occupied(mut oe) => {
+                let AsyncBlock { iter_requests_queue, .. } = oe.get_mut();
+                iter_requests_queue.push(iter_request);
+                TaskKind::None
+            },
             hash_map::Entry::Vacant(ve) => {
                 let mut iter_requests_queue =
                     iter_requests_queue_pool.lend(task::IterRequestsQueueType::new);
@@ -877,53 +803,12 @@ impl AsyncTree {
                 let mut lookup_requests_queue =
                     lookup_requests_queue_pool.lend(task::LookupRequestsQueueType::new);
                 lookup_requests_queue.clear();
-                ve.insert(AsyncBlock::Awaiting {
-                    lookup_requests_queue,
-                    iter_requests_queue,
-                });
+                ve.insert(AsyncBlock { lookup_requests_queue, iter_requests_queue, });
                 TaskKind::Local(task::TaskArgs::LoadBlock(task::load_block::Args {
                     block_ref,
                     wheels_pid: wheels_pid.clone(),
                 }))
             },
-        }
-    }
-
-    fn drop_or_search_more<J>(
-        &mut self,
-        block_ref: &BlockRef,
-        thread_pool: &edeltraud::Edeltraud<J>,
-        outcomes_pool: &pool::Pool<Vec<task::SearchOutcome>>,
-    )
-        -> TaskKind<J>
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
-    {
-        match self.tree.entry(block_ref.clone()) {
-            hash_map::Entry::Occupied(mut oe) =>
-                match oe.get_mut() {
-                    AsyncBlock::Awaiting { .. } =>
-                        TaskKind::None,
-                    AsyncBlock::Ready { block_bytes, more_lookup_requests, } =>
-                        match more_lookup_requests.take() {
-                            None => {
-                                oe.remove();
-                                TaskKind::None
-                            },
-                            Some(lookup_requests_queue) =>
-                                TaskKind::Local(task::TaskArgs::SearchBlock(task::search_block::Args {
-                                    block_ref: block_ref.clone(),
-                                    thread_pool: thread_pool.clone(),
-                                    block_bytes: block_bytes.clone(),
-                                    lookup_requests_queue,
-                                    outcomes: outcomes_pool.lend(Vec::new),
-                                })),
-                        },
-                },
-
-            hash_map::Entry::Vacant(..) =>
-                TaskKind::None,
         }
     }
 }
