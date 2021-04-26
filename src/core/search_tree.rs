@@ -328,7 +328,7 @@ enum Error {
     Task(task::Error),
 }
 
-async fn busyloop<J>(mut child_supervisor_pid: SupervisorPid, mut state: State<J>) -> Result<(), ErrorSeverity<State<J>, Error>>
+async fn busyloop<J>(_child_supervisor_pid: SupervisorPid, mut state: State<J>) -> Result<(), ErrorSeverity<State<J>, Error>>
 where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
@@ -340,31 +340,18 @@ where J: edeltraud::Job + From<job::Job>,
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
 
-    let (bg_tasks_tx, bg_tasks_rx) = mpsc::channel(0);
-    let mut fused_bg_tasks_rx = bg_tasks_rx.fuse();
-    let mut bg_tasks_count = 0;
-
-    let mut bg_tasks_push = |args| {
-        let mut bg_tasks_tx = bg_tasks_tx.clone();
-        let bg_task = task::run_args(args);
-        child_supervisor_pid.spawn_link_temporary(async move {
-            let bg_task_result = bg_task.await;
-            bg_tasks_tx.send(bg_task_result).await.ok();
-        });
-    };
-
     match &state.mode {
         Mode::CacheBootstrap { cache, } => {
-            bg_tasks_push(
-                task::TaskArgs::Bootstrap(task::bootstrap::Args {
+            tasks.push(
+                task::run_args(task::TaskArgs::Bootstrap(task::bootstrap::Args {
                     cache: cache.clone(),
                     thread_pool: state.thread_pool.clone(),
                     blocks_pool: state.pools.blocks_pool.clone(),
                     wheels_pid: state.wheels_pid.clone(),
                     values_inline_size_limit: state.params.values_inline_size_limit,
-                }),
+                })),
             );
-            bg_tasks_count += 1;
+            tasks_count += 1;
         },
         Mode::Regular { .. } =>
             (),
@@ -381,7 +368,7 @@ where J: edeltraud::Job + From<job::Job>,
     let mut self_destruct_in_progress = false;
 
     loop {
-        assert!(tasks_count + bg_tasks_count != 0 || async_tree.tree.is_empty());
+        assert!(tasks_count != 0 || async_tree.tree.is_empty());
 
         enum Event<R, T, I> {
             Request(Option<R>),
@@ -400,28 +387,12 @@ where J: edeltraud::Job + From<job::Job>,
                         Some(iter_rec_request) =>
                             Event::IterRec(iter_rec_request),
                     },
-                    result = fused_bg_tasks_rx.next() => match result {
-                        None =>
-                            unreachable!(),
-                        Some(task) => {
-                            bg_tasks_count -= 1;
-                            Event::Task(task)
-                        },
-                    },
                 },
 
             FlushMode::NoFlush =>
                 select! {
                     result = state.fused_request_rx.next() =>
                         Event::Request(result),
-                    result = fused_bg_tasks_rx.next() => match result {
-                        None =>
-                            unreachable!(),
-                        Some(task) => {
-                            bg_tasks_count -= 1;
-                            Event::Task(task)
-                        },
-                    },
                     result = tasks.next() => match result {
                         None =>
                             unreachable!(),
@@ -438,7 +409,7 @@ where J: edeltraud::Job + From<job::Job>,
                     },
                 },
 
-            FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } if bg_tasks_count + tasks_count == 0 => {
+            FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } if tasks_count == 0 => {
                 log::debug!("FlushMode::InProgress: all tasks finished");
 
                 if let Some(done_reply_tx) = flush_reply_tx {
@@ -465,15 +436,15 @@ where J: edeltraud::Job + From<job::Job>,
                     );
                     tasks_count += 1;
 
-                    bg_tasks_push(
-                        task::TaskArgs::Demolish(task::demolish::Args {
+                    tasks.push(
+                        task::run_args(task::TaskArgs::Demolish(task::demolish::Args {
                             done_reply_tx,
                             block_items_reply_rx: reply_rx,
                             wheels_pid: state.wheels_pid.clone(),
                             remove_tasks_limit: state.params.remove_tasks_limit,
-                        }),
+                        })),
                     );
-                    bg_tasks_count += 1;
+                    tasks_count += 1;
 
                     self_destruct_in_progress = true;
                 }
@@ -481,39 +452,10 @@ where J: edeltraud::Job + From<job::Job>,
                 continue;
             },
 
-            FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } if tasks_count == 0 => {
-                log::debug!("FlushMode::InProgress: {} tasks left", bg_tasks_count);
-                flush_mode = FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, };
-                select! {
-                    result = fused_bg_tasks_rx.next() => match result {
-                        None =>
-                            unreachable!(),
-                        Some(task) => {
-                            bg_tasks_count -= 1;
-                            Event::Task(task)
-                        },
-                    },
-                    result = iter_rec_rx.next() => match result {
-                        None =>
-                            unreachable!(),
-                        Some(iter_rec_request) =>
-                            Event::IterRec(iter_rec_request),
-                    },
-                }
-            },
-
             FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, } => {
-                log::debug!("FlushMode::InProgress: {} tasks left", bg_tasks_count + tasks_count);
+                log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
                 flush_mode = FlushMode::InProgress { flush_reply_tx, demolish_reply_tx, };
                 select! {
-                    result = fused_bg_tasks_rx.next() => match result {
-                        None =>
-                            unreachable!(),
-                        Some(task) => {
-                            bg_tasks_count -= 1;
-                            Event::Task(task)
-                        },
-                    },
                     result = tasks.next() => match result {
                         None =>
                             unreachable!(),
@@ -577,10 +519,6 @@ where J: edeltraud::Job + From<job::Job>,
                                 tasks.push(task::run_args(task_args));
                                 tasks_count += 1;
                             },
-                            TaskKind::Spawn(task_args) => {
-                                bg_tasks_push(task_args);
-                                bg_tasks_count += 1;
-                            },
                         }
                     },
                 }
@@ -611,7 +549,7 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Flush { reply_tx, })) => {
                 assert!(!self_destruct_in_progress);
 
-                log::debug!("Request::Flush received: waiting for {} tasks to finish", bg_tasks_count + tasks_count);
+                log::debug!("Request::Flush received: waiting for {} tasks to finish", tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
                         flush_mode = FlushMode::InProgress {
@@ -628,7 +566,7 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Demolish { reply_tx, })) => {
                 assert!(!self_destruct_in_progress);
 
-                log::debug!("Request::Demolish received: waiting for {} tasks to finish", bg_tasks_count + tasks_count);
+                log::debug!("Request::Demolish received: waiting for {} tasks to finish", tasks_count);
                 match &mut flush_mode {
                     FlushMode::NoFlush =>
                         flush_mode = FlushMode::InProgress {
@@ -680,10 +618,6 @@ where J: edeltraud::Job + From<job::Job>,
                                 tasks.push(task::run_args(task_args));
                                 tasks_count += 1;
                             },
-                            TaskKind::Spawn(task_args) => {
-                                bg_tasks_push(task_args);
-                                bg_tasks_count += 1;
-                            },
                         }
                     },
                 }
@@ -723,16 +657,16 @@ where J: edeltraud::Job + From<job::Job>,
                         }
                         iter_requests_queue.shrink_to_fit();
                         for iter_request in iter_requests_queue.drain(..) {
-                            bg_tasks_push(
-                                task::TaskArgs::IterBlock(task::iter_block::Args {
+                            tasks.push(
+                                task::run_args(task::TaskArgs::IterBlock(task::iter_block::Args {
                                     iter_request,
                                     iter_block_entries_pool: state.pools.iter_block_entries_pool.clone(),
                                     thread_pool: state.thread_pool.clone(),
                                     block_bytes: block_bytes.clone(),
                                     iter_rec_tx: iter_rec_tx.clone(),
-                                }),
+                                })),
                             );
-                            bg_tasks_count += 1;
+                            tasks_count += 1;
                         }
                     },
                 }
@@ -771,10 +705,6 @@ where J: edeltraud::Job + From<job::Job>,
                                     tasks.push(task::run_args(task_args));
                                     tasks_count += 1;
                                 },
-                                TaskKind::Spawn(task_args) => {
-                                    bg_tasks_push(task_args);
-                                    bg_tasks_count += 1;
-                                },
                             }
                         },
                     }
@@ -790,10 +720,6 @@ where J: edeltraud::Job + From<job::Job>,
                     TaskKind::Local(task_args) => {
                         tasks.push(task::run_args(task_args));
                         tasks_count += 1;
-                    },
-                    TaskKind::Spawn(task_args) => {
-                        bg_tasks_push(task_args);
-                        bg_tasks_count += 1;
                     },
                 }
             },
@@ -816,10 +742,6 @@ where J: edeltraud::Job + From<job::Job>,
                     TaskKind::Local(task_args) => {
                         tasks.push(task::run_args(task_args));
                         tasks_count += 1;
-                    },
-                    TaskKind::Spawn(task_args) => {
-                        bg_tasks_push(task_args);
-                        bg_tasks_count += 1;
                     },
                 }
             },
@@ -856,7 +778,6 @@ enum AsyncBlock {
 enum TaskKind<J> where J: edeltraud::Job {
     None,
     Local(task::TaskArgs<J>),
-    Spawn(task::TaskArgs<J>),
 }
 
 impl AsyncTree {
@@ -939,7 +860,7 @@ impl AsyncTree {
                         TaskKind::None
                     },
                     AsyncBlock::Ready { block_bytes, .. } =>
-                        TaskKind::Spawn(task::TaskArgs::IterBlock(task::iter_block::Args {
+                        TaskKind::Local(task::TaskArgs::IterBlock(task::iter_block::Args {
                             iter_request,
                             iter_block_entries_pool: iter_block_entries_pool.clone(),
                             thread_pool: thread_pool.clone(),
