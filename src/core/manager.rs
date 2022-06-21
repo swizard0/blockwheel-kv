@@ -330,7 +330,7 @@ enum Request {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     Task(task::Error),
     WheelsIterBlocks(wheels::IterBlocksError),
     WheelsIterBlocksRxDropped,

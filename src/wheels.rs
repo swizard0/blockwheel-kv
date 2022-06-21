@@ -266,7 +266,7 @@ enum Request {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     WheelGoneDuringFlush {
         blockwheel_filename: WheelFilename,
     },
