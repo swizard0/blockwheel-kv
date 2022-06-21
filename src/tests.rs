@@ -164,7 +164,7 @@ struct DataIndex {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     ThreadPool(edeltraud::BuildError),
     GenTaskJoin(tokio::task::JoinError),
     Insert(blockwheel_kv::InsertError),
