@@ -26,7 +26,6 @@ use crate::{
 
 pub mod bootstrap;
 pub mod load_block;
-pub mod search_cache;
 pub mod search_block;
 pub mod iter_cache;
 pub mod iter_block;
@@ -92,7 +91,6 @@ pub enum SearchTreeLookupError {
 pub enum TaskArgs<J> where J: edeltraud::Job {
     Bootstrap(bootstrap::Args<J>),
     LoadBlock(load_block::Args),
-    SearchCache(search_cache::Args<J>),
     SearchBlock(search_block::Args<J>),
     IterCache(iter_cache::Args<J>),
     IterBlock(iter_block::Args<J>),
@@ -103,7 +101,6 @@ pub enum TaskArgs<J> where J: edeltraud::Job {
 pub enum TaskDone {
     Bootstrap(bootstrap::Done),
     LoadBlock(load_block::Done),
-    SearchCache(search_cache::Done),
     SearchBlock(search_block::Done),
     IterCache(iter_cache::Done),
     IterBlock(iter_block::Done),
@@ -115,7 +112,6 @@ pub enum TaskDone {
 pub enum Error {
     Bootstrap(bootstrap::Error),
     LoadBlock(load_block::Error),
-    SearchCache(search_cache::Error),
     SearchBlock(search_block::Error),
     IterCache(iter_cache::Error),
     IterBlock(iter_block::Error),
@@ -138,11 +134,6 @@ where J: edeltraud::Job + From<job::Job>,
             TaskDone::LoadBlock(
                 load_block::run(args).await
                     .map_err(Error::LoadBlock)?,
-            ),
-        TaskArgs::SearchCache(args) =>
-            TaskDone::SearchCache(
-                search_cache::run(args).await
-                    .map_err(Error::SearchCache)?,
             ),
         TaskArgs::SearchBlock(args) =>
             TaskDone::SearchBlock(
