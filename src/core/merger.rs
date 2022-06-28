@@ -16,6 +16,7 @@ use futures::{
     stream::{
         FuturesUnordered,
     },
+    select,
     StreamExt,
 };
 
@@ -73,33 +74,85 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
         -> Result<Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>, Error>
     where F: FnMut(kv::KeyValuePair<storage::OwnedValueBlockRef>)
     {
-        let mut await_set = FuturesUnordered::new();
+        enum AwaitSet<I> {
+            Empty,
+            One(I),
+            Two(I, I),
+            Set,
+        }
+        let mut await_set_futures = FuturesUnordered::new();
+        let mut await_set = AwaitSet::Empty;
 
         loop {
+            async fn make_future(
+                mut await_iter: AwaitIter<mpsc::Receiver<KeyValueRef>>
+            )
+                -> (Option<KeyValueRef>, AwaitIter<mpsc::Receiver<KeyValueRef>>)
+            {
+                let maybe_item = await_iter.stream.next().await;
+                (maybe_item, await_iter)
+            }
+
             match mem::replace(&mut self.kont, Kont::Done) {
-                Kont::ScheduleIterAwait { mut await_iter, next, } => {
-                    await_set.push(async move {
-                        let maybe_item = await_iter.stream.next().await;
-                        (maybe_item, await_iter)
-                    });
+                Kont::ScheduleIterAwait { await_iter, next, } => {
+                    await_set = match await_set {
+                        AwaitSet::Empty =>
+                            AwaitSet::One(await_iter),
+                        AwaitSet::One(prev_await_iter) =>
+                            AwaitSet::Two(prev_await_iter, await_iter),
+                        AwaitSet::Two(await_iter_a, await_iter_b) => {
+                            assert!(await_set_futures.is_empty());
+                            await_set_futures.push(make_future(await_iter_a));
+                            await_set_futures.push(make_future(await_iter_b));
+                            await_set_futures.push(make_future(await_iter));
+                            AwaitSet::Set
+                        },
+                        AwaitSet::Set => {
+                            assert!(!await_set_futures.is_empty());
+                            await_set_futures.push(make_future(await_iter));
+                            AwaitSet::Set
+                        },
+                    };
                     self.kont = next.proceed();
                 },
-                Kont::AwaitScheduled { next, } =>
-                    match await_set.next().await {
-                        None =>
+                Kont::AwaitScheduled { next, } => {
+                    let (maybe_item, await_iter) = match mem::replace(&mut await_set, AwaitSet::Empty) {
+                        AwaitSet::Empty =>
                             unreachable!(),
-                        Some((None, _await_iter)) =>
+                        AwaitSet::One(await_iter) => {
+                            make_future(await_iter).await
+                        },
+                        AwaitSet::Two(mut await_iter_a, mut await_iter_b) =>
+                            select! {
+                                result = await_iter_a.stream.next() => {
+                                    await_set = AwaitSet::One(await_iter_b);
+                                    (result, await_iter_a)
+                                },
+                                result = await_iter_b.stream.next() => {
+                                    await_set = AwaitSet::One(await_iter_a);
+                                    (result, await_iter_b)
+                                },
+                            },
+                        AwaitSet::Set => {
+                            let result = await_set_futures.next().await.unwrap();
+                            if !await_set_futures.is_empty() {
+                                await_set = AwaitSet::Set;
+                            }
+                            result
+                        },
+                    };
+                    match maybe_item {
+                        None =>
                             return Err(Error::BackendIterPeerLost),
-                        Some((Some(key_value_ref), await_iter)) =>
+                        Some(key_value_ref) =>
                             self.kont = next.proceed_with_item(await_iter, key_value_ref),
-                    },
+                    }
+                },
                 Kont::Deprecated { item, next, } => {
-                    assert!(await_set.is_empty());
                     deprecated(item);
                     self.kont = next.proceed();
                 },
                 Kont::Item { best_item, next, } => {
-                    assert!(await_set.is_empty());
                     self.kont = next.proceed();
                     return Ok(Some(best_item));
                 },
