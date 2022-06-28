@@ -54,7 +54,7 @@ pub struct Args<J> where J: edeltraud::Job {
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub blocks_pool: BytesPool,
     pub merge_blocks_pool: pool::Pool<Vec<storage::OwnedEntry>>,
-    pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIter>>,
+    pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIterRx>>,
     pub wheels_pid: wheels::Pid,
     pub tree_block_size: usize,
 }
@@ -415,9 +415,9 @@ async fn merger_start(
     search_tree_b_ref: Ref,
     search_tree_a_pid: &mut search_tree::Pid,
     search_tree_b_pid: &mut search_tree::Pid,
-    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIter>>,
+    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIterRx>>,
 )
-    -> Result<merger::ItersMerger<Unique<Vec<merger::KeyValuesIter>>>, Error>
+    -> Result<merger::ItersMerger<Unique<Vec<merger::KeyValuesIterRx>>>, Error>
 {
     let (items_a_rx, items_b_rx) = futures::future::try_join(
         async {

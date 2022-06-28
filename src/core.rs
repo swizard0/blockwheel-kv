@@ -115,6 +115,7 @@ impl DerefMut for MemCache {
     }
 }
 
+#[derive(Debug)]
 pub enum KeyValueRef {
     Item {
         key: kv::Key,

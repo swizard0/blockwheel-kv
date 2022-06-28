@@ -34,7 +34,7 @@ pub struct Args {
     pub range: SearchRangeBounds,
     pub key_values_tx: mpsc::Sender<KeyValueStreamItem>,
     pub butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
-    pub merger_iters: Unique<Vec<merger::KeyValuesIter>>,
+    pub merger_iters: Unique<Vec<merger::KeyValuesIterRx>>,
     pub wheels_pid: wheels::Pid,
 }
 

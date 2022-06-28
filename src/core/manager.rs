@@ -364,7 +364,7 @@ struct LookupRangeRequest {
     range: SearchRangeBounds,
     key_values_tx: mpsc::Sender<KeyValueStreamItem>,
     butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
-    merger_iters: Unique<Vec<merger::KeyValuesIter>>,
+    merger_iters: Unique<Vec<merger::KeyValuesIterRx>>,
     pending_count: usize,
 }
 
@@ -1131,7 +1131,7 @@ fn maybe_merge_search_trees<J>(
     thread_pool: &edeltraud::Edeltraud<J>,
     blocks_pool: &BytesPool,
     merge_blocks_pool: &pool::Pool<Vec<storage::OwnedEntry>>,
-    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIter>>,
+    merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIterRx>>,
     wheels_pid: &wheels::Pid,
     tree_block_size: usize,
 )
