@@ -56,7 +56,7 @@ pub enum Error {
 impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
     pub fn new(iters: V) -> ItersMerger<V> {
         ItersMerger {
-            kont: Inner::new(iters)
+            kont: ItersMergerCps::new(iters)
                 .step(),
         }
     }
@@ -161,13 +161,9 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
             }
         }
     }
-
-    // pub fn run(self) -> Kont<V, mpsc::Receiver<KeyValueRef>> {
-    //     self.kont
-    // }
 }
 
-struct Inner<V> {
+struct ItersMergerCps<V> {
     state: State,
     iters: V,
 }
@@ -218,8 +214,8 @@ struct StateIter {
     deprecated: bool,
 }
 
-impl<V> Inner<V> {
-    fn new(iters: V) -> Self {
+impl<V> ItersMergerCps<V> {
+    pub fn new(iters: V) -> Self {
         Self {
             state: State::Await(StateAwait::default()),
             iters,
@@ -227,7 +223,7 @@ impl<V> Inner<V> {
     }
 }
 
-impl<V, S> Inner<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
+impl<V, S> ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
     fn step(mut self) -> Kont<V, S> {
         loop {
             match self.state {
@@ -368,9 +364,9 @@ pub struct KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<KeyVal
     iters: V,
 }
 
-impl<V, S> From<KontScheduleIterAwaitNext<V, S>> for Inner<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
-    fn from(kont: KontScheduleIterAwaitNext<V, S>) -> Inner<V> {
-        Inner {
+impl<V, S> From<KontScheduleIterAwaitNext<V, S>> for ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
+    fn from(kont: KontScheduleIterAwaitNext<V, S>) -> ItersMergerCps<V> {
+        ItersMergerCps {
             state: State::Await(kont.state_await),
             iters: kont.iters,
         }
@@ -379,7 +375,7 @@ impl<V, S> From<KontScheduleIterAwaitNext<V, S>> for Inner<V> where V: DerefMut<
 
 impl<V, S> KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
     pub fn proceed(self) -> Kont<V, S> {
-        Inner::from(self).step()
+        ItersMergerCps::from(self).step()
     }
 
 }
@@ -389,9 +385,9 @@ pub struct KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<KeyValues
     iters: V,
 }
 
-impl<V, S> From<KontAwaitScheduledNext<V, S>> for Inner<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
-    fn from(kont: KontAwaitScheduledNext<V, S>) -> Inner<V> {
-        Inner {
+impl<V, S> From<KontAwaitScheduledNext<V, S>> for ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
+    fn from(kont: KontAwaitScheduledNext<V, S>) -> ItersMergerCps<V> {
+        ItersMergerCps {
             state: State::Await(kont.state_await),
             iters: kont.iters,
         }
@@ -404,7 +400,7 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<KeyValues
         match item {
             KeyValueRef::NoMore => {
                 self.state_await.pending_count -= 1;
-                Inner::from(self).step()
+                ItersMergerCps::from(self).step()
             },
             KeyValueRef::BlockFinish(..) =>
                 Kont::ScheduleIterAwait {
@@ -419,7 +415,7 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<KeyValues
                     IterState::FrontItem(kv::KeyValuePair { key, value_cell, });
                 self.iters.push(await_iter.iter);
                 self.state_await.pending_count -= 1;
-                Inner::from(self).step()
+                ItersMergerCps::from(self).step()
            },
         }
     }
@@ -430,9 +426,9 @@ pub struct KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter
     iters: V,
 }
 
-impl<V, S> From<KontDeprecatedNext<V, S>> for Inner<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
-    fn from(kont: KontDeprecatedNext<V, S>) -> Inner<V> {
-        Inner {
+impl<V, S> From<KontDeprecatedNext<V, S>> for ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
+    fn from(kont: KontDeprecatedNext<V, S>) -> ItersMergerCps<V> {
+        ItersMergerCps {
             state: State::Await(kont.state_await),
             iters: kont.iters,
         }
@@ -441,7 +437,7 @@ impl<V, S> From<KontDeprecatedNext<V, S>> for Inner<V> where V: DerefMut<Target 
 
 impl<V, S> KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
     pub fn proceed(self) -> Kont<V, S> {
-        Inner::from(self).step()
+        ItersMergerCps::from(self).step()
     }
 }
 
@@ -450,9 +446,9 @@ pub struct KontItemNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> 
     iters: V,
 }
 
-impl<V, S> From<KontItemNext<V, S>> for Inner<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
-    fn from(kont: KontItemNext<V, S>) -> Inner<V> {
-        Inner {
+impl<V, S> From<KontItemNext<V, S>> for ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
+    fn from(kont: KontItemNext<V, S>) -> ItersMergerCps<V> {
+        ItersMergerCps {
             state: State::Await(kont.state_await),
             iters: kont.iters,
         }
@@ -461,7 +457,7 @@ impl<V, S> From<KontItemNext<V, S>> for Inner<V> where V: DerefMut<Target = Vec<
 
 impl<V, S> KontItemNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
     pub fn proceed(self) -> Kont<V, S> {
-        Inner::from(self).step()
+        ItersMergerCps::from(self).step()
     }
 }
 
@@ -482,7 +478,7 @@ mod tests {
 
     use super::{
         Kont,
-        Inner,
+        ItersMergerCps,
         KeyValuesIter,
     };
 
@@ -496,7 +492,7 @@ mod tests {
             KeyValuesIter::new(vec![7, 10, 11]),
         ];
 
-        let iters_merger = Inner::new(&mut iters);
+        let iters_merger = ItersMergerCps::new(&mut iters);
         let mut await_set = vec![];
         let mut kont = iters_merger.step();
         let mut output = vec![];
@@ -544,7 +540,7 @@ mod tests {
             KeyValuesIter::new(vec![(0, 2)]),
         ];
 
-        let iters_merger = Inner::new(&mut iters);
+        let iters_merger = ItersMergerCps::new(&mut iters);
         let mut await_set = vec![];
         let mut kont = iters_merger.step();
         let mut output = vec![];
