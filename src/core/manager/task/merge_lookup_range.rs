@@ -20,6 +20,7 @@ use ero_blockwheel_fs as blockwheel;
 
 use crate::{
     kv,
+    job,
     wheels,
     storage,
     core::{
@@ -30,12 +31,13 @@ use crate::{
     KeyValueStreamItem,
 };
 
-pub struct Args {
+pub struct Args<J> where J: edeltraud::Job {
     pub range: SearchRangeBounds,
     pub key_values_tx: mpsc::Sender<KeyValueStreamItem>,
     pub butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
     pub merger_iters: Unique<Vec<merger::KeyValuesIterRx>>,
     pub wheels_pid: wheels::Pid,
+    pub thread_pool: edeltraud::Edeltraud<J>,
 }
 
 pub enum Done {
@@ -65,7 +67,14 @@ pub enum Error {
     ValueDeserialize(storage::Error),
 }
 
-pub async fn run(Args { range, mut key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, }: Args) -> Result<Done, Error> {
+pub async fn run<J>(
+    Args { range, mut key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, thread_pool: _, }: Args<J>,
+)
+    -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     let (mut butcher_iter_tx, butcher_iter_rx) = mpsc::channel(0);
     let butcher_forward_task = async move {
         for key_value in butcher_iter_items.iter() {

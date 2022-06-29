@@ -30,7 +30,7 @@ pub enum TaskArgs<J> where J: edeltraud::Job {
     FlushSearchTree(flush_search_tree::Args),
     DemolishSearchTree(demolish_search_tree::Args),
     MergeSearchTrees(merge_search_trees::Args<J>),
-    MergeLookupRange(merge_lookup_range::Args),
+    MergeLookupRange(merge_lookup_range::Args<J>),
     RetrieveValue(retrieve_value::Args),
 }
 

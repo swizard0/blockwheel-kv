@@ -894,6 +894,7 @@ where J: edeltraud::Job + From<job::Job>,
                             butcher_iter_items: iter_items,
                             merger_iters,
                             wheels_pid: state.wheels_pid.clone(),
+                            thread_pool: state.thread_pool.clone(),
                         },
                     ));
                     bg_tasks_count += 1;
@@ -933,6 +934,7 @@ where J: edeltraud::Job + From<job::Job>,
                             butcher_iter_items: lookup_range_request.butcher_iter_items,
                             merger_iters: lookup_range_request.merger_iters,
                             wheels_pid: state.wheels_pid.clone(),
+                            thread_pool: state.thread_pool.clone(),
                         },
                     ));
                     bg_tasks_count += 1;
