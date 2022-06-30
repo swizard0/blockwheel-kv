@@ -1,4 +1,5 @@
 use std::{
+    mem,
     ops::{
         Bound,
     },
@@ -11,11 +12,18 @@ use futures::{
     channel::{
         mpsc,
     },
+    stream::{
+        FuturesUnordered,
+    },
     SinkExt,
     FutureExt,
+    StreamExt,
 };
 
 use alloc_pool::{
+    bytes::{
+        Bytes,
+    },
     Shared,
     Unique,
 };
@@ -73,7 +81,7 @@ pub enum Error {
 }
 
 pub async fn run<J>(
-    Args { range, mut key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, mut thread_pool, }: Args<J>,
+    Args { range, key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, thread_pool, }: Args<J>,
 )
     -> Result<Done, Error>
 where J: edeltraud::Job + From<job::Job>,
@@ -81,69 +89,249 @@ where J: edeltraud::Job + From<job::Job>,
       job::JobOutput: From<J::Output>,
 {
     enum QueueEntry {
-        Sent,
         ReadyToSend {
             item: kv::KeyValuePair<kv::Value>,
         },
         PendingValueLoad {
             key: kv::Key,
             version: u64,
-            block_ref: wheels::BlockRef,
-        }
+        },
+        Sending,
+        Sent,
     }
 
     let mut queue = Vec::new();
     let mut queue_front_offset = 0;
 
-    let mut env = merge_cps::Env::default();
-    let mut kont = merge_cps::Kont::Start { butcher_iter_items, merger_iters, };
+    enum MergeCpsState {
+        Ready {
+            job_args: merge_cps::JobArgs,
+        },
+        InProgress,
+        AwaitIters {
+            job_args: merge_cps::JobArgs,
+            pending_count: usize,
+        },
+        Finished,
+    }
 
+    let mut merge_cps_state = MergeCpsState::Ready {
+        job_args: merge_cps::JobArgs {
+            env: merge_cps::Env::default(),
+            kont: merge_cps::Kont::Start { butcher_iter_items, merger_iters, },
+        },
+    };
+
+    enum TxState {
+        Idle {
+            key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+            queue_tx_index: usize,
+        },
+        Sending,
+    }
+
+    let mut tx_state = TxState::Idle { key_values_tx, queue_tx_index: 0, };
+
+    let mut tasks = FuturesUnordered::new();
     loop {
-        let job = job::Job::MergeCps(merge_cps::JobArgs { env, kont, });
-        let job_output = thread_pool.spawn(job).await
-            .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
-        let job_output: job::JobOutput = job_output.into();
-        let job::MergeCpsDone(merge_cps_result) = job_output.into();
-        let job_done = merge_cps_result;
-        env = job_done.env;
-
-        for key_value_ref in env.ready_items.drain(..) {
-            let queue_entry = match key_value_ref {
-                kv::KeyValuePair {
-                    key,
-                    value_cell: kv::ValueCell {
-                        version,
-                        cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
-                    },
-                } =>
-                    QueueEntry::ReadyToSend {
-                        item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, },
-                    },
-                kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
-                    QueueEntry::ReadyToSend {
-                        item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, },
-                    },
-                kv::KeyValuePair {
-                    key,
-                    value_cell: kv::ValueCell {
-                        version,
-                        cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-                    },
-                } => {
-                    QueueEntry::PendingValueLoad { key, version, block_ref, }
-                }
-            };
-            queue.push(queue_entry);
+        match merge_cps_state {
+            MergeCpsState::Ready { job_args, } if queue_front_offset < queue.len() =>
+                merge_cps_state = MergeCpsState::Ready { job_args, },
+            MergeCpsState::Ready { job_args, } => {
+                tasks.push(Task::MergeCps { job_args, thread_pool: thread_pool.clone(), }.make());
+                merge_cps_state = MergeCpsState::InProgress;
+            },
+            MergeCpsState::InProgress =>
+                merge_cps_state = MergeCpsState::InProgress,
+            MergeCpsState::AwaitIters { job_args, pending_count, } if pending_count == 0 => {
+                merge_cps_state = MergeCpsState::Ready { job_args, };
+                continue;
+            },
+            MergeCpsState::AwaitIters { job_args, pending_count, } =>
+                merge_cps_state = MergeCpsState::AwaitIters { job_args, pending_count, },
+            MergeCpsState::Finished if queue.is_empty() =>
+                return Ok(Done::MergeSuccess),
+            MergeCpsState::Finished =>
+                merge_cps_state = MergeCpsState::Finished,
         }
 
-        match job_done.done {
-            merge_cps::Done::AwaitIters { next, } =>
-                todo!(),
-            merge_cps::Done::Finish =>
-                todo!(),
+        match tx_state {
+            TxState::Idle { key_values_tx, queue_tx_index, } => {
+                if let Some(queue_entry) = queue.get_mut(queue_tx_index) {
+                    match mem::replace(queue_entry, QueueEntry::Sending) {
+                        QueueEntry::ReadyToSend { item, } => {
+                            tasks.push(Task::TxItem { key_value: item, key_values_tx, queue_tx_index, }.make());
+                            tx_state = TxState::Sending;
+                            continue;
+                        },
+                        QueueEntry::PendingValueLoad { key, version, } =>
+                            *queue_entry = QueueEntry::PendingValueLoad { key, version, },
+                        QueueEntry::Sending | QueueEntry::Sent =>
+                            unreachable!(),
+                    }
+                }
+                tx_state = TxState::Idle { key_values_tx, queue_tx_index, };
+            },
+            TxState::Sending =>
+                tx_state = TxState::Sending,
+        }
+
+        let task_done = tasks.next().await;
+        match task_done {
+
+            None =>
+                unreachable!(),
+
+            Some(Ok(TaskOutput::MergeCps { job_done: merge_cps::JobDone { mut env, done, }, })) => {
+                for key_value_ref in env.ready_items.drain(..) {
+                    let queue_entry = match key_value_ref {
+                        kv::KeyValuePair {
+                            key,
+                            value_cell: kv::ValueCell {
+                                version,
+                                cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
+                            },
+                        } =>
+                            QueueEntry::ReadyToSend {
+                                item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, },
+                            },
+                        kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
+                            QueueEntry::ReadyToSend {
+                                item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, },
+                            },
+                        kv::KeyValuePair {
+                            key,
+                            value_cell: kv::ValueCell {
+                                version,
+                                cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                            },
+                        } => {
+                            let queue_index = queue.len();
+                            tasks.push(Task::ValueLoad { queue_index, block_ref, wheels_pid: wheels_pid.clone(), }.make());
+                            QueueEntry::PendingValueLoad { key, version, }
+                        }
+                    };
+                    queue.push(queue_entry);
+                }
+
+                todo!()
+            },
+
+            Some(Ok(TaskOutput::ValueLoad { queue_index, value_bytes, })) => {
+
+                todo!()
+            },
+
+            Some(Ok(TaskOutput::ValueNotFound { queue_index, })) => {
+
+                todo!()
+            },
+
+            Some(Ok(TaskOutput::TxItemSent { key_values_tx, mut queue_tx_index, })) => {
+
+
+                // tx_state = TxState::Idle { key_values_tx, queue_tx_index, }
+
+                todo!()
+            },
+
+            Some(Ok(TaskOutput::TxDropped)) =>
+                return Ok(Done::MergeSuccess),
+
+            Some(Err(error)) =>
+                return Err(error),
+
+        }
+
+        // match job_done.done {
+        //     merge_cps::Done::AwaitIters { next, } =>
+        //         todo!(),
+        //     merge_cps::Done::Finish =>
+        //         todo!(),
+        // }
+    }
+}
+
+enum Task<J> where J: edeltraud::Job {
+    MergeCps {
+        job_args: merge_cps::JobArgs,
+        thread_pool: edeltraud::Edeltraud<J>,
+    },
+    ValueLoad {
+        queue_index: usize,
+        block_ref: wheels::BlockRef,
+        wheels_pid: wheels::Pid,
+    },
+    TxItem {
+        key_value: kv::KeyValuePair<kv::Value>,
+        key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+        queue_tx_index: usize,
+    },
+}
+
+enum TaskOutput {
+    MergeCps {
+        job_done: merge_cps::JobDone,
+    },
+    ValueLoad {
+        queue_index: usize,
+        value_bytes: Bytes,
+    },
+    ValueNotFound {
+        queue_index: usize,
+    },
+    TxItemSent {
+        key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+        queue_tx_index: usize,
+    },
+    TxDropped,
+}
+
+impl<J> Task<J> where J: edeltraud::Job + From<job::Job>, J::Output: From<job::JobOutput>, job::JobOutput: From<J::Output> {
+    async fn make(self) -> Result<TaskOutput, Error> {
+        match self {
+
+            Task::MergeCps { job_args, mut thread_pool, } => {
+                let job = job::Job::MergeCps(job_args);
+                let job_output = thread_pool.spawn(job).await
+                    .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                let job_output: job::JobOutput = job_output.into();
+                let job::MergeCpsDone(merge_cps_result) = job_output.into();
+                let job_done = merge_cps_result;
+                Ok(TaskOutput::MergeCps { job_done, })
+            },
+
+            Task::ValueLoad { queue_index, block_ref, mut wheels_pid, } => {
+                let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
+                    .map_err(|ero::NoProcError| Error::WheelsGone)?
+                    .ok_or_else(|| Error::WheelNotFound {
+                        blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                    })?;
+                let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
+                    Ok(block_bytes) =>
+                        block_bytes,
+                    Err(blockwheel::ReadBlockError::NotFound) =>
+                        return Ok(TaskOutput::ValueNotFound { queue_index, }),
+                    Err(error) =>
+                        return Err(Error::ReadBlock(error)),
+                };
+                let value_bytes = storage::value_block_deserialize(&block_bytes)
+                    .map_err(Error::ValueDeserialize)?;
+                Ok(TaskOutput::ValueLoad { queue_index, value_bytes, })
+            },
+
+            Task::TxItem { key_value, mut key_values_tx, queue_tx_index, } => {
+                if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+                    log::warn!("client dropped iterator in TxItem task");
+                    return Ok(TaskOutput::TxDropped);
+                }
+                Ok(TaskOutput::TxItemSent { key_values_tx, queue_tx_index, })
+            },
+
         }
     }
 }
+
 
     // let (mut butcher_iter_tx, butcher_iter_rx) = mpsc::channel(0);
     // let butcher_forward_task = async move {
@@ -256,69 +444,6 @@ where J: edeltraud::Job + From<job::Job>,
     //     Err(MergeError::Error(error)) =>
     //         Err(error),
     // }
-
-
-async fn schedule_retrieve(
-    key_value: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-    mut wheels_pid: wheels::Pid,
-    key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-)
-    -> Result<(Option<kv::KeyValuePair<kv::Value>>, mpsc::Sender<KeyValueStreamItem>), MergeError>
-{
-    match key_value {
-        kv::KeyValuePair {
-            key,
-            value_cell: kv::ValueCell {
-                version,
-                cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
-            },
-        } =>
-            Ok((
-                Some(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, }),
-                key_values_tx,
-            )),
-        kv::KeyValuePair {
-            key,
-            value_cell: kv::ValueCell {
-                version,
-                cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-            },
-        } => {
-            let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
-                .map_err(|ero::NoProcError| Error::WheelsGone)
-                .map_err(MergeError::Error)?
-                .ok_or_else(|| MergeError::Error(Error::WheelNotFound {
-                    blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                }))?;
-            let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
-                Ok(block_bytes) =>
-                    block_bytes,
-                Err(blockwheel::ReadBlockError::NotFound) =>
-                    return Err(MergeError::DeprecatedResultsFor { key, key_values_tx, }),
-                Err(error) =>
-                    return Err(MergeError::Error(Error::ReadBlock(error))),
-            };
-            let value_bytes = storage::value_block_deserialize(&block_bytes)
-                .map_err(Error::ValueDeserialize)
-                .map_err(MergeError::Error)?;
-            Ok((
-                Some(kv::KeyValuePair {
-                    key,
-                    value_cell: kv::ValueCell {
-                        version,
-                        cell: kv::Cell::Value(value_bytes.into()),
-                    },
-                }),
-                key_values_tx,
-            ))
-        },
-        kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
-            Ok((
-                Some(kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, }),
-                key_values_tx,
-            )),
-    }
-}
 
 pub mod merge_cps {
     use alloc_pool::{
