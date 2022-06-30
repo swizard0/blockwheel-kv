@@ -249,3 +249,160 @@ async fn schedule_retrieve(
             )),
     }
 }
+
+// pub mod merge_job {
+//     use alloc_pool::{
+//         Unique,
+//         Shared,
+//     };
+
+//     use futures::{
+//         channel::{
+//             mpsc,
+//         },
+//     };
+
+//     use crate::{
+//         kv,
+//         core::{
+//             merger,
+//             KeyValueRef,
+//         },
+//     };
+
+//     pub struct Env {
+//         pub ready_items: Vec<KeyValueRef>,
+//         pub await_butcher_iters: Vec<merger::AwaitIter<JoinedIter>>,
+//         pub await_search_tree_iters: Vec<merger::AwaitIter<JoinedIter>>,
+//     }
+
+//     pub struct JobArgs {
+//         pub env: Env,
+//         pub kont: Kont,
+//     }
+
+//     pub enum Kont {
+//         Start {
+//             butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
+//             merger_iters: Unique<Vec<mpsc::Receiver<KeyValueRef>>>,
+//         },
+//     }
+
+//     pub struct JobDone {
+//         pub env: Env,
+//         pub done: Done,
+//     }
+
+//     pub enum Done {
+//         Finish,
+//     }
+
+//     pub type JobOutput = JobDone;
+
+//     pub struct JoinedIters {
+//         iters: Vec<merger::KeyValuesIter<JoinedIter>>,
+//     }
+
+//     pub enum JoinedIter {
+//         Butcher(ButcherJoinedIter),
+//         SearchTree(SearchTreeJoinedIter),
+//     }
+
+//     pub struct ButcherJoinedIter {
+//         items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
+//         index: usize,
+//     }
+
+//     pub struct SearchTreeJoinedIter {
+//         pub iter: mpsc::Receiver<KeyValueRef>,
+//     }
+
+//     pub fn run(JobArgs { mut env, kont, }: JobArgs) -> JobOutput {
+//         assert!(env.ready_items.is_empty());
+//         assert!(env.await_butcher_iters.is_empty());
+//         assert!(env.await_search_tree_iters.is_empty());
+
+//         let mut merger_kont = match kont {
+//             Kont::Start { butcher_iter_items, mut merger_iters, } => {
+//                 let mut iters = Vec::with_capacity(1 + merger_iters.len());
+//                 iters.push(merger::KeyValuesIter::new(
+//                     JoinedIter::Butcher(ButcherJoinedIter {
+//                         items: butcher_iter_items,
+//                         index: 0,
+//                     }),
+//                 ));
+//                 iters.extend(
+//                     merger_iters
+//                         .drain(..)
+//                         .map(|iter| {
+//                             merger::KeyValuesIter::new(
+//                                 JoinedIter::SearchTree(
+//                                     SearchTreeJoinedIter { iter, },
+//                                 ),
+//                             )
+//                         })
+//                 );
+//                 merger::ItersMergerCps::new(JoinedIters { iters, })
+//                     .step()
+//             },
+//         };
+
+//         loop {
+//             merger_kont = match merger_kont {
+//                 merger::Kont::ScheduleIterAwait { mut await_iter, next, } => {
+//                     match await_iter.stream() {
+//                         JoinedIter::Butcher(..) =>
+//                             env.await_butcher_iters.push(await_iter),
+//                         JoinedIter::SearchTree(..) =>
+//                             env.await_search_tree_iters.push(await_iter),
+//                     }
+//                     next.proceed()
+//                 },
+//                 merger::Kont::AwaitScheduled { next, } => {
+//                     if let Some(mut await_iter) = env.await_butcher_iters.pop() {
+//                         match await_iter.stream() {
+//                             JoinedIter::Butcher(butcher_joined_iter) => {
+//                                 let item = if let Some(key_value) = butcher_joined_iter.items.get(butcher_joined_iter.index) {
+//                                     KeyValueRef::Item {
+//                                         key: key_value.key.clone(),
+//                                         value_cell: key_value.value_cell
+//                                             .clone()
+//                                             .into(),
+//                                     }
+//                                 } else {
+//                                     KeyValueRef::NoMore
+//                                 };
+//                                 next.proceed_with_item(await_iter, item)
+//                             },
+//                             JoinedIter::SearchTree(..) =>
+//                                 unreachable!(),
+//                         }
+//                     } else {
+//                         assert!(!env.await_search_tree_iters.is_empty());
+//                         todo!()
+//                     }
+//                 },
+//                 merger::Kont::Deprecated { item, next, } =>
+//                     todo!(),
+//                 merger::Kont::Item { best_item, next, } =>
+//                     todo!(),
+//                 merger::Kont::Done =>
+//                     return JobDone { env, done: Done::Finish, },
+//             }
+//         }
+//     }
+
+//     impl std::ops::Deref for JoinedIters {
+//         type Target = Vec<merger::KeyValuesIter<JoinedIter>>;
+
+//         fn deref(&self) -> &Self::Target {
+//             &self.iters
+//         }
+//     }
+
+//     impl std::ops::DerefMut for JoinedIters {
+//         fn deref_mut(&mut self) -> &mut Self::Target {
+//             &mut self.iters
+//         }
+//     }
+// }

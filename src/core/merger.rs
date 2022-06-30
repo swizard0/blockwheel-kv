@@ -40,6 +40,10 @@ impl<S> KeyValuesIter<S> {
             iter_state: IterState::NotReady,
         }
     }
+
+    pub fn stream(&mut self) -> &mut S {
+        &mut self.stream
+    }
 }
 
 pub type KeyValuesIterRx = KeyValuesIter<mpsc::Receiver<KeyValueRef>>;
@@ -89,7 +93,7 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
             )
                 -> (Option<KeyValueRef>, AwaitIter<mpsc::Receiver<KeyValueRef>>)
             {
-                let maybe_item = await_iter.stream.next().await;
+                let maybe_item = await_iter.stream().next().await;
                 (maybe_item, await_iter)
             }
 
@@ -124,11 +128,11 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
                         },
                         AwaitSet::Two(mut await_iter_a, mut await_iter_b) =>
                             select! {
-                                result = await_iter_a.stream.next() => {
+                                result = await_iter_a.stream().next() => {
                                     await_set = AwaitSet::One(await_iter_b);
                                     (result, await_iter_a)
                                 },
-                                result = await_iter_b.stream.next() => {
+                                result = await_iter_b.stream().next() => {
                                     await_set = AwaitSet::One(await_iter_a);
                                     (result, await_iter_b)
                                 },
@@ -163,7 +167,7 @@ impl<V> ItersMerger<V> where V: DerefMut<Target = Vec<KeyValuesIterRx>> {
     }
 }
 
-struct ItersMergerCps<V> {
+pub struct ItersMergerCps<V> {
     state: State,
     iters: V,
 }
@@ -224,7 +228,7 @@ impl<V> ItersMergerCps<V> {
 }
 
 impl<V, S> ItersMergerCps<V> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
-    fn step(mut self) -> Kont<V, S> {
+    pub fn step(mut self) -> Kont<V, S> {
         loop {
             match self.state {
 
@@ -358,6 +362,18 @@ impl<S> DerefMut for AwaitIter<S> {
         &mut self.iter
     }
 }
+
+// impl<S> From<KeyValuesIter<S>> for AwaitIter<S> {
+//     fn from(iter: KeyValuesIter<S>) -> Self {
+//         Self { iter, }
+//     }
+// }
+
+// impl<S> From<AwaitIter<S>> for KeyValuesIter<S> {
+//     fn from(await_iter: AwaitIter<S>) -> Self {
+//         await_iter.iter
+//     }
+// }
 
 pub struct KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<KeyValuesIter<S>>> {
     state_await: StateAwait,
@@ -504,10 +520,10 @@ mod tests {
                 },
                 Kont::AwaitScheduled { next, } => {
                     let mut await_iter = await_set.pop().unwrap();
-                    let item = if await_iter.stream.is_empty() {
+                    let item = if await_iter.stream().is_empty() {
                         KeyValueRef::NoMore
                     } else {
-                        let byte = await_iter.stream.remove(0);
+                        let byte = await_iter.stream().remove(0);
                         KeyValueRef::Item {
                             key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
                             value_cell: kv::ValueCell { version: 1, cell: kv::Cell::Tombstone, },
@@ -553,10 +569,10 @@ mod tests {
                 },
                 Kont::AwaitScheduled { next, } => {
                     let mut await_iter = await_set.pop().unwrap();
-                    let item = if await_iter.stream.is_empty() {
+                    let item = if await_iter.stream().is_empty() {
                         KeyValueRef::NoMore
                     } else {
-                        let (byte, version) = await_iter.stream.remove(0);
+                        let (byte, version) = await_iter.stream().remove(0);
                         KeyValueRef::Item {
                             key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
                             value_cell: kv::ValueCell { version: version.try_into().unwrap(), cell: kv::Cell::Tombstone, },
