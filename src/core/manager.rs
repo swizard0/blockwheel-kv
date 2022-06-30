@@ -924,7 +924,7 @@ where J: edeltraud::Job + From<job::Job>,
                 let lookup_range_request = lookup_range_requests.get_mut(request_ref).unwrap();
                 assert!(lookup_range_request.pending_count > 0);
                 lookup_range_request.pending_count -= 1;
-                lookup_range_request.merger_iters.push(merger::KeyValuesIter::new(items_iter.items_rx));
+                lookup_range_request.merger_iters.push(items_iter.items_rx);
                 if lookup_range_request.pending_count == 0 {
                     let lookup_range_request = lookup_range_requests.remove(request_ref).unwrap();
                     bg_tasks_push(task::TaskArgs::MergeLookupRange(

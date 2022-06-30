@@ -94,7 +94,7 @@ where J: edeltraud::Job + From<job::Job>,
         }
         Ok::<_, MergeError>(())
     };
-    merger_iters.push(merger::KeyValuesIter::new(butcher_iter_rx));
+    merger_iters.push(butcher_iter_rx);
     merger_iters.shrink_to_fit();
 
     let mut merger = merger::ItersMerger::new(merger_iters);

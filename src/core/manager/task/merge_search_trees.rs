@@ -434,8 +434,8 @@ async fn merger_start(
 
     let mut iters = merger_iters_pool.lend(Vec::new);
     iters.clear();
-    iters.push(merger::KeyValuesIter::new(items_a_rx));
-    iters.push(merger::KeyValuesIter::new(items_b_rx));
+    iters.push(items_a_rx);
+    iters.push(items_b_rx);
     iters.shrink_to_fit();
 
     Ok(merger::ItersMerger::new(iters))
