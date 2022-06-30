@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_deprecated() {
+    fn merge_deprecated_different_iters() {
         let mut iters = vec![
             KeyValuesIter::new(vec![(0, 0), (1, 3), (2, 0)]),
             KeyValuesIter::new(vec![(0, 1), (1, 1), (2, 1)]),
@@ -595,5 +595,55 @@ mod tests {
 
         assert_eq!(output, vec![(0, 2), (1, 4), (2, 1), (3, 0)]);
         assert_eq!(deprecated, vec![(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
+    }
+
+    #[test]
+    fn merge_deprecated_same_iter() {
+        let mut iters = vec![
+            KeyValuesIter::new(vec![(0, 0), (2, 0)]),
+            KeyValuesIter::new(vec![(2, 1)]),
+            KeyValuesIter::new(vec![(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)]),
+            KeyValuesIter::new(vec![]),
+        ];
+
+        let iters_merger = ItersMergerCps::new(&mut iters);
+        let mut await_set = vec![];
+        let mut kont = iters_merger.step();
+        let mut output = vec![];
+        let mut deprecated = vec![];
+        loop {
+            kont = match kont {
+                Kont::ScheduleIterAwait { await_iter, next, } => {
+                    await_set.push(await_iter);
+                    next.proceed()
+                },
+                Kont::AwaitScheduled { next, } => {
+                    let mut await_iter = await_set.pop().unwrap();
+                    let item = if await_iter.stream().is_empty() {
+                        KeyValueRef::NoMore
+                    } else {
+                        let (byte, version) = await_iter.stream().remove(0);
+                        KeyValueRef::Item {
+                            key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
+                            value_cell: kv::ValueCell { version: version.try_into().unwrap(), cell: kv::Cell::Tombstone, },
+                        }
+                    };
+                    next.proceed_with_item(await_iter, item)
+                },
+                Kont::Deprecated { item, next, } => {
+                    deprecated.push((item.key.key_bytes[0], item.value_cell.version));
+                    next.proceed()
+                },
+                Kont::Item { best_item, next, } => {
+                    output.push((best_item.key.key_bytes[0], best_item.value_cell.version));
+                    next.proceed()
+                },
+                Kont::Done =>
+                    break,
+            };
+        }
+
+        assert_eq!(output, vec![(0, 0), (1, 4), (2, 1)]);
+        assert_eq!(deprecated, vec![(1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
     }
 }
