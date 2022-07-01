@@ -1,4 +1,5 @@
 use std::{
+    mem,
     ops::{
         Bound,
     },
@@ -65,7 +66,6 @@ pub enum Done {
 
 #[derive(Debug)]
 pub enum Error {
-    Merger(merger::Error),
     WheelsGone,
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
@@ -267,8 +267,21 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Some(Ok(TaskOutput::ValueLoad { queue_entry_ref, value_bytes, })) => {
-
-                todo!()
+                let queue_entry = queue_entries.get_mut(queue_entry_ref).unwrap();
+                match mem::replace(queue_entry, QueueEntry::Finish) {
+                    QueueEntry::PendingValueLoad { key, version, } =>
+                        *queue_entry = QueueEntry::ReadyToSend {
+                            item: kv::KeyValuePair {
+                                key,
+                                value_cell: kv::ValueCell {
+                                    version,
+                                    cell: kv::Cell::Value(kv::Value { value_bytes, }),
+                                },
+                            },
+                        },
+                    QueueEntry::ReadyToSend { .. } | QueueEntry::Finish =>
+                        unreachable!(),
+                }
             },
 
             Some(Ok(TaskOutput::ValueNotFound { queue_entry_ref, })) =>
@@ -278,13 +291,13 @@ where J: edeltraud::Job + From<job::Job>,
                     unreachable!();
                 },
 
-            Some(Ok(TaskOutput::TxItemSent { key_values_tx, })) => {
-
-
-                // tx_state = TxState::Idle { key_values_tx, queue_tx_index, }
-
-                todo!()
-            },
+            Some(Ok(TaskOutput::TxItemSent { key_values_tx, })) =>
+                tx_state = match tx_state {
+                    TxState::Sending =>
+                        TxState::Idle { key_values_tx, },
+                    TxState::Idle { .. } =>
+                        unreachable!(),
+                },
 
             Some(Ok(TaskOutput::TxDropped)) =>
                 return Ok(Done::MergeSuccess),
