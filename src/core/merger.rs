@@ -669,10 +669,6 @@ mod tests {
         sample_output.sort();
         sample_deprecated.sort();
 
-        println!("iters = {iters:?}");
-        println!("sample_output: {sample_output:?}");
-        println!("sample_deprecated: {sample_deprecated:?}");
-
         let (output, deprecated) = perform_merge(&mut iters);
 
         assert_eq!(output, sample_output);

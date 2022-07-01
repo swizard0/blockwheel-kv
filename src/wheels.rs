@@ -256,9 +256,13 @@ impl Pid {
             }
         }
     }
+
+    pub fn from_external(request_tx: mpsc::Sender<Request>) -> Pid {
+        Pid { request_tx, }
+    }
 }
 
-enum Request {
+pub enum Request {
     Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, },
     Get { blockwheel_filename: WheelFilename, reply_tx: oneshot::Sender<Option<WheelRef>>, },
     Flush { reply_tx: oneshot::Sender<Flushed>, },
