@@ -257,6 +257,8 @@ where J: edeltraud::Job + From<job::Job>,
                             merge_cps::Done::Finish => {
                                 assert_eq!(pending_count, 0);
                                 merge_cps_state = MergeCpsState::Finished;
+                                let queue_entry_ref = queue_entries.insert(QueueEntry::Finish);
+                                queue.push_back(queue_entry_ref);
                             },
                         },
                     MergeCpsState::Ready { .. } |
