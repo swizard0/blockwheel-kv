@@ -248,10 +248,7 @@ where J: edeltraud::Job + From<job::Job>,
                             merge_cps::Done::AwaitIters { next, } =>
                                 merge_cps_state = MergeCpsState::AwaitIters {
                                     env,
-                                    kont_await_ready: merge_cps::KontAwaitReady {
-                                        next,
-                                        await_outcomes: Vec::with_capacity(pending_count),
-                                    },
+                                    kont_await_ready: merge_cps::KontAwaitReady { next, },
                                     pending_count,
                                 },
                             merge_cps::Done::Finish => {
@@ -305,9 +302,9 @@ where J: edeltraud::Job + From<job::Job>,
                 return Ok(Done::MergeSuccess),
 
             Some(Ok(TaskOutput::AwaitIterRxItem { await_iter_rx, item, })) =>
-                if let MergeCpsState::AwaitIters { kont_await_ready, pending_count, .. } = &mut merge_cps_state {
+                if let MergeCpsState::AwaitIters { env, pending_count, .. } = &mut merge_cps_state {
                     assert!(*pending_count > 0);
-                    kont_await_ready.await_outcomes.push(merge_cps::AwaitOutcome {
+                    env.await_outcomes.push(merge_cps::AwaitOutcome {
                         iter: await_iter_rx,
                         item,
                     });
@@ -442,6 +439,7 @@ pub mod merge_cps {
         pub ready_items: Vec<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
         pub await_butcher_iters: Vec<ButcherJoinedIter>,
         pub await_search_tree_iters: Vec<mpsc::Receiver<KeyValueRef>>,
+        pub await_outcomes: Vec<AwaitOutcome>,
     }
 
     pub struct JobArgs {
@@ -458,7 +456,6 @@ pub mod merge_cps {
     }
 
     pub struct KontAwaitReady {
-        pub await_outcomes: Vec<AwaitOutcome>,
         pub next: merger::KontAwaitScheduledNext<JoinedIters, JoinedIter>,
     }
 
@@ -500,8 +497,6 @@ pub mod merge_cps {
         assert!(env.await_butcher_iters.is_empty());
         assert!(env.await_search_tree_iters.is_empty());
 
-        let mut await_outcomes_pending = None;
-
         let mut merger_kont = match kont {
             Kont::Start { butcher_iter_items, mut merger_iters, } => {
                 let mut iters = Vec::with_capacity(1 + merger_iters.len());
@@ -513,11 +508,8 @@ pub mod merge_cps {
                 merger::ItersMergerCps::new(JoinedIters { iters, })
                     .step()
             },
-            Kont::AwaitReady(KontAwaitReady { mut await_outcomes, next, }) => {
-                let await_outcome = await_outcomes.pop().unwrap();
-                if !await_outcomes.is_empty() {
-                    await_outcomes_pending = Some(await_outcomes);
-                }
+            Kont::AwaitReady(KontAwaitReady { next, }) => {
+                let await_outcome = env.await_outcomes.pop().unwrap();
                 next.proceed_with_item(JoinedIter::SearchTree(await_outcome.iter), await_outcome.item)
             },
         };
@@ -534,10 +526,7 @@ pub mod merge_cps {
                     next.proceed()
                 },
                 merger::Kont::AwaitScheduled { next, } => {
-                    if let Some(await_outcome) = await_outcomes_pending.as_mut().and_then(Vec::pop) {
-                        if await_outcomes_pending.as_ref().map_or(false, Vec::is_empty) {
-                            await_outcomes_pending = None;
-                        }
+                    if let Some(await_outcome) = env.await_outcomes.pop() {
                         next.proceed_with_item(JoinedIter::SearchTree(await_outcome.iter), await_outcome.item)
                     } else if let Some(await_butcher_iter) = env.await_butcher_iters.pop() {
                         let item = if let Some(key_value) = await_butcher_iter.items.get(await_butcher_iter.index) {
@@ -557,16 +546,16 @@ pub mod merge_cps {
                     }
                 },
                 merger::Kont::Deprecated { next, .. } => {
-                    assert!(await_outcomes_pending.is_none());
+                    assert!(env.await_outcomes.is_empty());
                     next.proceed()
                 },
                 merger::Kont::Item { item, next, } => {
-                    assert!(await_outcomes_pending.is_none());
+                    assert!(env.await_outcomes.is_empty());
                     env.ready_items.push(item);
                     next.proceed()
                 },
                 merger::Kont::Done => {
-                    assert!(await_outcomes_pending.is_none());
+                    assert!(env.await_outcomes.is_empty());
                     return JobDone { env, done: Done::Finish, };
                 },
             }
