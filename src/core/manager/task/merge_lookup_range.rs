@@ -1,14 +1,13 @@
 use std::{
-    mem,
     ops::{
         Bound,
+    },
+    collections::{
+        VecDeque,
     },
 };
 
 use futures::{
-    select,
-    future,
-    pin_mut,
     channel::{
         mpsc,
     },
@@ -16,8 +15,12 @@ use futures::{
         FuturesUnordered,
     },
     SinkExt,
-    FutureExt,
     StreamExt,
+};
+
+use o1::set::{
+    Set,
+    Ref,
 };
 
 use alloc_pool::{
@@ -60,14 +63,6 @@ pub enum Done {
     },
 }
 
-pub enum MergeError {
-    DeprecatedResultsFor {
-        key: kv::Key,
-        key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-    },
-    Error(Error),
-}
-
 #[derive(Debug)]
 pub enum Error {
     Merger(merger::Error),
@@ -78,10 +73,11 @@ pub enum Error {
     ReadBlock(blockwheel::ReadBlockError),
     ValueDeserialize(storage::Error),
     ThreadPoolGone,
+    BackendIterPeerLost,
 }
 
 pub async fn run<J>(
-    Args { range, key_values_tx, butcher_iter_items, mut merger_iters, wheels_pid, thread_pool, }: Args<J>,
+    Args { range, key_values_tx, butcher_iter_items, merger_iters, wheels_pid, thread_pool, }: Args<J>,
 )
     -> Result<Done, Error>
 where J: edeltraud::Job + From<job::Job>,
@@ -96,12 +92,11 @@ where J: edeltraud::Job + From<job::Job>,
             key: kv::Key,
             version: u64,
         },
-        Sending,
-        Sent,
+        Finish,
     }
 
-    let mut queue = Vec::new();
-    let mut queue_front_offset = 0;
+    let mut queue = VecDeque::new();
+    let mut queue_entries = Set::new();
 
     enum MergeCpsState {
         Ready {
@@ -109,7 +104,8 @@ where J: edeltraud::Job + From<job::Job>,
         },
         InProgress,
         AwaitIters {
-            job_args: merge_cps::JobArgs,
+            env: merge_cps::Env,
+            kont_await_ready: merge_cps::KontAwaitReady,
             pending_count: usize,
         },
         Finished,
@@ -125,17 +121,22 @@ where J: edeltraud::Job + From<job::Job>,
     enum TxState {
         Idle {
             key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-            queue_tx_index: usize,
         },
         Sending,
     }
 
-    let mut tx_state = TxState::Idle { key_values_tx, queue_tx_index: 0, };
+    let mut tx_state = TxState::Idle { key_values_tx, };
+
+    let mut pending_deprecated_lookup_key = None;
 
     let mut tasks = FuturesUnordered::new();
     loop {
+        if let (MergeCpsState::Finished, TxState::Idle { .. }, true) = (&merge_cps_state, &tx_state, queue.is_empty()) {
+            return Ok(Done::MergeSuccess);
+        }
+
         match merge_cps_state {
-            MergeCpsState::Ready { job_args, } if queue_front_offset < queue.len() =>
+            MergeCpsState::Ready { job_args, } if !queue.is_empty() =>
                 merge_cps_state = MergeCpsState::Ready { job_args, },
             MergeCpsState::Ready { job_args, } => {
                 tasks.push(Task::MergeCps { job_args, thread_pool: thread_pool.clone(), }.make());
@@ -143,34 +144,54 @@ where J: edeltraud::Job + From<job::Job>,
             },
             MergeCpsState::InProgress =>
                 merge_cps_state = MergeCpsState::InProgress,
-            MergeCpsState::AwaitIters { job_args, pending_count, } if pending_count == 0 => {
+            MergeCpsState::AwaitIters { env, kont_await_ready, pending_count, } if pending_count == 0 => {
+                let job_args = merge_cps::JobArgs {
+                    env,
+                    kont: merge_cps::Kont::AwaitReady(kont_await_ready),
+                };
                 merge_cps_state = MergeCpsState::Ready { job_args, };
                 continue;
             },
-            MergeCpsState::AwaitIters { job_args, pending_count, } =>
-                merge_cps_state = MergeCpsState::AwaitIters { job_args, pending_count, },
-            MergeCpsState::Finished if queue.is_empty() =>
-                return Ok(Done::MergeSuccess),
+            MergeCpsState::AwaitIters { env, kont_await_ready, pending_count, } =>
+                merge_cps_state = MergeCpsState::AwaitIters { env, kont_await_ready, pending_count, },
             MergeCpsState::Finished =>
                 merge_cps_state = MergeCpsState::Finished,
         }
 
         match tx_state {
-            TxState::Idle { key_values_tx, queue_tx_index, } => {
-                if let Some(queue_entry) = queue.get_mut(queue_tx_index) {
-                    match mem::replace(queue_entry, QueueEntry::Sending) {
-                        QueueEntry::ReadyToSend { item, } => {
-                            tasks.push(Task::TxItem { key_value: item, key_values_tx, queue_tx_index, }.make());
+            TxState::Idle { key_values_tx, } => {
+                if let Some(key) = pending_deprecated_lookup_key.take() {
+                    return Ok(Done::DeprecatedResults {
+                        modified_range: SearchRangeBounds {
+                            range_from: Bound::Included(key),
+                            ..range
+                        },
+                        key_values_tx,
+                    });
+                }
+
+                if let Some(queue_tx_ref) = queue.pop_front() {
+                    match queue_entries.remove(queue_tx_ref) {
+                        None =>
+                            unreachable!(),
+                        Some(QueueEntry::ReadyToSend { item, }) => {
+                            tasks.push(Task::TxItem { item: KeyValueStreamItem::KeyValue(item), key_values_tx, }.make());
                             tx_state = TxState::Sending;
                             continue;
                         },
-                        QueueEntry::PendingValueLoad { key, version, } =>
-                            *queue_entry = QueueEntry::PendingValueLoad { key, version, },
-                        QueueEntry::Sending | QueueEntry::Sent =>
-                            unreachable!(),
+                        Some(QueueEntry::PendingValueLoad { key, version, }) => {
+                            let queue_tx_ref =
+                                queue_entries.insert(QueueEntry::PendingValueLoad { key, version, });
+                            queue.push_front(queue_tx_ref);
+                        },
+                        Some(QueueEntry::Finish) => {
+                            tasks.push(Task::TxItem { item: KeyValueStreamItem::NoMore, key_values_tx, }.make());
+                            tx_state = TxState::Sending;
+                            continue;
+                        },
                     }
                 }
-                tx_state = TxState::Idle { key_values_tx, queue_tx_index, };
+                tx_state = TxState::Idle { key_values_tx, };
             },
             TxState::Sending =>
                 tx_state = TxState::Sending,
@@ -184,7 +205,7 @@ where J: edeltraud::Job + From<job::Job>,
 
             Some(Ok(TaskOutput::MergeCps { job_done: merge_cps::JobDone { mut env, done, }, })) => {
                 for key_value_ref in env.ready_items.drain(..) {
-                    let queue_entry = match key_value_ref {
+                    let queue_entry_ref = match key_value_ref {
                         kv::KeyValuePair {
                             key,
                             value_cell: kv::ValueCell {
@@ -192,13 +213,13 @@ where J: edeltraud::Job + From<job::Job>,
                                 cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
                             },
                         } =>
-                            QueueEntry::ReadyToSend {
+                            queue_entries.insert(QueueEntry::ReadyToSend {
                                 item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, },
-                            },
+                            }),
                         kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
-                            QueueEntry::ReadyToSend {
+                            queue_entries.insert(QueueEntry::ReadyToSend {
                                 item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, },
-                            },
+                            }),
                         kv::KeyValuePair {
                             key,
                             value_cell: kv::ValueCell {
@@ -206,28 +227,58 @@ where J: edeltraud::Job + From<job::Job>,
                                 cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
                             },
                         } => {
-                            let queue_index = queue.len();
-                            tasks.push(Task::ValueLoad { queue_index, block_ref, wheels_pid: wheels_pid.clone(), }.make());
-                            QueueEntry::PendingValueLoad { key, version, }
-                        }
+                            let queue_entry_ref =
+                                queue_entries.insert(QueueEntry::PendingValueLoad { key, version, });
+                            tasks.push(Task::ValueLoad { queue_entry_ref, block_ref, wheels_pid: wheels_pid.clone(), }.make());
+                            queue_entry_ref
+                        },
                     };
-                    queue.push(queue_entry);
+                    queue.push_back(queue_entry_ref);
                 }
 
+                let mut pending_count = 0;
+                for await_search_tree_iter in env.await_search_tree_iters.drain(..) {
+                    tasks.push(Task::AwaitIterRx { await_iter_rx: await_search_tree_iter, }.make());
+                    pending_count += 1;
+                }
+
+                match merge_cps_state {
+                    MergeCpsState::InProgress =>
+                        match done {
+                            merge_cps::Done::AwaitIters { next, } =>
+                                merge_cps_state = MergeCpsState::AwaitIters {
+                                    env,
+                                    kont_await_ready: merge_cps::KontAwaitReady {
+                                        next,
+                                        await_outcomes: Vec::with_capacity(pending_count),
+                                    },
+                                    pending_count,
+                                },
+                            merge_cps::Done::Finish => {
+                                assert_eq!(pending_count, 0);
+                                merge_cps_state = MergeCpsState::Finished;
+                            },
+                        },
+                    MergeCpsState::Ready { .. } |
+                    MergeCpsState::AwaitIters { .. } |
+                    MergeCpsState::Finished =>
+                        unreachable!(),
+                }
+            },
+
+            Some(Ok(TaskOutput::ValueLoad { queue_entry_ref, value_bytes, })) => {
+
                 todo!()
             },
 
-            Some(Ok(TaskOutput::ValueLoad { queue_index, value_bytes, })) => {
+            Some(Ok(TaskOutput::ValueNotFound { queue_entry_ref, })) =>
+                if let Some(QueueEntry::PendingValueLoad { key, .. }) = queue_entries.remove(queue_entry_ref) {
+                    pending_deprecated_lookup_key = Some(key);
+                } else {
+                    unreachable!();
+                },
 
-                todo!()
-            },
-
-            Some(Ok(TaskOutput::ValueNotFound { queue_index, })) => {
-
-                todo!()
-            },
-
-            Some(Ok(TaskOutput::TxItemSent { key_values_tx, mut queue_tx_index, })) => {
+            Some(Ok(TaskOutput::TxItemSent { key_values_tx, })) => {
 
 
                 // tx_state = TxState::Idle { key_values_tx, queue_tx_index, }
@@ -238,17 +289,22 @@ where J: edeltraud::Job + From<job::Job>,
             Some(Ok(TaskOutput::TxDropped)) =>
                 return Ok(Done::MergeSuccess),
 
+            Some(Ok(TaskOutput::AwaitIterRxItem { await_iter_rx, item, })) =>
+                if let MergeCpsState::AwaitIters { kont_await_ready, pending_count, .. } = &mut merge_cps_state {
+                    assert!(*pending_count > 0);
+                    kont_await_ready.await_outcomes.push(merge_cps::AwaitOutcome {
+                        iter: await_iter_rx,
+                        item,
+                    });
+                    *pending_count -= 1;
+                } else {
+                    unreachable!();
+                },
+
             Some(Err(error)) =>
                 return Err(error),
 
         }
-
-        // match job_done.done {
-        //     merge_cps::Done::AwaitIters { next, } =>
-        //         todo!(),
-        //     merge_cps::Done::Finish =>
-        //         todo!(),
-        // }
     }
 }
 
@@ -258,14 +314,16 @@ enum Task<J> where J: edeltraud::Job {
         thread_pool: edeltraud::Edeltraud<J>,
     },
     ValueLoad {
-        queue_index: usize,
+        queue_entry_ref: Ref,
         block_ref: wheels::BlockRef,
         wheels_pid: wheels::Pid,
     },
     TxItem {
-        key_value: kv::KeyValuePair<kv::Value>,
+        item: KeyValueStreamItem,
         key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-        queue_tx_index: usize,
+    },
+    AwaitIterRx {
+        await_iter_rx: mpsc::Receiver<KeyValueRef>,
     },
 }
 
@@ -274,24 +332,27 @@ enum TaskOutput {
         job_done: merge_cps::JobDone,
     },
     ValueLoad {
-        queue_index: usize,
+        queue_entry_ref: Ref,
         value_bytes: Bytes,
     },
     ValueNotFound {
-        queue_index: usize,
+        queue_entry_ref: Ref,
     },
     TxItemSent {
         key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-        queue_tx_index: usize,
     },
     TxDropped,
+    AwaitIterRxItem {
+        await_iter_rx: mpsc::Receiver<KeyValueRef>,
+        item: KeyValueRef,
+    },
 }
 
 impl<J> Task<J> where J: edeltraud::Job + From<job::Job>, J::Output: From<job::JobOutput>, job::JobOutput: From<J::Output> {
     async fn make(self) -> Result<TaskOutput, Error> {
         match self {
 
-            Task::MergeCps { job_args, mut thread_pool, } => {
+            Task::MergeCps { job_args, thread_pool, } => {
                 let job = job::Job::MergeCps(job_args);
                 let job_output = thread_pool.spawn(job).await
                     .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
@@ -301,7 +362,7 @@ impl<J> Task<J> where J: edeltraud::Job + From<job::Job>, J::Output: From<job::J
                 Ok(TaskOutput::MergeCps { job_done, })
             },
 
-            Task::ValueLoad { queue_index, block_ref, mut wheels_pid, } => {
+            Task::ValueLoad { queue_entry_ref, block_ref, mut wheels_pid, } => {
                 let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
                     .map_err(|ero::NoProcError| Error::WheelsGone)?
                     .ok_or_else(|| Error::WheelNotFound {
@@ -311,22 +372,30 @@ impl<J> Task<J> where J: edeltraud::Job + From<job::Job>, J::Output: From<job::J
                     Ok(block_bytes) =>
                         block_bytes,
                     Err(blockwheel::ReadBlockError::NotFound) =>
-                        return Ok(TaskOutput::ValueNotFound { queue_index, }),
+                        return Ok(TaskOutput::ValueNotFound { queue_entry_ref, }),
                     Err(error) =>
                         return Err(Error::ReadBlock(error)),
                 };
                 let value_bytes = storage::value_block_deserialize(&block_bytes)
                     .map_err(Error::ValueDeserialize)?;
-                Ok(TaskOutput::ValueLoad { queue_index, value_bytes, })
+                Ok(TaskOutput::ValueLoad { queue_entry_ref, value_bytes, })
             },
 
-            Task::TxItem { key_value, mut key_values_tx, queue_tx_index, } => {
-                if let Err(_send_error) = key_values_tx.send(KeyValueStreamItem::KeyValue(key_value)).await {
+            Task::TxItem { item, mut key_values_tx, } => {
+                if let Err(_send_error) = key_values_tx.send(item).await {
                     log::warn!("client dropped iterator in TxItem task");
                     return Ok(TaskOutput::TxDropped);
                 }
-                Ok(TaskOutput::TxItemSent { key_values_tx, queue_tx_index, })
+                Ok(TaskOutput::TxItemSent { key_values_tx, })
             },
+
+            Task::AwaitIterRx { mut await_iter_rx, } =>
+                match await_iter_rx.next().await {
+                    None =>
+                        Err(Error::BackendIterPeerLost),
+                    Some(item) =>
+                        Ok(TaskOutput::AwaitIterRxItem { await_iter_rx, item, }),
+                },
 
         }
     }
@@ -483,10 +552,12 @@ pub mod merge_cps {
             butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
             merger_iters: Unique<Vec<mpsc::Receiver<KeyValueRef>>>,
         },
-        AwaitReady {
-            await_outcomes: Vec<AwaitOutcome>,
-            next: merger::KontAwaitScheduledNext<JoinedIters, JoinedIter>,
-        },
+        AwaitReady(KontAwaitReady),
+    }
+
+    pub struct KontAwaitReady {
+        pub await_outcomes: Vec<AwaitOutcome>,
+        pub next: merger::KontAwaitScheduledNext<JoinedIters, JoinedIter>,
     }
 
     pub struct JobDone {
@@ -540,7 +611,7 @@ pub mod merge_cps {
                 merger::ItersMergerCps::new(JoinedIters { iters, })
                     .step()
             },
-            Kont::AwaitReady { mut await_outcomes, next, } => {
+            Kont::AwaitReady(KontAwaitReady { mut await_outcomes, next, }) => {
                 let await_outcome = await_outcomes.pop().unwrap();
                 if !await_outcomes.is_empty() {
                     await_outcomes_pending = Some(await_outcomes);
