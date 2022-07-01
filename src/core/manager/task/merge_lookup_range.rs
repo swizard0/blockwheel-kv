@@ -171,20 +171,23 @@ where J: edeltraud::Job + From<job::Job>,
                 }
 
                 if let Some(queue_tx_ref) = queue.pop_front() {
-                    match queue_entries.remove(queue_tx_ref) {
+                    match queue_entries.get(queue_tx_ref) {
                         None =>
                             unreachable!(),
-                        Some(QueueEntry::ReadyToSend { item, }) => {
-                            tasks.push(Task::TxItem { item: KeyValueStreamItem::KeyValue(item), key_values_tx, }.make());
-                            tx_state = TxState::Sending;
-                            continue;
-                        },
-                        Some(QueueEntry::PendingValueLoad { key, version, }) => {
-                            let queue_tx_ref =
-                                queue_entries.insert(QueueEntry::PendingValueLoad { key, version, });
-                            queue.push_front(queue_tx_ref);
-                        },
+                        Some(QueueEntry::ReadyToSend { .. }) =>
+                            match queue_entries.remove(queue_tx_ref) {
+                                Some(QueueEntry::ReadyToSend { item, }) => {
+                                    tasks.push(Task::TxItem { item: KeyValueStreamItem::KeyValue(item), key_values_tx, }.make());
+                                    tx_state = TxState::Sending;
+                                    continue;
+                                },
+                                _ =>
+                                    unreachable!(),
+                            },
+                        Some(QueueEntry::PendingValueLoad { .. }) =>
+                            queue.push_front(queue_tx_ref),
                         Some(QueueEntry::Finish) => {
+                            queue_entries.remove(queue_tx_ref).unwrap();
                             tasks.push(Task::TxItem { item: KeyValueStreamItem::NoMore, key_values_tx, }.make());
                             tx_state = TxState::Sending;
                             continue;
