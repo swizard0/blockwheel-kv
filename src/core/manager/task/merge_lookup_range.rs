@@ -528,8 +528,9 @@ pub mod merge_cps {
                 merger::Kont::AwaitScheduled { next, } => {
                     if let Some(await_outcome) = env.await_outcomes.pop() {
                         next.proceed_with_item(JoinedIter::SearchTree(await_outcome.iter), await_outcome.item)
-                    } else if let Some(await_butcher_iter) = env.await_butcher_iters.pop() {
+                    } else if let Some(mut await_butcher_iter) = env.await_butcher_iters.pop() {
                         let item = if let Some(key_value) = await_butcher_iter.items.get(await_butcher_iter.index) {
+                            await_butcher_iter.index += 1;
                             KeyValueRef::Item {
                                 key: key_value.key.clone(),
                                 value_cell: key_value.value_cell
