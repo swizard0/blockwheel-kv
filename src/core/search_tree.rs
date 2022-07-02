@@ -64,6 +64,7 @@ pub struct Params {
     pub remove_tasks_limit: usize,
     pub iter_send_buffer: usize,
     pub values_inline_size_limit: usize,
+    pub merge_tasks_count_limit: usize,
 }
 
 impl Default for Params {
@@ -74,6 +75,7 @@ impl Default for Params {
             remove_tasks_limit: 64,
             iter_send_buffer: 4,
             values_inline_size_limit: 128,
+            merge_tasks_count_limit: 128,
         }
     }
 }

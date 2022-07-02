@@ -529,6 +529,7 @@ where J: edeltraud::Job + From<job::Job>,
             &merger_iters_pool,
             &state.wheels_pid,
             state.params.search_tree_params.tree_block_size,
+            state.params.search_tree_params.merge_tasks_count_limit,
         );
         if let Some(task_args) = maybe_task_args {
             bg_tasks_push(task_args);
@@ -681,6 +682,7 @@ where J: edeltraud::Job + From<job::Job>,
                     &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
+                    state.params.search_tree_params.merge_tasks_count_limit,
                 );
                 if let Some(task_args) = maybe_task_args {
                     bg_tasks_push(task_args);
@@ -1040,6 +1042,7 @@ where J: edeltraud::Job + From<job::Job>,
                     &merger_iters_pool,
                     &state.wheels_pid,
                     state.params.search_tree_params.tree_block_size,
+                    state.params.search_tree_params.merge_tasks_count_limit,
                 );
                 if let Some(task_args) = maybe_task_args {
                     bg_tasks_push(task_args);
@@ -1136,6 +1139,7 @@ fn maybe_merge_search_trees<J>(
     merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIterRx>>,
     wheels_pid: &wheels::Pid,
     tree_block_size: usize,
+    tasks_count_limit: usize,
 )
     -> Option<task::TaskArgs<J>>
 where J: edeltraud::Job
@@ -1155,6 +1159,7 @@ where J: edeltraud::Job
             merger_iters_pool: merger_iters_pool.clone(),
             wheels_pid: wheels_pid.clone(),
             tree_block_size,
+            tasks_count_limit,
         },
     ))
 }

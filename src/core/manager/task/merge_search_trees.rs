@@ -46,6 +46,9 @@ use crate::{
     },
 };
 
+pub mod task;
+pub mod merge_cps;
+
 pub struct Args<J> where J: edeltraud::Job {
     pub search_tree_a_ref: Ref,
     pub search_tree_b_ref: Ref,
@@ -57,6 +60,7 @@ pub struct Args<J> where J: edeltraud::Job {
     pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIterRx>>,
     pub wheels_pid: wheels::Pid,
     pub tree_block_size: usize,
+    pub tasks_count_limit: usize,
 }
 
 #[derive(Default, Debug)]
@@ -227,6 +231,7 @@ async fn perform_merge<J>(
         merger_iters_pool,
         mut wheels_pid,
         tree_block_size,
+        tasks_count_limit: _,
     }: Args<J>,
     tree_items_count: usize,
     mut timings: Timings,

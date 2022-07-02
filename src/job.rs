@@ -12,7 +12,8 @@ pub enum Job {
     SearchTreeIterCache(core::search_tree::task::iter_cache::JobArgs),
     SearchTreeIterBlock(core::search_tree::task::iter_block::JobArgs),
     MergeSearchTrees(core::manager::task::merge_search_trees::JobArgs),
-    MergeCps(core::manager::task::merge_lookup_range::merge_cps::JobArgs),
+    MergeLookupRangeCps(core::manager::task::merge_lookup_range::merge_cps::JobArgs),
+    MergeSearchTreesCps(core::manager::task::merge_search_trees::merge_cps::JobArgs),
 }
 
 pub enum JobOutput {
@@ -23,7 +24,8 @@ pub enum JobOutput {
     SearchTreeIterCache(SearchTreeIterCacheDone),
     SearchTreeIterBlock(SearchTreeIterBlockDone),
     MergeSearchTrees(MergeSearchTreesDone),
-    MergeCps(MergeCpsDone),
+    MergeLookupRangeCps(MergeLookupRangeCpsDone),
+    MergeSearchTreesCps(MergeSearchTreesCpsDone),
 }
 
 impl edeltraud::Job for Job {
@@ -57,9 +59,13 @@ impl edeltraud::Job for Job {
                 JobOutput::MergeSearchTrees(MergeSearchTreesDone(
                     core::manager::task::merge_search_trees::job(args),
                 )),
-            Job::MergeCps(args) =>
-                JobOutput::MergeCps(MergeCpsDone(
+            Job::MergeLookupRangeCps(args) =>
+                JobOutput::MergeLookupRangeCps(MergeLookupRangeCpsDone(
                     core::manager::task::merge_lookup_range::merge_cps::job(args),
+                )),
+            Job::MergeSearchTreesCps(args) =>
+                JobOutput::MergeSearchTreesCps(MergeSearchTreesCpsDone(
+                    core::manager::task::merge_search_trees::merge_cps::job(args),
                 )),
         }
     }
@@ -155,17 +161,32 @@ impl From<JobOutput> for MergeSearchTreesDone {
     }
 }
 
-pub struct MergeCpsDone(
+pub struct MergeLookupRangeCpsDone(
     pub core::manager::task::merge_lookup_range::merge_cps::JobOutput,
 );
 
-impl From<JobOutput> for MergeCpsDone {
+impl From<JobOutput> for MergeLookupRangeCpsDone {
     fn from(output: JobOutput) -> Self {
         match output {
-            JobOutput::MergeCps(done) =>
+            JobOutput::MergeLookupRangeCps(done) =>
                 done,
             _other =>
-                panic!("expected JobOutput::MergeCps but got other"),
+                panic!("expected JobOutput::MergeLookupRangeCps but got other"),
+        }
+    }
+}
+
+pub struct MergeSearchTreesCpsDone(
+    pub core::manager::task::merge_search_trees::merge_cps::JobOutput,
+);
+
+impl From<JobOutput> for MergeSearchTreesCpsDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::MergeSearchTreesCps(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::MergeSearchTreesCps but got other"),
         }
     }
 }

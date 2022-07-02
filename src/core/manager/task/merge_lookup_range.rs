@@ -373,11 +373,11 @@ impl<J> Task<J> where J: edeltraud::Job + From<job::Job>, J::Output: From<job::J
         match self {
 
             Task::MergeCps { job_args, thread_pool, } => {
-                let job = job::Job::MergeCps(job_args);
+                let job = job::Job::MergeLookupRangeCps(job_args);
                 let job_output = thread_pool.spawn(job).await
                     .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
                 let job_output: job::JobOutput = job_output.into();
-                let job::MergeCpsDone(merge_cps_result) = job_output.into();
+                let job::MergeLookupRangeCpsDone(merge_cps_result) = job_output.into();
                 let job_done = merge_cps_result;
                 Ok(TaskOutput::MergeCps { job_done, })
             },
