@@ -55,7 +55,11 @@ pub struct JobArgs {
 }
 
 pub enum Kont {
-    StartRemoveAndCount {
+    RemoveAndCount(KontRemoveAndCount),
+}
+
+pub enum KontRemoveAndCount {
+    Start {
         items_a_rx: merger::KeyValuesIterRx,
         items_b_rx: merger::KeyValuesIterRx,
     },
@@ -88,21 +92,42 @@ pub struct AwaitOutcome {
 pub fn job(JobArgs { mut env, kont, }: JobArgs) -> JobOutput {
     assert!(env.await_iters.is_empty());
 
-    let mut merger_kont = match kont {
-        Kont::StartRemoveAndCount { items_a_rx, items_b_rx, } => {
+    enum Stage {
+        RemoveAndCount,
+    };
+
+    let (stage, mut merger_kont) = match kont {
+        Kont::RemoveAndCount(KontRemoveAndCount::Start { items_a_rx, items_b_rx, }) => {
             let mut iters = env.conf.merger_iters_pool.lend(Vec::new);
             iters.clear();
             iters.push(items_a_rx);
             iters.push(items_b_rx);
             iters.shrink_to_fit();
-            merger::ItersMergerCps::new(iters).step()
+            (Stage::RemoveAndCount, merger::ItersMergerCps::new(iters).step())
         },
-        Kont::AwaitReady(KontAwaitReady { next, }) => {
+        Kont::RemoveAndCount(KontRemoveAndCount::AwaitReady(KontAwaitReady { next, })) => {
             let await_outcome = env.await_outcomes.pop().unwrap();
-            next.proceed_with_item(await_outcome.iter, await_outcome.item)
+            (Stage::RemoveAndCount, next.proceed_with_item(await_outcome.iter, await_outcome.item))
         },
     };
 
-
-    todo!()
+    loop {
+        merger_kont = match merger_kont {
+            merger::Kont::ScheduleIterAwait { await_iter, next, } => {
+                todo!()
+            },
+            merger::Kont::AwaitScheduled { next, } => {
+                todo!()
+            },
+            merger::Kont::Deprecated { next, .. } => {
+                todo!()
+            },
+            merger::Kont::Item { item, next, } => {
+                todo!()
+            },
+            merger::Kont::Done => {
+                todo!()
+            },
+        }
+    }
 }
