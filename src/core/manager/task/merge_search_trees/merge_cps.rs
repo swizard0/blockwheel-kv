@@ -1,9 +1,3 @@
-use futures::{
-    channel::{
-        mpsc,
-    },
-};
-
 use o1::{
     set::{
         Ref,
@@ -12,16 +6,10 @@ use o1::{
 
 use alloc_pool::{
     pool,
-    bytes::{
-        Bytes,
-        BytesPool,
-    },
     Unique,
 };
 
 use crate::{
-    kv,
-    storage,
     core::{
         manager::{
             task::{
@@ -89,45 +77,46 @@ pub struct AwaitOutcome {
     pub item: KeyValueRef,
 }
 
-pub fn job(JobArgs { mut env, kont, }: JobArgs) -> JobOutput {
+pub fn job(JobArgs { env, kont: _, }: JobArgs) -> JobOutput {
     assert!(env.await_iters.is_empty());
 
-    enum Stage {
-        RemoveAndCount,
-    };
+    todo!()
+    // enum Stage {
+    //     RemoveAndCount,
+    // }
 
-    let (stage, mut merger_kont) = match kont {
-        Kont::RemoveAndCount(KontRemoveAndCount::Start { items_a_rx, items_b_rx, }) => {
-            let mut iters = env.conf.merger_iters_pool.lend(Vec::new);
-            iters.clear();
-            iters.push(items_a_rx);
-            iters.push(items_b_rx);
-            iters.shrink_to_fit();
-            (Stage::RemoveAndCount, merger::ItersMergerCps::new(iters).step())
-        },
-        Kont::RemoveAndCount(KontRemoveAndCount::AwaitReady(KontAwaitReady { next, })) => {
-            let await_outcome = env.await_outcomes.pop().unwrap();
-            (Stage::RemoveAndCount, next.proceed_with_item(await_outcome.iter, await_outcome.item))
-        },
-    };
+    // let (stage, mut merger_kont) = match kont {
+    //     Kont::RemoveAndCount(KontRemoveAndCount::Start { items_a_rx, items_b_rx, }) => {
+    //         let mut iters = env.conf.merger_iters_pool.lend(Vec::new);
+    //         iters.clear();
+    //         iters.push(items_a_rx);
+    //         iters.push(items_b_rx);
+    //         iters.shrink_to_fit();
+    //         (Stage::RemoveAndCount, merger::ItersMergerCps::new(iters).step())
+    //     },
+    //     Kont::RemoveAndCount(KontRemoveAndCount::AwaitReady(KontAwaitReady { next, })) => {
+    //         let await_outcome = env.await_outcomes.pop().unwrap();
+    //         (Stage::RemoveAndCount, next.proceed_with_item(await_outcome.iter, await_outcome.item))
+    //     },
+    // };
 
-    loop {
-        merger_kont = match merger_kont {
-            merger::Kont::ScheduleIterAwait { await_iter, next, } => {
-                todo!()
-            },
-            merger::Kont::AwaitScheduled { next, } => {
-                todo!()
-            },
-            merger::Kont::Deprecated { next, .. } => {
-                todo!()
-            },
-            merger::Kont::Item { item, next, } => {
-                todo!()
-            },
-            merger::Kont::Done => {
-                todo!()
-            },
-        }
-    }
+    // loop {
+    //     merger_kont = match merger_kont {
+    //         merger::Kont::ScheduleIterAwait { await_iter, next, } => {
+    //             todo!()
+    //         },
+    //         merger::Kont::AwaitScheduled { next, } => {
+    //             todo!()
+    //         },
+    //         merger::Kont::Deprecated { next, .. } => {
+    //             todo!()
+    //         },
+    //         merger::Kont::Item { item, next, } => {
+    //             todo!()
+    //         },
+    //         merger::Kont::Done => {
+    //             todo!()
+    //         },
+    //     }
+    // }
 }
