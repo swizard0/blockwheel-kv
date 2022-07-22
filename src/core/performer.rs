@@ -16,8 +16,12 @@ use crate::{
     kv,
     version,
     core::{
+        bin_merger::{
+            BinMerger,
+        },
         OrdKey,
         MemCache,
+        BlockRef,
     },
     Info,
 };
@@ -44,11 +48,16 @@ pub struct Performer {
 }
 
 pub enum Kont {
-    PollRequest(KontPollRequest),
+    Poll(KontPoll),
     Inserted(KontInserted),
+    FlushButcher(KontFlushButcher),
 }
 
-pub struct KontPollRequest {
+pub struct KontPoll {
+    pub next: KontPollNext,
+}
+
+pub struct KontPollNext {
     inner: Inner,
 }
 
@@ -58,17 +67,24 @@ pub struct KontInserted {
 
 pub struct KontInsertedNext {
     inner: Inner,
-    next_action: KontInsertedNextAction,
 }
 
-enum KontInsertedNextAction {
-    PollRequest,
+pub struct KontFlushButcher {
+    pub search_tree_ref: Ref,
+    pub frozen_memcache: Arc<MemCache>,
+    pub next: KontFlushButcherNext,
+}
+
+pub struct KontFlushButcherNext {
+    inner: Inner,
 }
 
 struct Inner {
     params: Params,
     version_provider: version::Provider,
     butcher: MemCache,
+    search_trees: Set<SearchTree>,
+    search_trees_pile: BinMerger<SearchTreeRef>,
     info: Info,
 }
 
@@ -88,7 +104,7 @@ impl Performer {
     }
 
     pub fn step(self) -> Kont {
-        Kont::PollRequest(KontPollRequest { inner: self.inner, })
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
     }
 }
 
@@ -103,6 +119,8 @@ impl Inner {
             params,
             version_provider,
             butcher: MemCache::new(),
+            search_trees: Set::new(),
+            search_trees_pile: BinMerger::new(),
             info: Info::default(),
         }
     }
@@ -129,32 +147,106 @@ impl Inner {
         }
     }
 
-    fn maybe_flush(&mut self) -> Option<Arc<MemCache>> {
-        if self.butcher.len() >= self.params.tree_block_size {
-            let flushed_memcache =
+    fn maybe_flush(&mut self) -> FlushOutcome {
+        let items_count = self.butcher.len();
+        if items_count >= self.params.tree_block_size {
+            let frozen_memcache =
                 Arc::new(mem::replace(&mut self.butcher, MemCache::new()));
+            let search_tree_ref =
+                self.search_trees.insert(SearchTree::Bootstrap(SearchTreeBootstrap {
+                    frozen_memcache: frozen_memcache.clone(),
+                }));
+            // we do not want to merge the tree until it is written to blockwheel
+            // self.search_trees_pile
+            //     .push(SearchTreeRef { search_tree_ref, items_count, }, items_count);
             self.info.reset();
-            Some(flushed_memcache)
+            FlushOutcome::TimeToFlush {
+                search_tree_ref,
+                frozen_memcache,
+            }
         } else {
-            None
+            FlushOutcome::NotFlushed
+        }
+    }
+
+    fn butcher_flushed(&mut self, search_tree_ref: Ref, root_block: BlockRef) {
+        let search_tree = self.search_trees.get_mut(search_tree_ref).unwrap();
+        let prev_search_tree = mem::replace(
+            search_tree,
+            SearchTree::Constructed(
+                SearchTreeConstructed {
+                    root_block,
+                },
+            ),
+        );
+        assert!(matches!(prev_search_tree, SearchTree::Bootstrap(..)));
+    }
+}
+
+enum FlushOutcome {
+    NotFlushed,
+    TimeToFlush {
+        search_tree_ref: Ref,
+        frozen_memcache: Arc<MemCache>,
+    },
+}
+
+impl KontPollNext {
+    pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value) -> Kont {
+        self.inner.insert(key, value);
+        Kont::Inserted(KontInserted {
+            next: KontInsertedNext {
+                inner: self.inner,
+            },
+        })
+    }
+
+    pub fn butcher_flushed(mut self, search_tree_ref: Ref, root_block: BlockRef) -> Kont {
+        self.inner.butcher_flushed(search_tree_ref, root_block);
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+    }
+}
+
+impl KontInsertedNext {
+    pub fn step(mut self) -> Kont {
+	match self.inner.maybe_flush() {
+            FlushOutcome::NotFlushed =>
+                Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, }),
+            FlushOutcome::TimeToFlush { search_tree_ref, frozen_memcache, } =>
+                Kont::FlushButcher(KontFlushButcher {
+                    search_tree_ref,
+                    frozen_memcache,
+                    next: KontFlushButcherNext {
+                        inner: self.inner,
+                    },
+                }),
         }
     }
 }
 
-impl KontPollRequest {
-    pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value) -> Kont {
-        self.inner.insert(key, value);
-	let next_action = match self.inner.maybe_flush() {
-            None =>
-                KontInsertedNextAction::PollRequest,
-            Some(flushed_memcache) =>
-                todo!(),
-        };
-        Kont::Inserted(KontInserted {
-            next: KontInsertedNext {
-                inner: self.inner,
-                next_action,
-            },
-        })
-    }
+enum KontInsertedNextAction {
+    Poll,
+    FlushButcher {
+        search_tree_ref: Ref,
+        frozen_memcache: Arc<MemCache>,
+    },
+}
+
+enum SearchTree {
+    Bootstrap(SearchTreeBootstrap),
+    Constructed(SearchTreeConstructed),
+}
+
+struct SearchTreeBootstrap {
+    frozen_memcache: Arc<MemCache>,
+}
+
+struct SearchTreeConstructed {
+    root_block: BlockRef,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct SearchTreeRef {
+    items_count: usize,
+    search_tree_ref: Ref,
 }
