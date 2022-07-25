@@ -30,8 +30,6 @@ use super::{
 };
 
 pub mod manager;
-pub mod butcher;
-pub mod search_tree;
 pub mod merger;
 pub mod bin_merger;
 pub mod performer;

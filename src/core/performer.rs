@@ -26,6 +26,9 @@ use crate::{
     Info,
 };
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct Params {
     pub tree_block_size: usize,
@@ -208,7 +211,7 @@ impl KontPollNext {
 }
 
 impl KontInsertedNext {
-    pub fn step(mut self) -> Kont {
+    pub fn got_it(mut self) -> Kont {
 	match self.inner.maybe_flush() {
             FlushOutcome::NotFlushed =>
                 Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, }),
@@ -230,6 +233,12 @@ enum KontInsertedNextAction {
         search_tree_ref: Ref,
         frozen_memcache: Arc<MemCache>,
     },
+}
+
+impl KontFlushButcherNext {
+    pub fn scheduled(self) -> Kont {
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+    }
 }
 
 enum SearchTree {

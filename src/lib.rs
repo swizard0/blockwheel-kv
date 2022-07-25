@@ -35,26 +35,20 @@ mod storage;
 #[derive(Clone, Debug)]
 pub struct Params {
     pub tree_block_size: usize,
-    pub butcher_task_restart_sec: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
-    pub search_tree_iter_send_buffer: usize,
     pub search_tree_values_inline_size_limit: usize,
-    pub search_tree_merge_tasks_count_limit: usize,
 }
 
 impl Default for Params {
     fn default() -> Params {
         Params {
             tree_block_size: 32,
-            butcher_task_restart_sec: 1,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
-            search_tree_iter_send_buffer: 4,
             search_tree_values_inline_size_limit: 128,
-            search_tree_merge_tasks_count_limit: 128,
         }
     }
 }
@@ -98,22 +92,12 @@ impl GenServer {
           J::Output: From<job::JobOutput>,
           job::JobOutput: From<J::Output>,
     {
-        let butcher_gen_server = core::butcher::GenServer::new();
-        let butcher_pid = butcher_gen_server.pid();
-        let butcher_params = core::butcher::Params {
-            tree_block_size: params.tree_block_size,
-            task_restart_sec: params.butcher_task_restart_sec,
-        };
-
         let manager_params = core::manager::Params {
             task_restart_sec: params.manager_task_restart_sec,
-            search_tree_params: core::search_tree::Params {
-                task_restart_sec: params.search_tree_task_restart_sec,
+            performer_params: core::performer::Params {
                 tree_block_size: params.tree_block_size,
                 remove_tasks_limit: params.search_tree_remove_tasks_limit,
-                iter_send_buffer: params.search_tree_iter_send_buffer,
                 values_inline_size_limit: params.search_tree_values_inline_size_limit,
-                merge_tasks_count_limit: params.search_tree_merge_tasks_count_limit,
             },
         };
 
@@ -122,19 +106,11 @@ impl GenServer {
         parent_supervisor.spawn_link_permanent(
             child_supervisor_gen_server.run(),
         );
-        parent_supervisor.spawn_link_permanent(
-            butcher_gen_server.run(
-                version_provider.clone(),
-                self.manager_pid.clone(),
-                butcher_params,
-            ),
-        );
 
         let manager_task = self.manager_gen_server.run(
             child_supervisor_pid.clone(),
             thread_pool,
             blocks_pool,
-            butcher_pid,
             wheels_pid,
             manager_params,
         );
