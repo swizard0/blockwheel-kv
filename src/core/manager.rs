@@ -49,6 +49,7 @@ use crate::{
     job,
     wheels,
     storage,
+    version,
     core::{
         performer,
 //         merger,
@@ -119,6 +120,7 @@ impl GenServer {
         parent_supervisor: SupervisorPid,
         thread_pool: edeltraud::Edeltraud<J>,
         blocks_pool: BytesPool,
+        version_provider: version::Provider,
         wheels_pid: wheels::Pid,
         params: Params,
     )
@@ -138,6 +140,7 @@ impl GenServer {
                 parent_supervisor,
                 thread_pool,
                 blocks_pool,
+                version_provider,
                 wheels_pid,
                 params,
             },
@@ -162,6 +165,7 @@ struct State<J> where J: edeltraud::Job {
     parent_supervisor: SupervisorPid,
     thread_pool: edeltraud::Edeltraud<J>,
     blocks_pool: BytesPool,
+    version_provider: version::Provider,
     wheels_pid: wheels::Pid,
     params: Params,
 }
@@ -317,12 +321,12 @@ enum Request {
 #[derive(Debug)]
 pub enum Error {
     Task(task::Error),
-    // WheelsIterBlocks(wheels::IterBlocksError),
-    // WheelsIterBlocksRxDropped,
-    // DeserializeBlock {
-    //     block_ref: wheels::BlockRef,
-    //     error: storage::Error,
-    // },
+    WheelsIterBlocks(wheels::IterBlocksError),
+    WheelsIterBlocksRxDropped,
+    DeserializeBlock {
+        block_ref: wheels::BlockRef,
+        error: storage::Error,
+    },
 }
 
 // struct InfoRequest {
@@ -383,94 +387,75 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    let mut forest = performer::SearchForest::new();
+    let mut blocks_total = 0;
 
-    todo!()
-//     let search_tree_pools = search_tree::Pools::new(state.blocks_pool.clone());
-//     let mut search_trees = Set::new();
-//     let mut search_tree_refs = bin_merger::BinMerger::new();
-//     let mut blocks_total = 0;
+    log::info!("loading search_tree roots from wheels");
 
-//     log::info!("loading search_tree roots from wheels");
+    let mut iter_blocks = state.wheels_pid.iter_blocks().await
+        .map_err(Error::WheelsIterBlocks)
+        .map_err(ErrorSeverity::Fatal)?;
 
-//     let mut iter_blocks = state.wheels_pid.iter_blocks().await
-//         .map_err(Error::WheelsIterBlocks)
-//         .map_err(ErrorSeverity::Fatal)?;
+    loop {
+        match iter_blocks.block_refs_rx.next().await {
+            None =>
+                return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
+            Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
+                blocks_total += 1;
+                let deserializer = match storage::block_deserialize_iter(&block_bytes) {
+                    Ok(deserializer) =>
+                        deserializer,
+                    Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
+                        log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
+                        continue;
+                    },
+                    Err(error) =>
+                        return Err(ErrorSeverity::Fatal(Error::DeserializeBlock {
+                            block_ref,
+                            error,
+                        })),
+                };
+                match deserializer.block_header().node_type {
+                    storage::NodeType::Root { tree_entries_count, } => {
+                        log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
+                        forest.add_constructed(block_ref, tree_entries_count);
+                    },
+                    storage::NodeType::Leaf =>
+                        (),
+                }
+            },
+            Some(wheels::IterBlocksItem::NoMoreBlocks) =>
+                break,
+        }
+    }
 
-//     loop {
-//         match iter_blocks.block_refs_rx.next().await {
-//             None =>
-//                 return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
-//             Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
-//                 blocks_total += 1;
-//                 let deserializer = match storage::block_deserialize_iter(&block_bytes) {
-//                     Ok(deserializer) =>
-//                         deserializer,
-//                     Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
-//                         log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
-//                         continue;
-//                     },
-//                     Err(error) =>
-//                         return Err(ErrorSeverity::Fatal(Error::DeserializeBlock {
-//                             block_ref,
-//                             error,
-//                         })),
-//                 };
-//                 match deserializer.block_header().node_type {
-//                     storage::NodeType::Root { tree_entries_count, } => {
-//                         log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
-//                         let search_tree_gen_server = search_tree::GenServer::new();
-//                         let search_tree_pid = search_tree_gen_server.pid();
-//                         child_supervisor_pid.spawn_link_temporary(
-//                             search_tree_gen_server.run(
-//                                 child_supervisor_pid.clone(),
-//                                 state.thread_pool.clone(),
-//                                 search_tree_pools.clone(),
-//                                 state.wheels_pid.clone(),
-//                                 state.params.search_tree_params.clone(),
-//                                 search_tree::Mode::Regular { root_block: block_ref, },
-//                             ),
-//                         );
-//                         let search_tree_ref = search_trees.insert(search_tree_pid);
-//                         search_tree_refs.push(
-//                             SearchTreeRef {
-//                                 search_tree_ref,
-//                                 items_count: tree_entries_count,
-//                             },
-//                             tree_entries_count,
-//                         );
-//                     },
-//                     storage::NodeType::Leaf =>
-//                         (),
-//                 }
-//             },
-//             Some(wheels::IterBlocksItem::NoMoreBlocks) =>
-//                 break,
-//         }
-//     }
+    log::info!("loading done, {} search_trees restored within {} blocks", forest.len(), blocks_total);
 
-//     log::info!("loading done, {} search_trees restored within {} blocks", search_trees.len(), blocks_total);
+    let performer = performer::Performer::new(
+        state.params.performer_params.clone(),
+        state.version_provider.clone(),
+        forest,
+    );
 
-//     busyloop(
-//         child_supervisor_pid,
-//         search_trees,
-//         search_tree_refs,
-//         search_tree_pools,
-//         state,
-//     ).await
+    busyloop(
+        child_supervisor_pid,
+        performer,
+        state,
+    ).await
 }
 
-// async fn busyloop<J>(
-//     mut child_supervisor_pid: SupervisorPid,
-//     mut search_trees: Set<search_tree::Pid>,
-//     mut search_tree_refs: bin_merger::BinMerger<SearchTreeRef>,
-//     search_tree_pools: search_tree::Pools,
-//     mut state: State<J>,
-// )
-//     -> Result<(), ErrorSeverity<State<J>, Error>>
-// where J: edeltraud::Job + From<job::Job>,
-//       J::Output: From<job::JobOutput>,
-//       job::JobOutput: From<J::Output>,
-// {
+async fn busyloop<J>(
+    mut child_supervisor_pid: SupervisorPid,
+    performer: performer::Performer,
+    mut state: State<J>,
+)
+    -> Result<(), ErrorSeverity<State<J>, Error>>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
+
+    todo!()
 //     let merger_iters_pool = pool::Pool::new();
 //     let iter_items_pool = pool::Pool::new();
 //     let merge_blocks_pool = pool::Pool::new();
@@ -1073,7 +1058,7 @@ where J: edeltraud::Job + From<job::Job>,
 //                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
 //         }
 //     }
-// }
+}
 
 // fn launch_lookup_request<T, J>(
 //     key: kv::Key,

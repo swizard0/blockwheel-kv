@@ -111,6 +111,7 @@ impl GenServer {
             child_supervisor_pid.clone(),
             thread_pool,
             blocks_pool,
+            version_provider,
             wheels_pid,
             manager_params,
         );

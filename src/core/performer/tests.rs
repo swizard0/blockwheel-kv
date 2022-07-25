@@ -11,6 +11,7 @@ use crate::{
         performer::{
             Params,
             Performer,
+            SearchForest,
             Kont,
             KontPoll,
             KontInserted,
@@ -34,6 +35,7 @@ fn basic_insert() {
     let performer = Performer::new(
         Params { tree_block_size: 2, ..Default::default() },
         version_provider,
+        SearchForest::new(),
     );
     let kont = performer.step();
     let next = match kont {

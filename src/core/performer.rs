@@ -86,15 +86,20 @@ struct Inner {
     params: Params,
     version_provider: version::Provider,
     butcher: MemCache,
+    forest: SearchForest,
+    info: Info,
+}
+
+pub struct SearchForest {
     search_trees: Set<SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
-    info: Info,
 }
 
 impl Performer {
     pub fn new(
         params: Params,
         version_provider: version::Provider,
+        forest: SearchForest,
     )
         -> Self
     {
@@ -102,6 +107,7 @@ impl Performer {
             inner: Inner::new(
                 params,
                 version_provider,
+                forest,
             ),
         }
     }
@@ -115,6 +121,7 @@ impl Inner {
     fn new(
         params: Params,
         version_provider: version::Provider,
+        forest: SearchForest,
     )
         -> Self
     {
@@ -122,8 +129,7 @@ impl Inner {
             params,
             version_provider,
             butcher: MemCache::new(),
-            search_trees: Set::new(),
-            search_trees_pile: BinMerger::new(),
+            forest,
             info: Info::default(),
         }
     }
@@ -155,10 +161,7 @@ impl Inner {
         if items_count >= self.params.tree_block_size {
             let frozen_memcache =
                 Arc::new(mem::replace(&mut self.butcher, MemCache::new()));
-            let search_tree_ref =
-                self.search_trees.insert(SearchTree::Bootstrap(SearchTreeBootstrap {
-                    frozen_memcache: frozen_memcache.clone(),
-                }));
+            let search_tree_ref = self.forest.add_bootstrap(frozen_memcache.clone());
             // we do not want to merge the tree until it is written to blockwheel
             // self.search_trees_pile
             //     .push(SearchTreeRef { search_tree_ref, items_count, }, items_count);
@@ -173,16 +176,13 @@ impl Inner {
     }
 
     fn butcher_flushed(&mut self, search_tree_ref: Ref, root_block: BlockRef) {
-        let search_tree = self.search_trees.get_mut(search_tree_ref).unwrap();
-        let prev_search_tree = mem::replace(
-            search_tree,
-            SearchTree::Constructed(
-                SearchTreeConstructed {
-                    root_block,
-                },
-            ),
-        );
-        assert!(matches!(prev_search_tree, SearchTree::Bootstrap(..)));
+        let items_count = match self.forest.remove(search_tree_ref) {
+            Some(SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, })) =>
+                frozen_memcache.len(),
+            _ =>
+                unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
+        };
+        self.forest.add_constructed(root_block, items_count);
     }
 }
 
@@ -258,4 +258,44 @@ struct SearchTreeConstructed {
 struct SearchTreeRef {
     items_count: usize,
     search_tree_ref: Ref,
+}
+
+impl SearchForest {
+    pub fn new() -> Self {
+        Self {
+            search_trees: Set::new(),
+            search_trees_pile: BinMerger::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.search_trees.len()
+    }
+
+    pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> Ref {
+        let search_tree_ref =
+            self.search_trees.insert(SearchTree::Constructed(SearchTreeConstructed {
+                root_block,
+            }));
+        self.search_trees_pile.push(
+            SearchTreeRef {
+                search_tree_ref,
+                items_count,
+            },
+            items_count,
+        );
+        search_tree_ref
+    }
+
+    fn add_bootstrap(&mut self, frozen_memcache: Arc<MemCache>) -> Ref {
+        let search_tree_ref =
+            self.search_trees.insert(SearchTree::Bootstrap(SearchTreeBootstrap {
+                frozen_memcache,
+            }));
+        search_tree_ref
+    }
+
+    fn remove(&mut self, search_tree_ref: Ref) -> Option<SearchTree> {
+        self.search_trees.remove(search_tree_ref)
+    }
 }
