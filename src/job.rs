@@ -6,10 +6,12 @@ use crate::{
 
 pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
+    ManagerTaskPerformer(core::manager::task::performer::JobArgs),
 }
 
 pub enum JobOutput {
     BlockwheelFs(blockwheel::job::JobOutput),
+    ManagerTaskPerformer(ManagerTaskPerformerDone),
 }
 
 impl edeltraud::Job for Job {
@@ -19,6 +21,8 @@ impl edeltraud::Job for Job {
         match self {
             Job::BlockwheelFs(job) =>
                 JobOutput::BlockwheelFs(job.run()),
+            Job::ManagerTaskPerformer(args) =>
+                JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args))),
         }
     }
 }
@@ -42,6 +46,19 @@ impl From<JobOutput> for blockwheel::job::JobOutput {
                 done,
             _other =>
                 panic!("expected JobOutput::BlockwheelFs but got other"),
+        }
+    }
+}
+
+pub struct ManagerTaskPerformerDone(pub core::manager::task::performer::Output);
+
+impl From<JobOutput> for ManagerTaskPerformerDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::ManagerTaskPerformer(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::ManagerTaskPerformer but got other"),
         }
     }
 }

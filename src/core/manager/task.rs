@@ -1,24 +1,32 @@
-pub mod retrieve_value;
+use crate::{
+    job,
+};
 
-pub enum TaskArgs {
-    RetrieveValue(retrieve_value::Args),
+pub mod performer;
+
+pub enum TaskArgs<J> where J: edeltraud::Job {
+    Performer(performer::Args<J>),
 }
 
 pub enum TaskDone {
-    RetrieveValue(retrieve_value::Done),
+    Performer(performer::Done),
 }
 
 #[derive(Debug)]
 pub enum Error {
-    RetrieveValue(retrieve_value::Error),
+    Performer(performer::Error),
 }
 
-pub async fn run_args(args: TaskArgs) -> Result<TaskDone, Error> {
+pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     Ok(match args {
-        TaskArgs::RetrieveValue(args) =>
-            TaskDone::RetrieveValue(
-                retrieve_value::run(args).await
-                    .map_err(Error::RetrieveValue)?,
+        TaskArgs::Performer(args) =>
+            TaskDone::Performer(
+                performer::run(args).await
+                    .map_err(Error::Performer)?,
             ),
     })
 }

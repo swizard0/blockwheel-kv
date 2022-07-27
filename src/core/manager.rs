@@ -10,7 +10,6 @@ use std::{
 };
 
  use futures::{
-//     select,
      stream::{
          self,
          FuturesUnordered,
@@ -19,6 +18,7 @@ use std::{
          mpsc,
          oneshot,
      },
+     select,
      StreamExt,
      SinkExt,
 };
@@ -454,19 +454,176 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    enum PerformerState {
+        Ready {
+            job_args: task::performer::JobArgs,
+        },
+        InProgress,
+    }
 
-    todo!()
-//     let merger_iters_pool = pool::Pool::new();
-//     let iter_items_pool = pool::Pool::new();
-//     let merge_blocks_pool = pool::Pool::new();
+    let mut performer_state = PerformerState::Ready {
+        job_args: task::performer::JobArgs {
+            env: task::performer::Env::default(),
+            kont: task::performer::Kont::Start { performer, },
+        },
+    };
 
-//     let mut info_requests = Set::new();
-//     let mut lookup_requests = Set::new();
-//     let mut lookup_range_requests = Set::new();
-//     let mut flush_requests = Set::new();
+    let mut tasks = FuturesUnordered::new();
+    let mut tasks_count = 0;
 
-//     let mut tasks = FuturesUnordered::new();
-//     let mut tasks_count = 0;
+    loop {
+        match performer_state {
+            PerformerState::Ready { job_args, } => {
+                tasks.push(task::run_args(task::TaskArgs::Performer(
+                    task::performer::Args {
+                        job_args,
+                        thread_pool: state.thread_pool.clone(),
+                    },
+                )));
+                tasks_count += 1;
+                performer_state = PerformerState::InProgress;
+            },
+            PerformerState::InProgress =>
+                performer_state = PerformerState::InProgress,
+        }
+
+        enum Event<R, T> {
+            Request(Option<R>),
+            Task(T),
+        }
+
+        let event = if tasks_count == 0 {
+            Event::Request(state.fused_request_rx.next().await)
+        } else {
+            select! {
+                result = state.fused_request_rx.next() =>
+                    Event::Request(result),
+                result = tasks.next() => match result {
+                    None =>
+                        unreachable!(),
+                    Some(task) => {
+                        tasks_count -= 1;
+                        Event::Task(task)
+                    },
+                },
+            }
+        };
+
+        match event {
+
+            Event::Request(None) => {
+                log::info!("requests sink channel depleted: terminating");
+                return Ok(());
+            },
+
+            Event::Request(Some(Request::Info(RequestInfo { reply_tx, }))) => {
+                todo!();
+//                 let request_ref = info_requests.insert(InfoRequest {
+//                     reply_tx,
+//                     pending_count: 1 + search_trees.len(),
+//                     info_fold: Info::default(),
+//                 });
+//                 tasks.push(task::run_args(task::TaskArgs::InfoButcher(
+//                     task::info_butcher::Args {
+//                         request_ref: request_ref.clone(),
+//                         butcher_pid: state.butcher_pid.clone(),
+//                     },
+//                 )));
+//                 tasks_count += 1;
+//                 for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
+//                     tasks.push(task::run_args(task::TaskArgs::InfoSearchTree(
+//                         task::info_search_tree::Args {
+//                             request_ref: request_ref.clone(),
+//                             search_tree_pid: search_tree_pid.clone(),
+//                         },
+//                     )));
+//                     tasks_count += 1;
+//                 }
+            },
+
+            Event::Request(Some(Request::Insert(request))) => {
+                todo!()
+//                 tasks.push(task::run_args(task::TaskArgs::InsertButcher(
+//                     task::insert_butcher::Args {
+//                         request,
+//                         butcher_pid: state.butcher_pid.clone(),
+//                     },
+//                 )));
+//                 tasks_count += 1;
+            },
+
+            Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) =>
+                todo!(),
+//                 launch_lookup_request(
+//                     key,
+//                     reply_tx,
+//                     &mut lookup_requests,
+//                     &search_trees,
+//                     &state.butcher_pid,
+//                     |args| {
+//                         tasks.push(task::run_args(args));
+//                         tasks_count += 1;
+//                     },
+//                 ),
+
+            Event::Request(Some(Request::LookupRange(RequestLookupRange { range, reply_tx, }))) => {
+                todo!();
+//                 let (key_values_tx, key_values_rx) =
+//                     mpsc::channel(state.params.search_tree_params.iter_send_buffer);
+//                 let lookup_range = LookupRange { key_values_rx, };
+//                 if let Err(_send_error) = reply_tx.send(lookup_range) {
+//                     log::warn!("client canceled lookup_range request");
+//                 }
+//                 tasks.push(task::run_args(task::TaskArgs::LookupRangeButcher(
+//                     task::lookup_range_butcher::Args {
+//                         range,
+//                         key_values_tx,
+//                         iter_items_pool: iter_items_pool.clone(),
+//                         butcher_pid: state.butcher_pid.clone(),
+//                     },
+//                 )));
+//                 tasks_count += 1;
+            },
+
+            Event::Request(Some(Request::Remove(request))) => {
+                todo!();
+//                 tasks.push(task::run_args(task::TaskArgs::RemoveButcher(
+//                     task::remove_butcher::Args {
+//                         request,
+//                         butcher_pid: state.butcher_pid.clone(),
+//                     },
+//                 )));
+//                 tasks_count += 1;
+            },
+
+            Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx, }))) => {
+                todo!();
+//                 log::debug!("Request::FlushAll for butcher first");
+
+//                 let request_ref = flush_requests.insert(FlushRequest {
+//                     butcher_done: false,
+//                     search_trees_pending_count: 0,
+//                 });
+//                 tasks.push(task::run_args(task::TaskArgs::FlushButcher(
+//                     task::flush_butcher::Args {
+//                         request_ref,
+//                         butcher_pid: state.butcher_pid.clone(),
+//                     },
+//                 )));
+//                 tasks_count += 1;
+//                 current_mode = Mode::Flushing { done_reply_tx: reply_tx, };
+            },
+
+            Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next, }))) => {
+
+                todo!();
+            },
+
+            Event::Task(Err(error)) =>
+                return Err(ErrorSeverity::Fatal(Error::Task(error))),
+
+        }
+    }
 
 //     let (bg_tasks_tx, bg_tasks_rx) = mpsc::channel(0);
 //     let mut fused_bg_tasks_rx = bg_tasks_rx.fuse();
