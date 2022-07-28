@@ -67,9 +67,25 @@ pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
 }
 
+impl Incoming {
+    pub fn is_empty(&self) -> bool {
+        self.request_insert.is_empty()
+    }
+
+    pub fn transfill_from(&mut self, from: &mut Self) {
+        self.request_insert.extend(from.request_insert.drain(..));
+    }
+}
+
 #[derive(Default)]
 pub struct Outgoing {
     pub flush_butcher: Vec<FlushButcherQuery>,
+}
+
+impl Outgoing {
+    fn is_empty(&self) -> bool {
+        self.flush_butcher.is_empty()
+    }
 }
 
 pub struct FlushButcherQuery {
@@ -93,6 +109,8 @@ pub enum Next {
 }
 
 pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
+    assert!(env.outgoing.is_empty());
+
     loop {
         let mut performer_kont = match kont {
             Kont::Start { performer, } =>
