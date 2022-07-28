@@ -1,7 +1,20 @@
+use std::{
+    sync::{
+        Arc,
+    },
+};
+
+use o1::{
+    set::{
+        Ref,
+    },
+};
+
 use crate::{
     job,
     core::{
         performer,
+        MemCache,
         Context as C,
         RequestInsert,
     },
@@ -46,11 +59,22 @@ pub struct JobArgs {
 #[derive(Default)]
 pub struct Env {
     pub incoming: Incoming,
+    pub outgoing: Outgoing,
 }
 
 #[derive(Default)]
 pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
+}
+
+#[derive(Default)]
+pub struct Outgoing {
+    pub flush_butcher: Vec<FlushButcherQuery>,
+}
+
+pub struct FlushButcherQuery {
+    pub search_tree_ref: Ref,
+    pub frozen_memcache: Arc<MemCache>,
 }
 
 pub enum Kont {
@@ -70,28 +94,37 @@ pub enum Next {
 
 pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
     loop {
-        todo!();
+        let mut performer_kont = match kont {
+            Kont::Start { performer, } =>
+                performer.step(),
+            Kont::StepPoll { next, } =>
+                if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
+                    next.incoming_insert(key, value, reply_tx)
+                } else {
+                    return Ok(Done { env, next: Next::Poll { next, }, });
+                },
+        };
 
-        // let performer_kont = match kont {
-        //     Kont::Start { performer, } =>
-        //         performer.step(),
-        //     Kont::StepPoll { next, } =>
-        //         if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
-        //             let performer_kont = next.incoming_insert(key, value); ?????
-        //             if let Err(_send_error) = reply_tx.send(Inserted) {
-        //                 log::warn!("client canceled insert request");
-        //             }
-        //             performer_kont
-        //         },
-        // };
-
-        // performer_kont = match performer_kont {
-        //     performer::Kont::Poll(kont_poll) =>
-        //         todo!(),
-        //     performer::Kont::Inserted(kont_inserted) =>
-        //         todo!(),
-        //     performer::Kont::FlushButcher(kont_flush_butcher) =>
-        //         todo!(),
-        // };
+        loop {
+            performer_kont = match performer_kont {
+                performer::Kont::Poll(performer::KontPoll { next, }) => {
+                    kont = Kont::StepPoll { next, };
+                    break;
+                },
+                performer::Kont::Inserted(performer::KontInserted { version, insert_context: reply_tx, next, }) => {
+                    if let Err(_send_error) = reply_tx.send(Inserted { version, }) {
+                        log::warn!("client canceled insert request");
+                    }
+                    next.got_it()
+                },
+                performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_ref, frozen_memcache, next, }) => {
+                    env.outgoing.flush_butcher.push(FlushButcherQuery {
+                        search_tree_ref,
+                        frozen_memcache,
+                    });
+                    next.scheduled()
+                },
+            };
+        }
     }
 }
