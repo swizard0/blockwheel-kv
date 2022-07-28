@@ -29,21 +29,24 @@ use super::{
     LookupRange,
 };
 
-pub mod manager;
 pub mod merger;
-pub mod bin_merger;
+pub mod context;
+pub mod manager;
 pub mod performer;
+pub mod bin_merger;
 
 #[derive(Debug)]
 pub struct RequestInfo {
     reply_tx: oneshot::Sender<Info>,
 }
 
+pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
+
 #[derive(Debug)]
 pub struct RequestInsert {
     key: kv::Key,
     value: kv::Value,
-    reply_tx: oneshot::Sender<Inserted>,
+    reply_tx: RequestInsertReplyTx,
 }
 
 #[derive(Debug)]
@@ -66,6 +69,12 @@ pub struct RequestRemove {
 #[derive(Debug)]
 pub struct RequestFlush {
     reply_tx: oneshot::Sender<Flushed>,
+}
+
+pub struct Context;
+
+impl context::Context for Context {
+    type Insert = RequestInsertReplyTx;
 }
 
 pub struct MemCache {

@@ -2,7 +2,10 @@ use crate::{
     job,
     core::{
         performer,
+        Context as C,
+        RequestInsert,
     },
+    Inserted,
 };
 
 pub struct Args<J> where J: edeltraud::Job {
@@ -42,34 +45,53 @@ pub struct JobArgs {
 
 #[derive(Default)]
 pub struct Env {
+    pub incoming: Incoming,
+}
+
+#[derive(Default)]
+pub struct Incoming {
+    pub request_insert: Vec<RequestInsert>,
 }
 
 pub enum Kont {
     Start {
-        performer: performer::Performer,
+        performer: performer::Performer<C>,
+    },
+    StepPoll {
+        next: performer::KontPollNext<C>,
     },
 }
 
 pub enum Next {
     Poll {
-        next: performer::KontPollNext,
+        next: performer::KontPollNext<C>,
     },
 }
 
-pub fn job(JobArgs { mut env, kont, }: JobArgs) -> Output {
-    let mut performer_kont = match kont {
-        Kont::Start { performer, } =>
-            performer.step(),
-    };
-
+pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
     loop {
-        performer_kont = match performer_kont {
-            performer::Kont::Poll(kont_poll) =>
-                todo!(),
-            performer::Kont::Inserted(kont_inserted) =>
-                todo!(),
-            performer::Kont::FlushButcher(kont_flush_butcher) =>
-                todo!(),
-        };
+        todo!();
+
+        // let performer_kont = match kont {
+        //     Kont::Start { performer, } =>
+        //         performer.step(),
+        //     Kont::StepPoll { next, } =>
+        //         if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
+        //             let performer_kont = next.incoming_insert(key, value); ?????
+        //             if let Err(_send_error) = reply_tx.send(Inserted) {
+        //                 log::warn!("client canceled insert request");
+        //             }
+        //             performer_kont
+        //         },
+        // };
+
+        // performer_kont = match performer_kont {
+        //     performer::Kont::Poll(kont_poll) =>
+        //         todo!(),
+        //     performer::Kont::Inserted(kont_inserted) =>
+        //         todo!(),
+        //     performer::Kont::FlushButcher(kont_flush_butcher) =>
+        //         todo!(),
+        // };
     }
 }

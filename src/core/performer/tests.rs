@@ -33,7 +33,7 @@ fn basic_insert() {
     let version_provider =
         version::Provider::from_unix_epoch_seed();
     let performer = Performer::new(
-        Params { tree_block_size: 2, ..Default::default() },
+        Params { butcher_block_size: 2, ..Default::default() },
         version_provider,
         SearchForest::new(),
     );
@@ -47,7 +47,7 @@ fn basic_insert() {
     // database: 0 entries
     let kont = next.incoming_insert(key(1), value(1));
     let next = match kont {
-        Kont::Inserted(KontInserted { next, }) =>
+        Kont::Inserted(KontInserted { next, .. }) =>
             next,
         _ =>
             panic!("expected Kont::Inserted, got other"),
@@ -62,7 +62,7 @@ fn basic_insert() {
     // database: 1 entries
     let kont = next.incoming_insert(key(2), value(2));
     let next = match kont {
-        Kont::Inserted(KontInserted { next, }) =>
+        Kont::Inserted(KontInserted { next, .. }) =>
             next,
         _ =>
             panic!("expected Kont::Inserted, got other"),
@@ -86,7 +86,7 @@ fn basic_insert() {
     // database: 2 entries with flush scheduled
     let kont = next.incoming_insert(key(3), value(3));
     let next = match kont {
-        Kont::Inserted(KontInserted { next, }) =>
+        Kont::Inserted(KontInserted { next, .. }) =>
             next,
         _ =>
             panic!("expected Kont::Inserted, got other"),

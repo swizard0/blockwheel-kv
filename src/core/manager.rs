@@ -1,5 +1,5 @@
 use std::{
-//     mem,
+    mem,
 //     sync::Arc,
     time::{
         Duration,
@@ -57,6 +57,7 @@ use crate::{
 //         bin_merger,
 //         search_tree,
 //         MemCache,
+        Context,
         RequestInfo,
         RequestInsert,
         RequestLookup,
@@ -446,7 +447,7 @@ where J: edeltraud::Job + From<job::Job>,
 
 async fn busyloop<J>(
     mut child_supervisor_pid: SupervisorPid,
-    performer: performer::Performer,
+    performer: performer::Performer<Context>,
     mut state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
@@ -467,6 +468,8 @@ where J: edeltraud::Job + From<job::Job>,
             kont: task::performer::Kont::Start { performer, },
         },
     };
+
+    let mut incoming = task::performer::Incoming::default();
 
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
@@ -541,16 +544,8 @@ where J: edeltraud::Job + From<job::Job>,
 //                 }
             },
 
-            Event::Request(Some(Request::Insert(request))) => {
-                todo!()
-//                 tasks.push(task::run_args(task::TaskArgs::InsertButcher(
-//                     task::insert_butcher::Args {
-//                         request,
-//                         butcher_pid: state.butcher_pid.clone(),
-//                     },
-//                 )));
-//                 tasks_count += 1;
-            },
+            Event::Request(Some(Request::Insert(request))) =>
+                incoming.request_insert.push(request),
 
             Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) =>
                 todo!(),
@@ -614,7 +609,17 @@ where J: edeltraud::Job + From<job::Job>,
 //                 current_mode = Mode::Flushing { done_reply_tx: reply_tx, };
             },
 
-            Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next, }))) => {
+            Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next: task::performer::Next::Poll { next, }, }))) => {
+                let prev_performer_state = mem::replace(
+                    &mut performer_state,
+                    PerformerState::Ready {
+                        job_args: task::performer::JobArgs {
+                            env,
+                            kont: task::performer::Kont::StepPoll { next, },
+                        },
+                    },
+                );
+                assert!(matches!(prev_performer_state, PerformerState::InProgress));
 
                 todo!();
             },

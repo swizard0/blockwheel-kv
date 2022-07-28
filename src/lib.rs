@@ -34,6 +34,7 @@ mod storage;
 
 #[derive(Clone, Debug)]
 pub struct Params {
+    pub butcher_block_size: usize,
     pub tree_block_size: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
@@ -44,6 +45,7 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Params {
         Params {
+            butcher_block_size: 128,
             tree_block_size: 32,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
@@ -95,6 +97,7 @@ impl GenServer {
         let manager_params = core::manager::Params {
             task_restart_sec: params.manager_task_restart_sec,
             performer_params: core::performer::Params {
+                butcher_block_size: params.butcher_block_size,
                 tree_block_size: params.tree_block_size,
                 remove_tasks_limit: params.search_tree_remove_tasks_limit,
                 values_inline_size_limit: params.search_tree_values_inline_size_limit,
