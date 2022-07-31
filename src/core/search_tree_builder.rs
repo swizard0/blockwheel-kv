@@ -26,6 +26,9 @@ use crate::{
     storage,
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct Params {
     pub tree_items_count: usize,
     pub tree_block_size: usize,
@@ -36,8 +39,10 @@ pub struct BuilderCps<T, R> {
 }
 
 pub enum Kont<T, R> {
-    RequestNextItem(KontRequestNextItem<T, R>),
+    PollNextItemOrProcessedBlock(KontPollNextItemOrProcessedBlock<T, R>),
+    PollProcessedBlock(KontPollProcessedBlock<T, R>),
     ProcessBlockAsync(KontProcessBlockAsync<T, R>),
+    Finished { root_block_ref: R, },
 }
 
 #[derive(Debug)]
@@ -46,13 +51,16 @@ pub enum Error {
     BuildTreeUnexpectedLevelSeedOnVisitBlockStart,
     BuildTreeUnexpectedLevelSeedOnVisitItem,
     BuildTreeUnexpectedLevelSeedOnVisitBlockFinish,
-    BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index: usize, block_index: usize, }
+    BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index: usize, block_index: usize, },
+    BuildTreeUnexpectedEmptyTree,
+    BlockProcessedInvalidAsyncRef { async_ref: Ref, },
 }
 
 struct Inner<T, R> {
     state: State<T, R>,
     block_entries_pool: pool::Pool<Vec<BlockEntry<T, R>>>,
     done_blocks: Set<DoneBlock<T, R>>,
+    arrived_item: Option<T>,
     ready_head: Option<Ref>,
     params: Params,
 }
@@ -60,24 +68,35 @@ struct Inner<T, R> {
 enum State<T, R> {
     Init,
     Building {
-        sketch: sketch::Tree,
         fold_ctx: fold::Context<LevelSeed<T, R>>,
         tree_kont: fold::Continue,
         child_block_ref: Option<Ref>,
     },
+    AwaitingItem {
+        fold_ctx: fold::Context<LevelSeed<T, R>>,
+        child_block_ref: Option<Ref>,
+        block_in_progress: Block<T, R>,
+        next: fold::VisitItemNext,
+    },
+    Finished {
+        root_block_ref: Ref,
+    },
 }
 
-pub struct KontRequestNextItem<T, R> {
-    pub next: KontRequestNextItemNext<T, R>,
+pub struct KontPollNextItemOrProcessedBlock<T, R> {
+    pub next: KontPollNextItemOrProcessedBlockNext<T, R>,
 }
 
-pub struct KontRequestNextItemNext<T, R> {
+pub struct KontPollNextItemOrProcessedBlockNext<T, R> {
     inner: Inner<T, R>,
-    sketch: sketch::Tree,
-    fold_ctx: fold::Context<LevelSeed<T, R>>,
-    child_block_ref: Option<Ref>,
-    block_in_progress: Block<T, R>,
-    next: fold::VisitItemNext,
+}
+
+pub struct KontPollProcessedBlock<T, R> {
+    pub next: KontPollProcessedBlockNext<T, R>,
+}
+
+pub struct KontPollProcessedBlockNext<T, R> {
+    inner: Inner<T, R>,
 }
 
 pub struct KontProcessBlockAsync<T, R> {
@@ -103,12 +122,18 @@ struct Block<T, R> {
     ready_next: Option<Ref>,
 }
 
-enum DoneBlock<T, R> {
+struct DoneBlock<T, R> {
+    parent_block_ref: Option<Ref>,
+    kind: DoneBlockKind<T, R>,
+}
+
+enum DoneBlockKind<T, R> {
     Issued(Block<T, R>),
     Processing,
     RefReady(R),
 }
 
+#[derive(Debug)]
 pub struct BlockEntry<T, R> {
     pub child_block_ref: Option<R>,
     pub item: T,
@@ -127,6 +152,7 @@ impl<T, R> BuilderCps<T, R> {
                 state: State::Init,
                 block_entries_pool,
                 done_blocks: Set::new(),
+                arrived_item: None,
                 ready_head: None,
                 params,
             },
@@ -136,19 +162,21 @@ impl<T, R> BuilderCps<T, R> {
     pub fn step(mut self) -> Result<Kont<T, R>, Error> {
         loop {
             if let Some(ready_ref) = self.inner.ready_head {
-                let ready_block =
-                    mem::replace(self.inner.done_blocks.get_mut(ready_ref).unwrap(), DoneBlock::Processing);
-                match ready_block {
-                    DoneBlock::Issued(mut block) => {
+                let ready_block_kind = mem::replace(
+                    &mut self.inner.done_blocks.get_mut(ready_ref).unwrap().kind,
+                    DoneBlockKind::Processing,
+                );
+                match ready_block_kind {
+                    DoneBlockKind::Issued(mut block) => {
                         self.inner.ready_head = block.ready_next;
                         for block_entry in &mut **block.block_entries {
                             if let Some(block_ref) = block_entry.done_blocks_child_ref {
                                 match self.inner.done_blocks.remove(block_ref) {
                                     None =>
                                         (),
-                                    Some(DoneBlock::RefReady(child_block_ref)) =>
+                                    Some(DoneBlock { kind: DoneBlockKind::RefReady(child_block_ref), .. }) =>
                                         block_entry.child_block_ref = Some(child_block_ref),
-                                    Some(DoneBlock::Issued(..) | DoneBlock::Processing) =>
+                                    Some(DoneBlock { kind: DoneBlockKind::Issued(..) | DoneBlockKind::Processing, .. }) =>
                                         unreachable!(),
                                 }
                             }
@@ -162,7 +190,7 @@ impl<T, R> BuilderCps<T, R> {
                             },
                         }));
                     },
-                    DoneBlock::Processing | DoneBlock::RefReady(..) =>
+                    DoneBlockKind::Processing | DoneBlockKind::RefReady(..) =>
                         unreachable!(),
                 }
             }
@@ -180,13 +208,12 @@ impl<T, R> BuilderCps<T, R> {
                     let tree_kont =
                         fold::Script::boot();
                     self.inner.state = State::Building {
-                        sketch,
                         fold_ctx,
                         tree_kont,
                         child_block_ref: None,
                     };
                 },
-                State::Building { sketch, mut fold_ctx, mut tree_kont, mut child_block_ref, } => {
+                State::Building { mut fold_ctx, mut tree_kont, mut child_block_ref, } => {
                     let kont_step = tree_kont.step_rec(&mut fold_ctx)
                         .map_err(Error::BuildTree)?;
                     tree_kont = match kont_step {
@@ -232,20 +259,16 @@ impl<T, R> BuilderCps<T, R> {
                             level_seed: LevelSeed::InProgress(block_in_progress),
                             next,
                             ..
-                        })) =>
-                            return Ok(Kont::RequestNextItem(KontRequestNextItem {
-                                next: KontRequestNextItemNext {
-                                    inner: Inner {
-                                        state: State::Init,
-                                        ..self.inner
-                                    },
-                                    sketch,
-                                    fold_ctx,
-                                    child_block_ref,
-                                    block_in_progress,
-                                    next,
-                                },
-                            })),
+                        })) => {
+                            self.inner.state = State::AwaitingItem {
+                                fold_ctx,
+                                child_block_ref,
+                                block_in_progress,
+                                next,
+                            };
+                            continue;
+                        },
+
                         fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem { level_seed: LevelSeed::Empty, .. })) =>
                             return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitItem),
 
@@ -261,29 +284,32 @@ impl<T, R> BuilderCps<T, R> {
                                 return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index, block_index, });
                             }
 
+                            // allocate space in `done_blocks` for `block_in_progress`
+                            let done_blocks_ref = self.inner.done_blocks.insert(
+                                DoneBlock {
+                                    parent_block_ref: None,
+                                    kind: DoneBlockKind::Processing,
+                                },
+                            );
+
                             for block_entry in &**block_in_progress.block_entries {
                                 if let Some(block_ref) = block_entry.done_blocks_child_ref {
-                                    match self.inner.done_blocks.get(block_ref) {
-                                        None =>
-                                            unreachable!(),
-                                        Some(DoneBlock::Issued(..) | DoneBlock::Processing) =>
+                                    let done_child_block = self.inner.done_blocks.get_mut(block_ref).unwrap();
+                                    done_child_block.parent_block_ref = Some(done_blocks_ref);
+                                    match done_child_block.kind {
+                                        DoneBlockKind::Issued(..) | DoneBlockKind::Processing =>
                                             block_in_progress.child_refs_in_progress += 1,
-                                        Some(DoneBlock::RefReady(..)) =>
+                                        DoneBlockKind::RefReady(..) =>
                                             (),
                                     }
                                 }
                             }
-                            let is_block_ready = if block_in_progress.child_refs_in_progress == 0 {
+                            if block_in_progress.child_refs_in_progress == 0 {
                                 block_in_progress.ready_next = self.inner.ready_head;
-                                true
-                            } else {
-                                false
-                            };
-                            let done_blocks_ref =
-                                self.inner.done_blocks.insert(DoneBlock::Issued(block_in_progress));
-                            if is_block_ready {
                                 self.inner.ready_head = Some(done_blocks_ref);
                             }
+                            self.inner.done_blocks.get_mut(done_blocks_ref).unwrap().kind =
+                                DoneBlockKind::Issued(block_in_progress);
 
                             child_block_ref = Some(done_blocks_ref);
                             let level_seed = LevelSeed::Empty;
@@ -294,54 +320,108 @@ impl<T, R> BuilderCps<T, R> {
                             return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockFinish),
 
                         // Done
-                        fold::Instruction::Done => {
-
-                            todo!()
-
-                            // match child_ref {
-                            //     Some(root_block_ref) =>
-                            //         break root_block_ref,
-                            //     None =>
-                            //         return Err(Error::BuildTreeUnexpectedEmptyTree),
-                            // },
-                        },
+                        fold::Instruction::Done =>
+                            match child_block_ref {
+                                Some(root_block_ref) => {
+                                    self.inner.state = State::Finished { root_block_ref, };
+                                    continue;
+                                },
+                                None =>
+                                    return Err(Error::BuildTreeUnexpectedEmptyTree),
+                            },
                     };
                     self.inner.state =
-                        State::Building { sketch, fold_ctx, tree_kont, child_block_ref, };
+                        State::Building { fold_ctx, tree_kont, child_block_ref, };
                 },
+                State::AwaitingItem { mut fold_ctx, mut child_block_ref, mut block_in_progress, next, } =>
+                    match self.inner.arrived_item.take() {
+                        None =>
+                            return Ok(Kont::PollNextItemOrProcessedBlock(KontPollNextItemOrProcessedBlock {
+                                next: KontPollNextItemOrProcessedBlockNext {
+                                    inner: Inner {
+                                        state: State::AwaitingItem { fold_ctx, child_block_ref, block_in_progress, next, },
+                                        ..self.inner
+                                    },
+                                },
+                            })),
+                        Some(item) => {
+                            let child_block_ref_taken = child_block_ref.take();
+                            block_in_progress.block_entries.push(BlockEntry {
+                                child_block_ref: None,
+                                item,
+                                done_blocks_child_ref: child_block_ref_taken,
+                            });
+                            let level_seed = LevelSeed::InProgress(block_in_progress);
+                            let tree_kont = next.item_ready(level_seed, &mut fold_ctx)
+                                .map_err(Error::BuildTree)?;
+                            self.inner.state =
+                                State::Building { fold_ctx, tree_kont, child_block_ref, };
+                        },
+                    },
+                State::Finished { root_block_ref, } =>
+                    return Ok(Kont::PollProcessedBlock(KontPollProcessedBlock {
+                        next: KontPollProcessedBlockNext {
+                            inner: Inner {
+                                state: State::Finished { root_block_ref, },
+                                ..self.inner
+                            },
+                        },
+                    })),
             }
         }
     }
 }
 
-impl<T, R> KontRequestNextItemNext<T, R> {
-    pub fn item_arrived(mut self, item: T) -> Result<BuilderCps<T, R>, Error> {
-        let child_block_ref_taken = self.child_block_ref.take();
-        self.block_in_progress.block_entries.push(BlockEntry {
-            child_block_ref: None,
-            item,
-            done_blocks_child_ref: child_block_ref_taken,
-        });
-        let level_seed = LevelSeed::InProgress(self.block_in_progress);
-        let tree_kont = self.next.item_ready(level_seed, &mut self.fold_ctx)
-            .map_err(Error::BuildTree)?;
+impl<T, R> KontPollNextItemOrProcessedBlockNext<T, R> {
+    pub fn item_arrived(mut self, item: T) -> Result<Kont<T, R>, Error> {
+        assert!(self.inner.arrived_item.is_none());
         let builder = BuilderCps {
             inner: Inner {
-                state: State::Building {
-                    sketch: self.sketch,
-                    fold_ctx: self.fold_ctx,
-                    tree_kont,
-                    child_block_ref: self.child_block_ref,
-                },
+                arrived_item: Some(item),
                 ..self.inner
             },
         };
-        Ok(builder)
+        builder.step()
+    }
+
+    pub fn block_processed(self, async_ref: Ref, block_ref: R) -> Result<Kont<T, R>, Error> {
+        let map_kont = KontPollProcessedBlockNext { inner: self.inner, };
+        map_kont.block_processed(async_ref, block_ref)
+    }
+}
+
+impl<T, R> KontPollProcessedBlockNext<T, R> {
+    pub fn block_processed(mut self, async_ref: Ref, block_ref: R) -> Result<Kont<T, R>, Error> {
+        let processing_block = self.inner.done_blocks.get_mut(async_ref);
+        match processing_block {
+            Some(&mut DoneBlock { parent_block_ref: maybe_parent_block_ref, kind: ref mut kind @ DoneBlockKind::Processing, }) =>
+                match maybe_parent_block_ref {
+                    Some(parent_block_ref) => {
+                        *kind = DoneBlockKind::RefReady(block_ref);
+                        let maybe_done_parent_block = self.inner.done_blocks.get_mut(parent_block_ref);
+                        if let Some(DoneBlock { kind: DoneBlockKind::Issued(done_parent_block), .. }) = maybe_done_parent_block {
+                            assert!(done_parent_block.child_refs_in_progress > 0);
+                            done_parent_block.child_refs_in_progress -= 1;
+                            if done_parent_block.child_refs_in_progress == 0 {
+                                done_parent_block.ready_next = self.inner.ready_head;
+                                self.inner.ready_head = Some(parent_block_ref);
+                            }
+                        }
+                        BuilderCps { inner: self.inner, }.step()
+                    },
+                    None => {
+                        assert_eq!(self.inner.done_blocks.len(), 1);
+                        Ok(Kont::Finished { root_block_ref: block_ref, })
+                    },
+                },
+            _ =>
+                Err(Error::BlockProcessedInvalidAsyncRef { async_ref, }),
+        }
     }
 }
 
 impl<T, R> KontProcessBlockAsyncNext<T, R> {
-    pub fn process_scheduled(self) -> BuilderCps<T, R> {
-        BuilderCps { inner: self.inner, }
+    pub fn process_scheduled(self) -> Result<Kont<T, R>, Error> {
+        BuilderCps { inner: self.inner, }.step()
     }
 }
