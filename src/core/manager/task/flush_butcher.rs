@@ -1,29 +1,48 @@
-
-use o1::set::Ref;
-
-use crate::{
-    core::{
-        butcher,
+use std::{
+    sync::{
+        Arc,
     },
-    Flushed,
 };
 
-pub struct Args {
-    pub request_ref: Ref,
-    pub butcher_pid: butcher::Pid,
+use o1::{
+    set::{
+        Ref,
+    },
+};
+
+use crate::{
+    job,
+    core::{
+        search_tree_builder,
+        MemCache,
+        BlockRef,
+    },
+};
+
+pub struct Args<J> where J: edeltraud::Job {
+    pub search_tree_ref: Ref,
+    pub frozen_memcache: Arc<MemCache>,
+    pub thread_pool: edeltraud::Edeltraud<J>,
 }
 
 pub struct Done {
-    pub request_ref: Ref,
+    pub search_tree_ref: Ref,
+    pub root_block: BlockRef,
 }
 
 #[derive(Debug)]
 pub enum Error {
-    ButcherFlush(ero::NoProcError),
+    ThreadPoolGone,
 }
 
-pub async fn run(Args { request_ref, mut butcher_pid, }: Args) -> Result<Done, Error> {
-    let Flushed = butcher_pid.flush().await
-        .map_err(Error::ButcherFlush)?;
-    Ok(Done { request_ref, })
+pub async fn run<J>(
+    Args { search_tree_ref, frozen_memcache, thread_pool, }: Args<J>,
+)
+    -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
+
+    todo!()
 }

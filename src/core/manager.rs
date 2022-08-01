@@ -36,7 +36,6 @@ use ero::{
 };
 
 use alloc_pool::{
-    pool,
     bytes::{
         BytesPool,
     },
@@ -71,7 +70,6 @@ use crate::{
     Removed,
     Inserted,
     LookupRange,
-    KeyValueStreamItem,
 };
 
 pub mod task;
@@ -380,7 +378,7 @@ pub enum Error {
 // }
 
 async fn load<J>(
-    mut child_supervisor_pid: SupervisorPid,
+    child_supervisor_pid: SupervisorPid,
     mut state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
@@ -615,16 +613,32 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next: task::performer::Next::Poll { next, }, }))) => {
+                let mut job_args = task::performer::JobArgs {
+                    env,
+                    kont: task::performer::Kont::StepPoll { next, },
+                };
+                // flush butcher
+                for task::performer::FlushButcherQuery { search_tree_ref, frozen_memcache, } in job_args.env.outgoing.flush_butcher.drain(..) {
+                    tasks.push(task::run_args(task::TaskArgs::FlushButcher(
+                        task::flush_butcher::Args {
+                            search_tree_ref,
+                            frozen_memcache,
+                            thread_pool: state.thread_pool.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
+                }
+
                 let prev_performer_state = mem::replace(
                     &mut performer_state,
-                    PerformerState::Ready {
-                        job_args: task::performer::JobArgs {
-                            env,
-                            kont: task::performer::Kont::StepPoll { next, },
-                        },
-                    },
+                    PerformerState::Ready { job_args, },
                 );
                 assert!(matches!(prev_performer_state, PerformerState::InProgress));
+
+                todo!();
+            },
+
+            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref, root_block, }))) => {
 
                 todo!();
             },

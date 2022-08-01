@@ -15,6 +15,7 @@ use crate::{
     core::{
         performer,
         MemCache,
+        BlockRef,
         Context as C,
         RequestInsert,
     },
@@ -65,16 +66,24 @@ pub struct Env {
 #[derive(Default)]
 pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
+    pub butcher_flushed: Vec<EventButcherFlushed>,
 }
 
 impl Incoming {
     pub fn is_empty(&self) -> bool {
-        self.request_insert.is_empty()
+        self.request_insert.is_empty() &&
+            self.butcher_flushed.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
         self.request_insert.extend(from.request_insert.drain(..));
+        self.butcher_flushed.extend(from.butcher_flushed.drain(..));
     }
+}
+
+pub struct EventButcherFlushed {
+    pub search_tree_ref: Ref,
+    pub root_block: BlockRef,
 }
 
 #[derive(Default)]
@@ -118,6 +127,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
             Kont::StepPoll { next, } =>
                 if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
                     next.incoming_insert(key, value, reply_tx)
+                } else if let Some(EventButcherFlushed { search_tree_ref, root_block, }) = env.incoming.butcher_flushed.pop() {
+                    next.butcher_flushed(search_tree_ref, root_block)
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },
