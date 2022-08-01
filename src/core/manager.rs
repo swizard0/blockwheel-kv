@@ -36,6 +36,7 @@ use ero::{
 };
 
 use alloc_pool::{
+    pool,
     bytes::{
         BytesPool,
     },
@@ -51,6 +52,7 @@ use crate::{
     version,
     core::{
         performer,
+        search_tree_builder,
 //         merger,
 //         butcher,
 //         bin_merger,
@@ -469,6 +471,8 @@ where J: edeltraud::Job + From<job::Job>,
 
     let mut incoming = task::performer::Incoming::default();
 
+    let block_entries_pool = pool::Pool::new();
+
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
 
@@ -621,8 +625,13 @@ where J: edeltraud::Job + From<job::Job>,
                 for task::performer::FlushButcherQuery { search_tree_ref, frozen_memcache, } in job_args.env.outgoing.flush_butcher.drain(..) {
                     tasks.push(task::run_args(task::TaskArgs::FlushButcher(
                         task::flush_butcher::Args {
+                            search_tree_builder_params: search_tree_builder::Params {
+                                tree_items_count: frozen_memcache.len(),
+                                tree_block_size: state.params.performer_params.tree_block_size,
+                            },
                             search_tree_ref,
                             frozen_memcache,
+                            block_entries_pool: block_entries_pool.clone(),
                             thread_pool: state.thread_pool.clone(),
                         },
                     )));

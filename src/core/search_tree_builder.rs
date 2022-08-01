@@ -292,6 +292,7 @@ impl<T, R> BuilderCps<T, R> {
                                 },
                             );
 
+                            block_in_progress.block_entries.shrink_to_fit();
                             for block_entry in &**block_in_progress.block_entries {
                                 if let Some(block_ref) = block_entry.done_blocks_child_ref {
                                     let done_child_block = self.inner.done_blocks.get_mut(block_ref).unwrap();

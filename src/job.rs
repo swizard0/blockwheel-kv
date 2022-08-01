@@ -7,11 +7,13 @@ use crate::{
 pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
     ManagerTaskPerformer(core::manager::task::performer::JobArgs),
+    ManagerTaskFlushButcher(core::manager::task::flush_butcher::JobArgs),
 }
 
 pub enum JobOutput {
     BlockwheelFs(blockwheel::job::JobOutput),
     ManagerTaskPerformer(ManagerTaskPerformerDone),
+    ManagerTaskFlushButcher(ManagerTaskFlushButcherDone),
 }
 
 impl edeltraud::Job for Job {
@@ -23,6 +25,8 @@ impl edeltraud::Job for Job {
                 JobOutput::BlockwheelFs(job.run()),
             Job::ManagerTaskPerformer(args) =>
                 JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args))),
+            Job::ManagerTaskFlushButcher(args) =>
+                JobOutput::ManagerTaskFlushButcher(ManagerTaskFlushButcherDone(core::manager::task::flush_butcher::job(args))),
         }
     }
 }
@@ -59,6 +63,19 @@ impl From<JobOutput> for ManagerTaskPerformerDone {
                 done,
             _other =>
                 panic!("expected JobOutput::ManagerTaskPerformer but got other"),
+        }
+    }
+}
+
+pub struct ManagerTaskFlushButcherDone(pub core::manager::task::flush_butcher::Output);
+
+impl From<JobOutput> for ManagerTaskFlushButcherDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::ManagerTaskFlushButcher(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::ManagerTaskFlushButcher but got other"),
         }
     }
 }

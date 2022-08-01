@@ -43,6 +43,9 @@ pub struct RequestInfo {
 
 pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
 
+pub type SearchTreeBuilderCps = search_tree_builder::BuilderCps<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+pub type SearchTreeBuilderBlockEntry = search_tree_builder::BlockEntry<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+
 #[derive(Debug)]
 pub struct RequestInsert {
     key: kv::Key,
