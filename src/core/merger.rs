@@ -10,10 +10,6 @@ use std::{
     },
 };
 
-use futures::{
-    StreamExt,
-};
-
 use crate::{
     kv,
     storage,
