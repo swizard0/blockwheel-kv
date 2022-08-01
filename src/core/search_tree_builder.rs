@@ -409,9 +409,13 @@ impl<T, R> KontPollProcessedBlockNext<T, R> {
                         }
                         BuilderCps { inner: self.inner, }.step()
                     },
-                    None => {
+                    None if matches!(self.inner.state, State::Finished { .. }) => {
                         assert_eq!(self.inner.done_blocks.len(), 1);
                         Ok(Kont::Finished { root_block_ref: block_ref, })
+                    },
+                    None => {
+                        *kind = DoneBlockKind::RefReady(block_ref);
+                        BuilderCps { inner: self.inner, }.step()
                     },
                 },
             _ =>
