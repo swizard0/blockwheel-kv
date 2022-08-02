@@ -19,8 +19,6 @@ use ero::{
 
 use alloc_pool::bytes::BytesPool;
 
-use ero_blockwheel_fs as blockwheel;
-
 pub mod kv;
 pub mod job;
 pub mod wheels;

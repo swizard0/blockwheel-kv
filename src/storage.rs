@@ -85,6 +85,24 @@ pub struct ExternalRef<'a> {
     pub block_id: block::Id,
 }
 
+impl<'a> JumpRef<'a> {
+    pub fn from_maybe_block_ref(maybe_block_ref: &'a Option<BlockRef>, current_blockwheel_filename: &WheelFilename) -> JumpRef<'a> {
+        match maybe_block_ref {
+            None =>
+                JumpRef::None,
+            Some(block_ref) if &block_ref.blockwheel_filename == current_blockwheel_filename =>
+                JumpRef::Local(LocalRef {
+                    block_id: block_ref.block_id.clone(),
+                }),
+            Some(block_ref) =>
+                JumpRef::External(ExternalRef {
+                    filename: &block_ref.blockwheel_filename,
+                    block_id: block_ref.block_id.clone(),
+                }),
+        }
+    }
+}
+
 impl<'a> From<&'a kv::ValueCell<kv::Value>> for ValueCell<'a> {
     fn from(value_cell: &'a kv::ValueCell<kv::Value>) -> ValueCell<'a> {
         ValueCell {
