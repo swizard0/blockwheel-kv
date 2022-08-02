@@ -446,7 +446,7 @@ where J: edeltraud::Job + From<job::Job>,
 }
 
 async fn busyloop<J>(
-    mut child_supervisor_pid: SupervisorPid,
+    _child_supervisor_pid: SupervisorPid,
     performer: performer::Performer<Context>,
     mut state: State<J>,
 )
@@ -526,7 +526,7 @@ where J: edeltraud::Job + From<job::Job>,
                 return Ok(());
             },
 
-            Event::Request(Some(Request::Info(RequestInfo { reply_tx, }))) => {
+            Event::Request(Some(Request::Info(RequestInfo { reply_tx: _, }))) => {
                 todo!();
 //                 let request_ref = info_requests.insert(InfoRequest {
 //                     reply_tx,
@@ -554,7 +554,7 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Insert(request))) =>
                 incoming.request_insert.push(request),
 
-            Event::Request(Some(Request::Lookup(RequestLookup { key, reply_tx, }))) =>
+            Event::Request(Some(Request::Lookup(RequestLookup { key: _, reply_tx: _, }))) =>
                 todo!(),
 //                 launch_lookup_request(
 //                     key,
@@ -568,7 +568,7 @@ where J: edeltraud::Job + From<job::Job>,
 //                     },
 //                 ),
 
-            Event::Request(Some(Request::LookupRange(RequestLookupRange { range, reply_tx, }))) => {
+            Event::Request(Some(Request::LookupRange(RequestLookupRange { range: _, reply_tx: _, }))) => {
                 todo!();
 //                 let (key_values_tx, key_values_rx) =
 //                     mpsc::channel(state.params.search_tree_params.iter_send_buffer);
@@ -587,7 +587,7 @@ where J: edeltraud::Job + From<job::Job>,
 //                 tasks_count += 1;
             },
 
-            Event::Request(Some(Request::Remove(request))) => {
+            Event::Request(Some(Request::Remove(_request))) => {
                 todo!();
 //                 tasks.push(task::run_args(task::TaskArgs::RemoveButcher(
 //                     task::remove_butcher::Args {
@@ -598,7 +598,7 @@ where J: edeltraud::Job + From<job::Job>,
 //                 tasks_count += 1;
             },
 
-            Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx, }))) => {
+            Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx: _, }))) => {
                 todo!();
 //                 log::debug!("Request::FlushAll for butcher first");
 
@@ -650,7 +650,7 @@ where J: edeltraud::Job + From<job::Job>,
                 todo!();
             },
 
-            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref, root_block, }))) => {
+            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref: _, root_block: _, }))) => {
 
                 todo!();
             },

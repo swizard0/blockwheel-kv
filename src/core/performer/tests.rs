@@ -77,7 +77,7 @@ fn basic_insert() {
     // should request flush (max 2 entries limit)
     let kont = next.got_it();
     let next = match kont {
-        Kont::FlushButcher(KontFlushButcher { search_tree_ref, frozen_memcache, next, }) =>
+        Kont::FlushButcher(KontFlushButcher { next, .. }) =>
             next,
         _ =>
             panic!("expected Kont::FlushButcher, got other"),
@@ -100,7 +100,7 @@ fn basic_insert() {
     };
     // database: 3 entries with flush scheduled
     let kont = next.got_it();
-    let next = match kont {
+    match kont {
         Kont::Poll(KontPoll { next, }) =>
             next,
         _ =>

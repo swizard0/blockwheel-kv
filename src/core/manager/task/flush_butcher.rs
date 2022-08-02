@@ -1,6 +1,7 @@
 use std::{
     sync::{
         Arc,
+        Mutex,
     },
     collections::{
         HashMap,
@@ -10,7 +11,7 @@ use std::{
     },
 };
 
- use futures::{
+use futures::{
      stream::{
          FuturesUnordered,
      },
@@ -48,6 +49,9 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct Args<J> where J: edeltraud::Job {
     pub search_tree_ref: Ref,
     pub frozen_memcache: Arc<MemCache>,
@@ -75,11 +79,28 @@ pub enum Error {
     SerializeValueBlockStorage(storage::Error),
 }
 
+struct WheelRef {
+    blockwheel_filename: wheels::WheelFilename,
+    blockwheel_pid: BlockwheelPid,
+}
+
+#[derive(Clone)]
+enum BlockwheelPid {
+    Regular(blockwheel::Pid),
+    Custom(Arc<Mutex<dyn FnMut(Bytes) -> blockwheel::block::Id + Send + 'static>>),
+}
+
+#[derive(Clone)]
+enum WheelsPid {
+    Regular(wheels::Pid),
+    Custom(Arc<Mutex<dyn FnMut() -> WheelRef + Send + 'static>>),
+}
+
 pub async fn run<J>(
     Args {
         search_tree_ref,
         frozen_memcache,
-        mut wheels_pid,
+        wheels_pid,
         blocks_pool,
         block_entries_pool,
         search_tree_builder_params,
@@ -92,10 +113,37 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    inner_run(
+        search_tree_ref,
+        frozen_memcache,
+        WheelsPid::Regular(wheels_pid),
+        blocks_pool,
+        block_entries_pool,
+        search_tree_builder_params,
+        values_inline_size_limit,
+        thread_pool,
+    ).await
+}
+
+async fn inner_run<J>(
+    search_tree_ref: Ref,
+    frozen_memcache: Arc<MemCache>,
+    wheels_pid: WheelsPid,
+    blocks_pool: BytesPool,
+    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
+    search_tree_builder_params: search_tree_builder::Params,
+    values_inline_size_limit: usize,
+    thread_pool: edeltraud::Edeltraud<J>,
+)
+    -> Result<Done, Error>
+where J: edeltraud::Job + From<job::Job>,
+      J::Output: From<job::JobOutput>,
+      job::JobOutput: From<J::Output>,
+{
     enum Task<J> where J: edeltraud::Job + From<job::Job> {
         Job(edeltraud::Handle<J::Output>),
         WriteValue {
-            wheels_pid: wheels::Pid,
+            wheels_pid: WheelsPid,
             block_bytes: Bytes,
             async_ref: Ref,
             block_entry_index: usize,
@@ -104,7 +152,7 @@ where J: edeltraud::Job + From<job::Job>,
             write_block_task: WriteBlockTask,
         },
         AcquireWheelRef {
-            wheels_pid: wheels::Pid,
+            wheels_pid: WheelsPid,
             prepare_block_task: PrepareBlockTask,
         },
     }
@@ -121,7 +169,7 @@ where J: edeltraud::Job + From<job::Job>,
             async_ref: Ref,
         },
         AcquireWheelRef {
-            wheel_ref: wheels::WheelRef,
+            wheel_ref: WheelRef,
             prepare_block_task: PrepareBlockTask,
         },
     }
@@ -204,19 +252,32 @@ where J: edeltraud::Job + From<job::Job>,
     let mut incoming = Incoming::default();
 
     loop {
-        match builder_state {
-            BuilderState::Ready { job_args: mut job_args @ JobArgs { kont: Kont::Start { .. }, .. }, } |
-            BuilderState::Ready { mut job_args, } if !incoming.is_empty() => {
+        enum BuilderAction<A, S> {
+            Run(A),
+            KeepState(S),
+        }
+
+        let builder_action = match builder_state {
+            BuilderState::Ready { job_args: job_args @ JobArgs { kont: Kont::Start { .. }, .. }, } =>
+                BuilderAction::Run(job_args),
+            BuilderState::Ready { job_args, } if !incoming.is_empty() =>
+                BuilderAction::Run(job_args),
+            other =>
+                BuilderAction::KeepState(other),
+        };
+
+        builder_state = match builder_action {
+            BuilderAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
                 let job = job::Job::ManagerTaskFlushButcher(job_args);
                 let job_handle = thread_pool.spawn_handle(job)
                     .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
                 tasks.push(Task::<J>::Job(job_handle).run());
-                builder_state = BuilderState::InProgress;
+                BuilderState::InProgress
             },
-            other =>
-                builder_state = other,
-        }
+            BuilderAction::KeepState(state) =>
+                state,
+        };
 
         match tasks.next().await.unwrap()? {
 
@@ -342,7 +403,7 @@ impl Incoming {
 }
 
 struct SerializeBlockTask {
-    wheel_ref: wheels::WheelRef,
+    wheel_ref: WheelRef,
     node_type: storage::NodeType,
     async_ref: Ref,
     block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
@@ -366,7 +427,7 @@ struct PrepareBlockTask {
 }
 
 struct WriteBlockTask {
-    wheel_ref: wheels::WheelRef,
+    wheel_ref: WheelRef,
     async_ref: Ref,
     block_bytes: Bytes,
 }
@@ -522,6 +583,40 @@ fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderNext) -> Output
                 search_tree_builder::Kont::Finished { root_block_ref: root_block, } =>
                     return Ok(JobDone::Finished { root_block, }),
             }
+        }
+    }
+}
+
+impl BlockwheelPid {
+    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel::block::Id, blockwheel::WriteBlockError> {
+        match self {
+            BlockwheelPid::Regular(blockwheel_pid) =>
+                blockwheel_pid.write_block(block_bytes).await,
+            BlockwheelPid::Custom(custom_write_fn) => {
+                let mut fn_lock = custom_write_fn.lock().unwrap();
+                Ok(fn_lock(block_bytes))
+            },
+        }
+    }
+}
+
+impl WheelsPid {
+    async fn acquire(&mut self) -> Result<Option<WheelRef>, ero::NoProcError> {
+        match self {
+            WheelsPid::Regular(wheels_pid) =>
+                match wheels_pid.acquire().await? {
+                    None =>
+                        Ok(None),
+                    Some(wheel_ref) =>
+                        Ok(Some(WheelRef {
+                            blockwheel_filename: wheel_ref.blockwheel_filename,
+                            blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
+                        })),
+                },
+            WheelsPid::Custom(custom_acquire_fn) => {
+                let mut fn_lock = custom_acquire_fn.lock().unwrap();
+                Ok(Some(fn_lock()))
+            },
         }
     }
 }

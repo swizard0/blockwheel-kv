@@ -374,7 +374,7 @@ impl<T, R> BuilderCps<T, R> {
 }
 
 impl<T, R> KontPollNextItemOrProcessedBlockNext<T, R> {
-    pub fn item_arrived(mut self, item: T) -> Result<Kont<T, R>, Error> {
+    pub fn item_arrived(self, item: T) -> Result<Kont<T, R>, Error> {
         assert!(self.inner.arrived_item.is_none());
         let builder = BuilderCps {
             inner: Inner {
