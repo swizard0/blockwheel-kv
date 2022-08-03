@@ -87,12 +87,14 @@ struct WheelRef {
 #[derive(Clone)]
 enum BlockwheelPid {
     Regular(blockwheel::Pid),
+    #[cfg(test)]
     Custom(Arc<Mutex<dyn FnMut(Bytes) -> blockwheel::block::Id + Send + 'static>>),
 }
 
 #[derive(Clone)]
 enum WheelsPid {
     Regular(wheels::Pid),
+    #[cfg(test)]
     Custom(Arc<Mutex<dyn FnMut() -> WheelRef + Send + 'static>>),
 }
 
@@ -592,6 +594,7 @@ impl BlockwheelPid {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.write_block(block_bytes).await,
+            #[cfg(test)]
             BlockwheelPid::Custom(custom_write_fn) => {
                 let mut fn_lock = custom_write_fn.lock().unwrap();
                 Ok(fn_lock(block_bytes))
@@ -613,6 +616,7 @@ impl WheelsPid {
                             blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
                         })),
                 },
+            #[cfg(test)]
             WheelsPid::Custom(custom_acquire_fn) => {
                 let mut fn_lock = custom_acquire_fn.lock().unwrap();
                 Ok(Some(fn_lock()))
