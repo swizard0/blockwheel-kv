@@ -34,6 +34,7 @@ pub mod context;
 pub mod manager;
 pub mod performer;
 pub mod bin_merger;
+pub mod search_tree_walker;
 pub mod search_tree_builder;
 
 #[derive(Debug)]
