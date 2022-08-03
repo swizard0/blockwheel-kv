@@ -1,7 +1,6 @@
 use std::{
     sync::{
         Arc,
-        Mutex,
     },
     collections::{
         HashMap,
@@ -51,6 +50,9 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub struct Args<J> where J: edeltraud::Job {
     pub search_tree_ref: Ref,
@@ -332,8 +334,10 @@ where J: edeltraud::Job + From<job::Job>,
                 };
             },
 
-            TaskOutput::Job(JobDone::Finished { root_block, }) =>
-                return Ok(Done { search_tree_ref, root_block, }),
+            TaskOutput::Job(JobDone::Finished { root_block, }) => {
+                assert!(incoming.is_empty());
+                return Ok(Done { search_tree_ref, root_block, });
+            },
 
             TaskOutput::WriteValue { block_ref, async_ref, block_entry_index, } =>
                 match value_writes_pending.entry(async_ref) {
@@ -420,6 +424,13 @@ struct CommitBlockTask {
 struct Outgoing {
     prepare_block_tasks: Vec<PrepareBlockTask>,
     write_block_tasks: Vec<WriteBlockTask>,
+}
+
+impl Outgoing {
+    fn is_empty(&self) -> bool {
+        self.prepare_block_tasks.is_empty() &&
+            self.write_block_tasks.is_empty()
+    }
 }
 
 struct PrepareBlockTask {
@@ -582,8 +593,11 @@ fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderNext) -> Output
                     builder_kont = next.process_scheduled()
                         .map_err(Error::SearchTreeBuilder)?;
                 },
-                search_tree_builder::Kont::Finished { root_block_ref: root_block, } =>
-                    return Ok(JobDone::Finished { root_block, }),
+                search_tree_builder::Kont::Finished { root_block_ref: root_block, } => {
+                    assert!(env.outgoing.is_empty());
+                    assert!(env.incoming.is_empty());
+                    return Ok(JobDone::Finished { root_block, });
+                },
             }
         }
     }

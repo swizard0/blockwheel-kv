@@ -650,10 +650,11 @@ where J: edeltraud::Job + From<job::Job>,
                 todo!();
             },
 
-            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref: _, root_block: _, }))) => {
-
-                todo!();
-            },
+            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref, root_block, }))) =>
+                incoming.butcher_flushed.push(task::performer::EventButcherFlushed {
+                    search_tree_ref,
+                    root_block,
+                }),
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
