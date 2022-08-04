@@ -24,22 +24,48 @@ pub struct ItersMergerCps<V, S> {
 }
 
 pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
-    ScheduleIterAwait {
-        await_iter: S,
-        next: KontScheduleIterAwaitNext<V, S>,
-    },
-    AwaitScheduled {
-        next: KontAwaitScheduledNext<V, S>,
-    },
-    Deprecated {
-        item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-        next: KontDeprecatedNext<V, S>,
-    },
-    Item {
-        item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-        next: KontItemNext<V, S>,
-    },
+    ScheduleIterAwait(KontScheduleIterAwait<V, S>),
+    AwaitScheduled(KontAwaitScheduled<V, S>),
+    Deprecated(KontDeprecated<V, S>),
+    Item(KontItem<V, S>),
     Done,
+}
+
+pub struct KontScheduleIterAwait<V, S> where V: DerefMut<Target = Vec<S>> {
+    pub await_iter: S,
+    pub next: KontScheduleIterAwaitNext<V, S>,
+}
+
+pub struct KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<S>> {
+    state_await: StateAwait,
+    env: Env<V, S>,
+}
+
+pub struct KontAwaitScheduled<V, S> where V: DerefMut<Target = Vec<S>> {
+    pub next: KontAwaitScheduledNext<V, S>,
+}
+
+pub struct KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
+    state_await: StateAwait,
+    env: Env<V, S>,
+}
+
+pub struct KontDeprecated<V, S> where V: DerefMut<Target = Vec<S>> {
+    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub next: KontDeprecatedNext<V, S>,
+}
+
+pub struct KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
+    env: Env<V, S>,
+}
+
+pub struct KontItem<V, S> where V: DerefMut<Target = Vec<S>>  {
+    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub next: KontItemNext<V, S>,
+}
+
+pub struct KontItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
+    env: Env<V, S>,
 }
 
 struct Env<V, S> {
@@ -84,7 +110,7 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                 State::Await(StateAwait { pending_count, }) =>
                     match self.env.iters.pop() {
                         Some(await_iter) =>
-                            return Kont::ScheduleIterAwait {
+                            return Kont::ScheduleIterAwait(KontScheduleIterAwait {
                                 await_iter,
                                 next: KontScheduleIterAwaitNext {
                                     state_await: StateAwait {
@@ -92,16 +118,16 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                                     },
                                     env: self.env,
                                 },
-                            },
+                            }),
                         None if pending_count == 0 =>
                             self.state = State::Flush,
                         None =>
-                            return Kont::AwaitScheduled {
+                            return Kont::AwaitScheduled(KontAwaitScheduled {
                                 next: KontAwaitScheduledNext {
                                     state_await: StateAwait { pending_count, },
                                     env: self.env,
                                 },
-                            },
+                            }),
                     },
 
                 State::Flush =>
@@ -120,10 +146,10 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                         Some(candidate_item) =>
                             match self.env.fronts.peek() {
                                 None if self.env.iters.is_empty() =>
-                                    return Kont::Item {
+                                    return Kont::Item(KontItem {
                                         item: candidate_item,
                                         next: KontItemNext { env: self.env, },
-                                    },
+                                    }),
                                 None => {
                                     self.env.candidate = Some(candidate_item);
                                     self.state = State::Await(StateAwait::default());
@@ -140,15 +166,15 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                                         };
                                         self.env.candidate = Some(next_candidate_item);
                                         self.env.iters.push(iter);
-                                        return Kont::Deprecated {
+                                        return Kont::Deprecated(KontDeprecated {
                                             item: deprecated_item,
                                             next: KontDeprecatedNext { env: self.env, },
-                                        };
+                                        });
                                     } else if self.env.iters.is_empty() {
-                                        return Kont::Item {
+                                        return Kont::Item(KontItem {
                                             item: candidate_item,
                                             next: KontItemNext { env: self.env, },
-                                        };
+                                        });
                                     } else {
                                         self.env.candidate = Some(candidate_item);
                                         self.state = State::Await(StateAwait::default());
@@ -159,11 +185,6 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
             }
         }
     }
-}
-
-pub struct KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<S>> {
-    state_await: StateAwait,
-    env: Env<V, S>,
 }
 
 impl<V, S> From<KontScheduleIterAwaitNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -179,11 +200,6 @@ impl<V, S> KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<S>> {
     pub fn proceed(self) -> Kont<V, S> {
         ItersMergerCps::from(self).step()
     }
-}
-
-pub struct KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
-    state_await: StateAwait,
-    env: Env<V, S>,
 }
 
 impl<V, S> From<KontAwaitScheduledNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -204,13 +220,13 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
                 ItersMergerCps::from(self).step()
             },
             KeyValueRef::BlockFinish(..) =>
-                Kont::ScheduleIterAwait {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait {
                     await_iter,
                     next: KontScheduleIterAwaitNext {
                         state_await: self.state_await,
                         env: self.env,
                     },
-                },
+                }),
             KeyValueRef::Item { key, value_cell, } => {
                 self.env.fronts.push(Front {
                     front_item: kv::KeyValuePair { key, value_cell, },
@@ -221,10 +237,6 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
            },
         }
     }
-}
-
-pub struct KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
-    env: Env<V, S>,
 }
 
 impl<V, S> From<KontDeprecatedNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -240,10 +252,6 @@ impl<V, S> KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
     pub fn proceed(self) -> Kont<V, S> {
         ItersMergerCps::from(self).step()
     }
-}
-
-pub struct KontItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
-    env: Env<V, S>,
 }
 
 impl<V, S> From<KontItemNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -302,6 +310,10 @@ mod tests {
             KeyValueRef,
             merger::{
                 Kont,
+                KontScheduleIterAwait,
+                KontAwaitScheduled,
+                KontItem,
+                KontDeprecated,
                 ItersMergerCps,
             },
         },
@@ -323,11 +335,11 @@ mod tests {
         let mut output = vec![];
         loop {
             kont = match kont {
-                Kont::ScheduleIterAwait { await_iter, next, } => {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
                     await_set.push(await_iter);
                     next.proceed()
                 },
-                Kont::AwaitScheduled { next, } => {
+                Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
                     let mut await_iter = await_set.pop().unwrap();
                     let item = if await_iter.is_empty() {
                         KeyValueRef::NoMore
@@ -340,10 +352,10 @@ mod tests {
                     };
                     next.proceed_with_item(await_iter, item)
                 },
-                Kont::Deprecated { .. } => {
+                Kont::Deprecated(KontDeprecated { .. }) => {
                     unreachable!();
                 },
-                Kont::Item { item, next, } => {
+                Kont::Item(KontItem { item, next, }) => {
                     output.push(item.key.key_bytes[0]);
                     next.proceed()
                 },
@@ -554,11 +566,11 @@ mod tests {
         let mut deprecated = vec![];
         loop {
             kont = match kont {
-                Kont::ScheduleIterAwait { await_iter, next, } => {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
                     await_set.push(await_iter);
                     next.proceed()
                 },
-                Kont::AwaitScheduled { next, } => {
+                Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
                     let mut await_iter = await_set.pop().unwrap();
                     let item = if await_iter.is_empty() {
                         KeyValueRef::NoMore
@@ -571,11 +583,11 @@ mod tests {
                     };
                     next.proceed_with_item(await_iter, item)
                 },
-                Kont::Deprecated { item, next, } => {
+                Kont::Deprecated(KontDeprecated { item, next, }) => {
                     deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
-                Kont::Item { item, next, } => {
+                Kont::Item(KontItem { item, next, }) => {
                     output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },

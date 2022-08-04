@@ -29,13 +29,15 @@ use super::{
     LookupRange,
 };
 
-pub mod merger;
-pub mod context;
 pub mod manager;
 pub mod performer;
-pub mod bin_merger;
-pub mod search_tree_walker;
-pub mod search_tree_builder;
+
+mod merger;
+mod context;
+mod bin_merger;
+mod search_tree_walker;
+mod search_tree_builder;
+mod search_ranges_merge;
 
 #[derive(Debug)]
 pub struct RequestInfo {
