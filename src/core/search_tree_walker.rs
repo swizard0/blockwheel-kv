@@ -1,4 +1,5 @@
 use std::{
+    mem,
     ops::{
         Bound,
     },
@@ -24,12 +25,17 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct WalkerCps {
     inner: Inner,
 }
 
 pub enum Kont {
     RequireBlock(KontRequireBlock),
+    ItemFound(KontItemFound),
+    Finished,
 }
 
 #[derive(Debug)]
@@ -39,7 +45,7 @@ pub enum Error {
 
 struct Inner {
     state: State,
-    block_entry_actions_pool: pool::Pool<Vec<BlockEntryAction>>,
+    block_entry_steps_pool: pool::Pool<Vec<BlockEntryStep>>,
     levels: Vec<WalkerLevel>,
 }
 
@@ -54,9 +60,7 @@ enum State {
         block_ref: BlockRef,
         block_bytes: Bytes,
     },
-    WalkLevel {
-        block_entry_actions_index: usize,
-    },
+    WalkLevel,
 }
 
 pub struct KontRequireBlock {
@@ -70,10 +74,26 @@ pub struct KontRequireBlockNext {
     inner: Inner,
 }
 
+pub struct KontItemFound {
+    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub next: KontItemFoundNext,
+}
+
+pub struct KontItemFoundNext {
+    inner: Inner,
+}
+
 struct WalkerLevel {
     block_ref: BlockRef,
     search_range: SearchRangeBounds,
-    block_entry_actions: Unique<Vec<BlockEntryAction>>,
+    block_entry_steps: Unique<Vec<BlockEntryStep>>,
+    block_entry_steps_index: usize,
+}
+
+pub enum BlockEntryStep {
+    TryJump(BlockEntryAction),
+    TryStep(BlockEntryAction),
+    Done,
 }
 
 pub enum BlockEntryAction {
@@ -93,7 +113,7 @@ impl WalkerCps {
     pub fn new(
         root_block: BlockRef,
         search_range: SearchRangeBounds,
-        block_entry_actions_pool: pool::Pool<Vec<BlockEntryAction>>,
+        block_entry_steps_pool: pool::Pool<Vec<BlockEntryStep>>,
     ) -> Self {
         WalkerCps {
             inner: Inner {
@@ -101,7 +121,7 @@ impl WalkerCps {
                     search_range,
                     block_ref: root_block,
                 },
-                block_entry_actions_pool,
+                block_entry_steps_pool,
                 levels: Vec::new(),
             },
         }
@@ -127,8 +147,8 @@ impl WalkerCps {
                 },
 
                 State::BlockReceived { search_range, block_ref, block_bytes, } => {
-                    let mut block_entry_actions = self.inner.block_entry_actions_pool.lend(Vec::new);
-                    block_entry_actions.clear();
+                    let mut block_entry_steps = self.inner.block_entry_steps_pool.lend(Vec::new);
+                    block_entry_steps.clear();
 
                     let entries_iter = storage::block_deserialize_iter(&block_bytes)
                         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
@@ -205,31 +225,82 @@ impl WalkerCps {
                             (None, true) =>
                                 break,
                             (None, false) =>
-                                block_entry_actions.push(BlockEntryAction::OnlyEntry { key, value_cell, }),
+                                block_entry_steps.push(BlockEntryStep::TryJump(
+                                    BlockEntryAction::OnlyEntry { key, value_cell, },
+                                )),
                             (Some(jump_block_ref), true) => {
-                                block_entry_actions.push(BlockEntryAction::OnlyJump(jump_block_ref));
+                                block_entry_steps.push(BlockEntryStep::TryJump(
+                                    BlockEntryAction::OnlyJump(jump_block_ref),
+                                ));
                                 break;
                             },
                             (Some(jump_block_ref), false) =>
-                                block_entry_actions.push(BlockEntryAction::JumpAndEntry {
-                                    jump: jump_block_ref,
-                                    key,
-                                    value_cell,
-                                }),
+                                block_entry_steps.push(BlockEntryStep::TryJump(
+                                    BlockEntryAction::JumpAndEntry {
+                                        jump: jump_block_ref,
+                                        key,
+                                        value_cell,
+                                    },
+                                )),
                         }
                     }
-                    block_entry_actions.shrink_to_fit();
+                    block_entry_steps.shrink_to_fit();
 
-                    self.inner.levels.push(WalkerLevel { block_ref, search_range, block_entry_actions, });
-                    self.inner.state = State::WalkLevel { block_entry_actions_index: 0, };
+                    self.inner.levels.push(WalkerLevel {
+                        block_ref,
+                        search_range,
+                        block_entry_steps,
+                        block_entry_steps_index: 0,
+                    });
+                    self.inner.state = State::WalkLevel;
                 },
 
-                State::WalkLevel { block_entry_actions_index, } => {
-                    let current_level = self.inner.levels.pop().unwrap();
-                    let block_entry_action = &current_level.block_entry_actions[block_entry_actions_index];
+                State::WalkLevel if self.inner.levels.is_empty() =>
+                    return Ok(Kont::Finished),
 
-
-                    todo!();
+                State::WalkLevel => {
+                    let current_level = self.inner.levels.last_mut().unwrap();
+                    if current_level.block_entry_steps_index >= current_level.block_entry_steps.len() {
+                        self.inner.levels.pop();
+                        continue;
+                    }
+                    let current_block_entry_step =
+                        &mut current_level.block_entry_steps[current_level.block_entry_steps_index];
+                    let block_entry_step = mem::replace(
+                        current_block_entry_step,
+                        BlockEntryStep::Done,
+                    );
+                    match block_entry_step {
+                        BlockEntryStep::TryJump(block_entry_action) => {
+                            match &block_entry_action {
+                                BlockEntryAction::OnlyJump(jump_block_ref) |
+                                BlockEntryAction::JumpAndEntry { jump: jump_block_ref, .. } =>
+                                    self.inner.state = State::AwaitBlock {
+                                        search_range: current_level.search_range.clone(),
+                                        block_ref: jump_block_ref.clone(),
+                                    },
+                                BlockEntryAction::OnlyEntry { .. } =>
+                                    (),
+                            }
+                            *current_block_entry_step = BlockEntryStep::TryStep(block_entry_action);
+                        },
+                        BlockEntryStep::TryStep(block_entry_action) => {
+                            match block_entry_action {
+                                BlockEntryAction::OnlyEntry { key, value_cell, } |
+                                BlockEntryAction::JumpAndEntry { key, value_cell, .. } =>
+                                    return Ok(Kont::ItemFound(KontItemFound {
+                                        item: kv::KeyValuePair { key, value_cell, },
+                                        next: KontItemFoundNext {
+                                            inner: self.inner,
+                                        },
+                                    })),
+                                BlockEntryAction::OnlyJump(..) =>
+                                    (),
+                            }
+                        },
+                        BlockEntryStep::Done =>
+                            current_level.block_entry_steps_index += 1,
+                    }
                 },
 
             }
@@ -250,5 +321,11 @@ impl KontRequireBlockNext {
             },
         };
         walker.step()
+    }
+}
+
+impl KontItemFoundNext {
+    pub fn item_received(self) -> Result<Kont, Error> {
+        WalkerCps { inner: self.inner, }.step()
     }
 }
