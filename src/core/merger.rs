@@ -26,9 +26,9 @@ pub struct ItersMergerCps<V, S> {
 pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     ScheduleIterAwait(KontScheduleIterAwait<V, S>),
     AwaitScheduled(KontAwaitScheduled<V, S>),
-    Deprecated(KontDeprecated<V, S>),
-    Item(KontItem<V, S>),
-    Done,
+    EmitDeprecated(KontEmitDeprecated<V, S>),
+    EmitItem(KontEmitItem<V, S>),
+    Finished,
 }
 
 pub struct KontScheduleIterAwait<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -50,21 +50,21 @@ pub struct KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
-pub struct KontDeprecated<V, S> where V: DerefMut<Target = Vec<S>> {
+pub struct KontEmitDeprecated<V, S> where V: DerefMut<Target = Vec<S>> {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-    pub next: KontDeprecatedNext<V, S>,
+    pub next: KontEmitDeprecatedNext<V, S>,
 }
 
-pub struct KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
+pub struct KontEmitDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
-pub struct KontItem<V, S> where V: DerefMut<Target = Vec<S>>  {
+pub struct KontEmitItem<V, S> where V: DerefMut<Target = Vec<S>>  {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-    pub next: KontItemNext<V, S>,
+    pub next: KontEmitItemNext<V, S>,
 }
 
-pub struct KontItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
+pub struct KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
@@ -135,7 +135,7 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                         None =>
                             match self.env.fronts.pop() {
                                 None if self.env.iters.is_empty() =>
-                                    return Kont::Done,
+                                    return Kont::Finished,
                                 None =>
                                     self.state = State::Await(StateAwait::default()),
                                 Some(Front { front_item, iter, }) => {
@@ -146,9 +146,9 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                         Some(candidate_item) =>
                             match self.env.fronts.peek() {
                                 None if self.env.iters.is_empty() =>
-                                    return Kont::Item(KontItem {
+                                    return Kont::EmitItem(KontEmitItem {
                                         item: candidate_item,
-                                        next: KontItemNext { env: self.env, },
+                                        next: KontEmitItemNext { env: self.env, },
                                     }),
                                 None => {
                                     self.env.candidate = Some(candidate_item);
@@ -166,14 +166,14 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                                         };
                                         self.env.candidate = Some(next_candidate_item);
                                         self.env.iters.push(iter);
-                                        return Kont::Deprecated(KontDeprecated {
+                                        return Kont::EmitDeprecated(KontEmitDeprecated {
                                             item: deprecated_item,
-                                            next: KontDeprecatedNext { env: self.env, },
+                                            next: KontEmitDeprecatedNext { env: self.env, },
                                         });
                                     } else if self.env.iters.is_empty() {
-                                        return Kont::Item(KontItem {
+                                        return Kont::EmitItem(KontEmitItem {
                                             item: candidate_item,
-                                            next: KontItemNext { env: self.env, },
+                                            next: KontEmitItemNext { env: self.env, },
                                         });
                                     } else {
                                         self.env.candidate = Some(candidate_item);
@@ -239,8 +239,8 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
     }
 }
 
-impl<V, S> From<KontDeprecatedNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
-    fn from(kont: KontDeprecatedNext<V, S>) -> ItersMergerCps<V, S> {
+impl<V, S> From<KontEmitDeprecatedNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
+    fn from(kont: KontEmitDeprecatedNext<V, S>) -> ItersMergerCps<V, S> {
         ItersMergerCps {
             state: State::Flush,
             env: kont.env,
@@ -248,14 +248,14 @@ impl<V, S> From<KontDeprecatedNext<V, S>> for ItersMergerCps<V, S> where V: Dere
     }
 }
 
-impl<V, S> KontDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
+impl<V, S> KontEmitDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
     pub fn proceed(self) -> Kont<V, S> {
         ItersMergerCps::from(self).step()
     }
 }
 
-impl<V, S> From<KontItemNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
-    fn from(kont: KontItemNext<V, S>) -> ItersMergerCps<V, S> {
+impl<V, S> From<KontEmitItemNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
+    fn from(kont: KontEmitItemNext<V, S>) -> ItersMergerCps<V, S> {
         ItersMergerCps {
             state: State::Await(StateAwait::default()),
             env: kont.env,
@@ -263,7 +263,7 @@ impl<V, S> From<KontItemNext<V, S>> for ItersMergerCps<V, S> where V: DerefMut<T
     }
 }
 
-impl<V, S> KontItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
+impl<V, S> KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     pub fn proceed(self) -> Kont<V, S> {
         ItersMergerCps::from(self).step()
     }
@@ -312,8 +312,8 @@ mod tests {
                 Kont,
                 KontScheduleIterAwait,
                 KontAwaitScheduled,
-                KontItem,
-                KontDeprecated,
+                KontEmitItem,
+                KontEmitDeprecated,
                 ItersMergerCps,
             },
         },
@@ -352,14 +352,14 @@ mod tests {
                     };
                     next.proceed_with_item(await_iter, item)
                 },
-                Kont::Deprecated(KontDeprecated { .. }) => {
+                Kont::EmitDeprecated(KontEmitDeprecated { .. }) => {
                     unreachable!();
                 },
-                Kont::Item(KontItem { item, next, }) => {
+                Kont::EmitItem(KontEmitItem { item, next, }) => {
                     output.push(item.key.key_bytes[0]);
                     next.proceed()
                 },
-                Kont::Done =>
+                Kont::Finished =>
                     break,
             };
         }
@@ -583,15 +583,15 @@ mod tests {
                     };
                     next.proceed_with_item(await_iter, item)
                 },
-                Kont::Deprecated(KontDeprecated { item, next, }) => {
+                Kont::EmitDeprecated(KontEmitDeprecated { item, next, }) => {
                     deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
-                Kont::Item(KontItem { item, next, }) => {
+                Kont::EmitItem(KontEmitItem { item, next, }) => {
                     output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
-                Kont::Done =>
+                Kont::Finished =>
                     break,
             };
         }
