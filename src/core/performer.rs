@@ -237,7 +237,7 @@ impl<C> KontPollNext<C> where C: Context {
         })
     }
 
-    pub fn lookup_range_source(mut self, range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
+    pub fn begin_lookup_range(mut self, range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
 	let source = self.inner.make_lookup_range_source(range);
         Kont::LookupRangeSourceReady(KontLookupRangeSourceReady {
             source,
