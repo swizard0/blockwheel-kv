@@ -18,13 +18,11 @@ use alloc_pool::{
     pool,
     bytes::{
         Bytes,
-        BytesMut,
         BytesPool,
     },
 };
 
 use crate::{
-    kv,
     job,
     wheels,
     core::{
@@ -40,16 +38,13 @@ use crate::{
             },
         },
         search_tree_builder,
-        OrdKey,
-        MemCache,
+        tests::{
+            BLOCKWHEEL_FILENAME,
+            to_bytes,
+            make_memcache,
+        },
     },
 };
-
-const BLOCKWHEEL_FILENAME: &'static str = "my_filename.blockwheel";
-
-fn to_bytes(s: &str) -> Bytes {
-    BytesMut::new_detached(s.as_bytes().to_vec()).freeze()
-}
 
 #[tokio::test]
 async fn basic() {
@@ -59,7 +54,7 @@ async fn basic() {
         .worker_threads(1)
         .build()
         .unwrap();
-    let frozen_memcache = make_memcache(&[
+    let frozen_memcache = make_memcache([
         ("key 1", "value 1", 1),
         ("key 2", "value 2", 1),
         ("key 3", "value 3", 1),
@@ -102,7 +97,7 @@ async fn external_value() {
         .worker_threads(1)
         .build()
         .unwrap();
-    let frozen_memcache = make_memcache(&[
+    let frozen_memcache = make_memcache([
         ("key 1", "0123456789ABCDEF", 1),
     ]);
     let wheels_pid = external_value_make_wheels_pid();
@@ -222,24 +217,6 @@ fn external_value_make_wheels_pid() -> WheelsPid {
     WheelsPid::Custom(
         Arc::new(Mutex::new(acquire_fn))
     )
-}
-
-fn make_memcache(items: &[(&str, &str, u64)]) -> Arc<MemCache> {
-    let mut memcache = MemCache::new();
-    memcache.extend(
-        items
-            .into_iter()
-            .map(|&(ref key, ref value, version)| {
-                (
-                    OrdKey::new(to_bytes(key).into()),
-                    kv::ValueCell {
-                        version,
-                        cell: kv::Cell::Value(to_bytes(value).into()),
-                    },
-                )
-            })
-    );
-    Arc::new(memcache)
 }
 
 fn deserialize_block_entries(block_bytes: &Bytes) -> Vec<(String, Option<String>, u64)> {

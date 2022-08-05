@@ -26,12 +26,16 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct RangesMergeCps {
     inner: Inner,
 }
 
 pub enum Kont {
     RequireBlockAsync(KontRequireBlockAsync),
+    AwaitBlocks(KontAwaitBlocks),
     EmitDeprecated(KontEmitDeprecated),
     EmitItem(KontEmitItem),
     Finished,
@@ -48,6 +52,14 @@ pub struct AsyncToken {
 }
 
 pub struct KontRequireBlockAsyncNext {
+    inner: Inner,
+}
+
+pub struct KontAwaitBlocks {
+    pub next: KontAwaitBlocksNext,
+}
+
+pub struct KontAwaitBlocksNext {
     inner: Inner,
 }
 
@@ -190,7 +202,16 @@ impl RangesMergeCps {
                     },
 
                 State::AwaitIters { merger_next, } => {
-                    let mut await_iter = self.inner.await_iters.pop().unwrap();
+                    let mut await_iter = if let Some(await_iter) = self.inner.await_iters.pop() {
+                        await_iter
+                    } else {
+                        self.inner.state = State::AwaitIters { merger_next, };
+                        return Ok(Kont::AwaitBlocks(KontAwaitBlocks {
+                            next: KontAwaitBlocksNext {
+                                inner: self.inner,
+                            },
+                        }));
+                    };
                     loop {
                         match &mut await_iter {
                             Source::Butcher(SourceButcher { source_state, }) =>
@@ -302,6 +323,19 @@ impl RangesMergeCps {
             }
         }
     }
+
+    fn block_arrived(mut self, async_token: AsyncToken, block_bytes: Bytes) -> Result<Kont, Error> {
+        let walker_kont = async_token
+            .walker_next
+            .block_arrived(block_bytes)
+            .map_err(Error::SearchTreeWalker)?;
+        self.inner.await_iters.push(
+            Source::SearchTree(SourceSearchTree {
+                source_state: SourceSearchTreeState::Step { walker_kont, },
+            }),
+        );
+        self.step()
+    }
 }
 
 impl SourceButcher {
@@ -327,17 +361,14 @@ impl SourceSearchTree {
 }
 
 impl KontRequireBlockAsyncNext {
-    pub fn block_arrived(mut self, async_token: AsyncToken, block_bytes: Bytes) -> Result<Kont, Error> {
-        let walker_kont = async_token
-            .walker_next
-            .block_arrived(block_bytes)
-            .map_err(Error::SearchTreeWalker)?;
-        self.inner.await_iters.push(
-            Source::SearchTree(SourceSearchTree {
-                source_state: SourceSearchTreeState::Step { walker_kont, },
-            }),
-        );
+    pub fn scheduled(self) -> Result<Kont, Error> {
         RangesMergeCps { inner: self.inner, }.step()
+    }
+}
+
+impl KontAwaitBlocksNext {
+    pub fn block_arrived(self, async_token: AsyncToken, block_bytes: Bytes) -> Result<Kont, Error> {
+        RangesMergeCps { inner: self.inner, }.block_arrived(async_token, block_bytes)
     }
 }
 

@@ -39,6 +39,9 @@ mod search_tree_walker;
 mod search_tree_builder;
 mod search_ranges_merge;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug)]
 pub struct RequestInfo {
     reply_tx: oneshot::Sender<Info>,

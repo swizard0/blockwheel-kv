@@ -84,7 +84,6 @@ pub struct KontItemFoundNext {
 }
 
 struct WalkerLevel {
-    block_ref: BlockRef,
     search_range: SearchRangeBounds,
     block_entry_steps: Unique<Vec<BlockEntryStep>>,
     block_entry_steps_index: usize,
@@ -247,7 +246,6 @@ impl WalkerCps {
                     block_entry_steps.shrink_to_fit();
 
                     self.inner.levels.push(WalkerLevel {
-                        block_ref,
                         search_range,
                         block_entry_steps,
                         block_entry_steps_index: 0,
