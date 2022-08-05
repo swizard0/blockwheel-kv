@@ -153,6 +153,10 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     });
                     next.scheduled()
                 },
+                performer::Kont::LookupRangeSourceReady(performer::KontLookupRangeSourceReady { source, lookup_context, next, }) => {
+
+                    todo!();
+                },
             };
         }
     }

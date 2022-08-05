@@ -25,9 +25,11 @@ use crate::{
         bin_merger::{
             BinMerger,
         },
+        search_ranges_merge,
         OrdKey,
         MemCache,
         BlockRef,
+        SearchRangeBounds,
     },
     Info,
 };
@@ -62,6 +64,7 @@ pub enum Kont<C> where C: Context {
     Poll(KontPoll<C>),
     Inserted(KontInserted<C>),
     FlushButcher(KontFlushButcher<C>),
+    LookupRangeSourceReady(KontLookupRangeSourceReady<C>),
 }
 
 pub struct KontPoll<C> where C: Context {
@@ -92,6 +95,16 @@ pub struct KontFlushButcherNext<C> where C: Context {
     inner: Inner<C>,
 }
 
+pub struct KontLookupRangeSourceReady<C> where C: Context {
+    pub source: search_ranges_merge::RangesMergeCps,
+    pub lookup_context: C::Lookup,
+    pub next: KontLookupRangeSourceReadyNext<C>,
+}
+
+pub struct KontLookupRangeSourceReadyNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
 struct Inner<C> where C: Context {
     params: Params,
     version_provider: version::Provider,
@@ -105,6 +118,7 @@ pub struct SearchForest {
     search_trees: Set<SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
 }
+
 
 impl<C> Performer<C> where C: Context {
     pub fn new(
@@ -198,6 +212,11 @@ impl<C> Inner<C> where C: Context {
         };
         self.forest.add_constructed(root_block, items_count);
     }
+
+    fn make_lookup_range_source(&self, search_range: SearchRangeBounds) -> search_ranges_merge::RangesMergeCps {
+
+        todo!()
+    }
 }
 
 enum FlushOutcome {
@@ -215,6 +234,17 @@ impl<C> KontPollNext<C> where C: Context {
             version,
             insert_context,
             next: KontInsertedNext {
+                inner: self.inner,
+            },
+        })
+    }
+
+    pub fn lookup_range_source(mut self, range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
+	let source = self.inner.make_lookup_range_source(range);
+        Kont::LookupRangeSourceReady(KontLookupRangeSourceReady {
+            source,
+            lookup_context,
+            next: KontLookupRangeSourceReadyNext {
                 inner: self.inner,
             },
         })
@@ -245,6 +275,12 @@ impl<C> KontInsertedNext<C> where C: Context {
 
 impl<C> KontFlushButcherNext<C> where C: Context {
     pub fn scheduled(self) -> Kont<C> {
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+    }
+}
+
+impl<C> KontLookupRangeSourceReadyNext<C> where C: Context {
+    pub fn got_it(self) -> Kont<C> {
         Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
     }
 }

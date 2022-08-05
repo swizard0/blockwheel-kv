@@ -33,6 +33,7 @@ struct Context;
 
 impl context::Context for Context {
     type Insert = isize;
+    type Lookup = isize;
 }
 
 #[test]

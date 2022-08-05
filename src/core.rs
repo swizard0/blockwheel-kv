@@ -49,6 +49,19 @@ pub struct RequestInfo {
 
 pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
 
+pub enum RequestLookupKind {
+    Single(RequestLookupKindSingle),
+    Range(RequestLookupKindRange),
+}
+
+pub struct RequestLookupKindSingle {
+    reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
+}
+
+pub struct RequestLookupKindRange {
+    reply_tx: oneshot::Sender<LookupRange>,
+}
+
 pub type SearchTreeBuilderCps = search_tree_builder::BuilderCps<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
 pub type SearchTreeBuilderBlockEntry = search_tree_builder::BlockEntry<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
 
@@ -85,6 +98,7 @@ pub struct Context;
 
 impl context::Context for Context {
     type Insert = RequestInsertReplyTx;
+    type Lookup = RequestLookupKind;
 }
 
 pub struct MemCache {

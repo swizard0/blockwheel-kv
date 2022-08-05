@@ -217,14 +217,12 @@ impl RangesMergeCps {
                             Source::Butcher(SourceButcher { source_state, }) =>
                                 match mem::replace(source_state, SourceButcherState::Done) {
                                     SourceButcherState::Init { search_range, memcache ,} => {
-                                        let mut kv_pairs = self.inner.kv_pool.lend(Vec::new);
-                                        kv_pairs.clear();
-                                        kv_pairs.extend(memcache.range(search_range));
-                                        kv_pairs.shrink_to_fit();
-                                        kv_pairs.reverse();
-                                        *source_state = SourceButcherState::Next {
-                                            kv_pairs_rev: kv_pairs,
-                                        };
+                                        let source_butcher_next = SourceButcher::from_active_memcache(
+                                            search_range,
+                                            &memcache,
+                                            &self.inner.kv_pool,
+                                        );
+                                        *source_state = source_butcher_next.source_state;
                                     },
                                     SourceButcherState::Next { mut kv_pairs_rev, } =>
                                         match kv_pairs_rev.pop() {
@@ -344,6 +342,25 @@ impl SourceButcher {
             source_state: SourceButcherState::Init {
                 search_range,
                 memcache,
+            },
+        }
+    }
+
+    pub fn from_active_memcache(
+        search_range: SearchRangeBounds,
+        memcache: &MemCache,
+        kv_pool: &pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
+    )
+        -> Self
+    {
+        let mut kv_pairs = kv_pool.lend(Vec::new);
+        kv_pairs.clear();
+        kv_pairs.extend(memcache.range(search_range));
+        kv_pairs.shrink_to_fit();
+        kv_pairs.reverse();
+        Self {
+            source_state: SourceButcherState::Next {
+                kv_pairs_rev: kv_pairs,
             },
         }
     }
