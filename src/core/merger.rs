@@ -28,7 +28,7 @@ pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     AwaitScheduled(KontAwaitScheduled<V, S>),
     EmitDeprecated(KontEmitDeprecated<V, S>),
     EmitItem(KontEmitItem<V, S>),
-    Finished,
+    Finished(KontFinished<V>),
 }
 
 pub struct KontScheduleIterAwait<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -68,8 +68,13 @@ pub struct KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
+pub struct KontFinished<V> {
+    pub iters: V,
+}
+
 struct Env<V, S> {
     iters: V,
+    iters_offset: usize,
     fronts: BinaryHeap<Front<S>>,
     candidate: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
 }
@@ -95,6 +100,7 @@ impl<V, S> ItersMergerCps<V, S> {
             state: State::Await(StateAwait::default()),
             env: Env {
                 iters,
+                iters_offset: 0,
                 fronts: BinaryHeap::new(),
                 candidate: None,
             },
@@ -107,35 +113,38 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
         loop {
             match self.state {
 
+                State::Await(StateAwait { pending_count, }) if self.env.iters_offset < self.env.iters.len() => {
+                    let await_iter = self.env.iters.pop().unwrap();
+                    return Kont::ScheduleIterAwait(KontScheduleIterAwait {
+                        await_iter,
+                        next: KontScheduleIterAwaitNext {
+                            state_await: StateAwait {
+                                pending_count: pending_count + 1,
+                            },
+                            env: self.env,
+                        },
+                    });
+                },
+
+                State::Await(StateAwait { pending_count, }) if pending_count == 0 =>
+                    self.state = State::Flush,
+
                 State::Await(StateAwait { pending_count, }) =>
-                    match self.env.iters.pop() {
-                        Some(await_iter) =>
-                            return Kont::ScheduleIterAwait(KontScheduleIterAwait {
-                                await_iter,
-                                next: KontScheduleIterAwaitNext {
-                                    state_await: StateAwait {
-                                        pending_count: pending_count + 1,
-                                    },
-                                    env: self.env,
-                                },
-                            }),
-                        None if pending_count == 0 =>
-                            self.state = State::Flush,
-                        None =>
-                            return Kont::AwaitScheduled(KontAwaitScheduled {
-                                next: KontAwaitScheduledNext {
-                                    state_await: StateAwait { pending_count, },
-                                    env: self.env,
-                                },
-                            }),
-                    },
+                    return Kont::AwaitScheduled(KontAwaitScheduled {
+                        next: KontAwaitScheduledNext {
+                            state_await: StateAwait { pending_count, },
+                            env: self.env,
+                        },
+                    }),
 
                 State::Flush =>
                     match self.env.candidate.take() {
                         None =>
                             match self.env.fronts.pop() {
-                                None if self.env.iters.is_empty() =>
-                                    return Kont::Finished,
+                                None if self.env.iters_offset >= self.env.iters.len() =>
+                                    return Kont::Finished(KontFinished {
+                                        iters: self.env.iters,
+                                    }),
                                 None =>
                                     self.state = State::Await(StateAwait::default()),
                                 Some(Front { front_item, iter, }) => {
@@ -145,7 +154,7 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                             },
                         Some(candidate_item) =>
                             match self.env.fronts.peek() {
-                                None if self.env.iters.is_empty() =>
+                                None if self.env.iters_offset >= self.env.iters.len() =>
                                     return Kont::EmitItem(KontEmitItem {
                                         item: candidate_item,
                                         next: KontEmitItemNext { env: self.env, },
@@ -170,7 +179,7 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                                             item: deprecated_item,
                                             next: KontEmitDeprecatedNext { env: self.env, },
                                         });
-                                    } else if self.env.iters.is_empty() {
+                                    } else if self.env.iters_offset >= self.env.iters.len() {
                                         return Kont::EmitItem(KontEmitItem {
                                             item: candidate_item,
                                             next: KontEmitItemNext { env: self.env, },
@@ -216,6 +225,10 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
         assert!(self.state_await.pending_count > 0);
         match item {
             KeyValueRef::NoMore => {
+                let last_index = self.env.iters.len();
+                self.env.iters.push(await_iter);
+                self.env.iters.swap(self.env.iters_offset, last_index);
+                self.env.iters_offset += 1;
                 self.state_await.pending_count -= 1;
                 ItersMergerCps::from(self).step()
             },
@@ -359,7 +372,7 @@ mod tests {
                     output.push(item.key.key_bytes[0]);
                     next.proceed()
                 },
-                Kont::Finished =>
+                Kont::Finished(..) =>
                     break,
             };
         }
@@ -591,7 +604,7 @@ mod tests {
                     output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
-                Kont::Finished =>
+                Kont::Finished(..) =>
                     break,
             };
         }

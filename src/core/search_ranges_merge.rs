@@ -38,7 +38,7 @@ pub enum Kont {
     AwaitBlocks(KontAwaitBlocks),
     EmitDeprecated(KontEmitDeprecated),
     EmitItem(KontEmitItem),
-    Finished,
+    Finished(KontFinished),
 }
 
 pub struct KontRequireBlockAsync {
@@ -81,6 +81,10 @@ pub struct KontEmitItem {
 pub struct KontEmitItemNext {
     merger_next: MergerKontEmitItemNext,
     inner: Inner,
+}
+
+pub struct KontFinished {
+    pub sources: Unique<Vec<Source>>,
 }
 
 #[derive(Debug)]
@@ -195,9 +199,9 @@ impl RangesMergeCps {
                                 },
                             }));
                         },
-                        merger::Kont::Finished => {
+                        merger::Kont::Finished(merger::KontFinished { iters, }) => {
                             assert!(self.inner.await_iters.is_empty());
-                            return Ok(Kont::Finished);
+                            return Ok(Kont::Finished(KontFinished { sources: iters, }));
                         },
                     },
 

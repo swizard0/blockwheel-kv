@@ -15,6 +15,7 @@ use crate::{
             KontAwaitBlocks,
             KontEmitDeprecated,
             KontEmitItem,
+            KontFinished,
         },
         tests::{
             to_bytes,
@@ -83,8 +84,9 @@ fn basic() {
                 found_items.push(kinda_parse_item(item));
                 ranges_merge_kont = next.proceed().unwrap();
             },
-            Kont::Finished => {
+            Kont::Finished(KontFinished { sources, }) => {
                 assert!(await_blocks.is_empty());
+                assert_eq!(sources.len(), 2);
                 break;
             },
         }

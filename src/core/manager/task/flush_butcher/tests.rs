@@ -48,8 +48,7 @@ use crate::{
 
 #[tokio::test]
 async fn basic() {
-    let mut set = Set::new();
-    let search_tree_ref = set.insert("some data");
+    let search_tree_ref = 77;
     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
         .worker_threads(1)
         .build()
@@ -91,8 +90,7 @@ async fn basic() {
 
 #[tokio::test]
 async fn external_value() {
-    let mut set = Set::new();
-    let search_tree_ref = set.insert("some data");
+    let search_tree_ref = 77;
     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
         .worker_threads(1)
         .build()
