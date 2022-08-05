@@ -66,6 +66,7 @@ use crate::{
         RequestRemove,
         RequestFlush,
         SearchRangeBounds,
+        SearchTreeBuilderBlockEntry,
     },
     Info,
     Flushed,
@@ -432,22 +433,41 @@ where J: edeltraud::Job + From<job::Job>,
 
     log::info!("loading done, {} search_trees restored within {} blocks", forest.len(), blocks_total);
 
+    let pools = Pools::new();
+
     let performer = performer::Performer::new(
         state.params.performer_params.clone(),
         state.version_provider.clone(),
+        pools.kv_pool.clone(),
         forest,
     );
 
     busyloop(
         child_supervisor_pid,
         performer,
+        pools,
         state,
     ).await
+}
+
+struct Pools {
+    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
+    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
+}
+
+impl Pools {
+    fn new() -> Self {
+        Self {
+            kv_pool: pool::Pool::new(),
+            block_entries_pool: pool::Pool::new(),
+        }
+    }
 }
 
 async fn busyloop<J>(
     _child_supervisor_pid: SupervisorPid,
     performer: performer::Performer<Context>,
+    pools: Pools,
     mut state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
@@ -470,8 +490,6 @@ where J: edeltraud::Job + From<job::Job>,
     };
 
     let mut incoming = task::performer::Incoming::default();
-
-    let block_entries_pool = pool::Pool::new();
 
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
@@ -634,7 +652,7 @@ where J: edeltraud::Job + From<job::Job>,
                             frozen_memcache,
                             wheels_pid: state.wheels_pid.clone(),
                             blocks_pool: state.blocks_pool.clone(),
-                            block_entries_pool: block_entries_pool.clone(),
+                            block_entries_pool: pools.block_entries_pool.clone(),
                             thread_pool: state.thread_pool.clone(),
                         },
                     )));

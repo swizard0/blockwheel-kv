@@ -1,4 +1,5 @@
 use alloc_pool::{
+    pool,
     bytes::{
         BytesMut,
     },
@@ -40,9 +41,11 @@ impl context::Context for Context {
 fn basic_insert() {
     let version_provider =
         version::Provider::from_unix_epoch_seed();
+    let kv_pool = pool::Pool::new();
     let performer: Performer<Context> = Performer::new(
         Params { butcher_block_size: 2, ..Default::default() },
         version_provider,
+        kv_pool,
         SearchForest::new(),
     );
     let kont = performer.step();

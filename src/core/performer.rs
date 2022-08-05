@@ -8,6 +8,10 @@ use std::{
     },
 };
 
+use alloc_pool::{
+    pool,
+};
+
 use o1::{
     set::{
         Set,
@@ -108,6 +112,7 @@ pub struct KontLookupRangeSourceReadyNext<C> where C: Context {
 struct Inner<C> where C: Context {
     params: Params,
     version_provider: version::Provider,
+    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     butcher: MemCache,
     forest: SearchForest,
     info: Info,
@@ -124,16 +129,21 @@ impl<C> Performer<C> where C: Context {
     pub fn new(
         params: Params,
         version_provider: version::Provider,
+        kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
         forest: SearchForest,
     )
         -> Self
     {
         Self {
-            inner: Inner::new(
+            inner: Inner {
                 params,
+                butcher: MemCache::new(),
                 version_provider,
+                kv_pool,
                 forest,
-            ),
+                info: Info::default(),
+                _marker: PhantomData,
+            },
         }
     }
 
@@ -143,23 +153,6 @@ impl<C> Performer<C> where C: Context {
 }
 
 impl<C> Inner<C> where C: Context {
-    fn new(
-        params: Params,
-        version_provider: version::Provider,
-        forest: SearchForest,
-    )
-        -> Self
-    {
-        Self {
-            params,
-            version_provider,
-            butcher: MemCache::new(),
-            forest,
-            info: Info::default(),
-            _marker: PhantomData,
-        }
-    }
-
     fn insert_butcher(&mut self, key: kv::Key, cell: kv::Cell<kv::Value>) -> (u64, Option<kv::ValueCell<kv::Value>>) {
         let ord_key = OrdKey::new(key);
         let version = self.version_provider.obtain();
@@ -214,6 +207,13 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn make_lookup_range_source(&self, search_range: SearchRangeBounds) -> search_ranges_merge::RangesMergeCps {
+        let butcher_source = search_ranges_merge::Source::Butcher(
+            search_ranges_merge::SourceButcher::from_active_memcache(
+                search_range.clone(),
+                &self.butcher,
+                &self.kv_pool,
+            ),
+        );
 
         todo!()
     }
