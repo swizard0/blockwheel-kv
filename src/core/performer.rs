@@ -6,17 +6,13 @@ use std::{
     marker::{
         PhantomData,
     },
+    collections::{
+        HashMap,
+    },
 };
 
 use alloc_pool::{
     pool,
-};
-
-use o1::{
-    set::{
-        Set,
-        Ref,
-    },
 };
 
 use crate::{
@@ -90,7 +86,7 @@ pub struct KontInsertedNext<C> where C: Context {
 }
 
 pub struct KontFlushButcher<C> where C: Context {
-    pub search_tree_ref: Ref,
+    pub search_tree_ref: u64,
     pub frozen_memcache: Arc<MemCache>,
     pub next: KontFlushButcherNext<C>,
 }
@@ -120,8 +116,10 @@ struct Inner<C> where C: Context {
 }
 
 pub struct SearchForest {
-    search_trees: Set<SearchTree>,
+    next_id: u64,
+    search_trees: HashMap<u64, SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
+    search_trees_decay: HashMap<u64, SearchTree>,
 }
 
 
@@ -196,7 +194,7 @@ impl<C> Inner<C> where C: Context {
         }
     }
 
-    fn butcher_flushed(&mut self, search_tree_ref: Ref, root_block: BlockRef) {
+    fn butcher_flushed(&mut self, search_tree_ref: u64, root_block: BlockRef) {
         let items_count = match self.forest.remove(search_tree_ref) {
             Some(SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, })) =>
                 frozen_memcache.len(),
@@ -222,7 +220,7 @@ impl<C> Inner<C> where C: Context {
 enum FlushOutcome {
     NotFlushed,
     TimeToFlush {
-        search_tree_ref: Ref,
+        search_tree_ref: u64,
         frozen_memcache: Arc<MemCache>,
     },
 }
@@ -250,7 +248,7 @@ impl<C> KontPollNext<C> where C: Context {
         })
     }
 
-    pub fn butcher_flushed(mut self, search_tree_ref: Ref, root_block: BlockRef) -> Kont<C> {
+    pub fn butcher_flushed(mut self, search_tree_ref: u64, root_block: BlockRef) -> Kont<C> {
         self.inner.butcher_flushed(search_tree_ref, root_block);
         Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
     }
@@ -301,14 +299,16 @@ struct SearchTreeConstructed {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct SearchTreeRef {
     items_count: usize,
-    search_tree_ref: Ref,
+    search_tree_ref: u64,
 }
 
 impl SearchForest {
     pub fn new() -> Self {
         Self {
-            search_trees: Set::new(),
+            next_id: 0,
+            search_trees: HashMap::new(),
             search_trees_pile: BinMerger::new(),
+            search_trees_decay: HashMap::new(),
         }
     }
 
@@ -316,11 +316,16 @@ impl SearchForest {
         self.search_trees.len()
     }
 
-    pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> Ref {
-        let search_tree_ref =
-            self.search_trees.insert(SearchTree::Constructed(SearchTreeConstructed {
+    pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> u64 {
+        let search_tree_ref = self.next_id;
+        self.next_id += 1;
+
+        self.search_trees.insert(
+            search_tree_ref,
+            SearchTree::Constructed(SearchTreeConstructed {
                 root_block,
-            }));
+            }),
+        );
         self.search_trees_pile.push(
             SearchTreeRef {
                 search_tree_ref,
@@ -331,15 +336,20 @@ impl SearchForest {
         search_tree_ref
     }
 
-    fn add_bootstrap(&mut self, frozen_memcache: Arc<MemCache>) -> Ref {
-        let search_tree_ref =
-            self.search_trees.insert(SearchTree::Bootstrap(SearchTreeBootstrap {
+    fn add_bootstrap(&mut self, frozen_memcache: Arc<MemCache>) -> u64 {
+        let search_tree_ref = self.next_id;
+        self.next_id += 1;
+
+        self.search_trees.insert(
+            search_tree_ref,
+            SearchTree::Bootstrap(SearchTreeBootstrap {
                 frozen_memcache,
-            }));
+            }),
+        );
         search_tree_ref
     }
 
-    fn remove(&mut self, search_tree_ref: Ref) -> Option<SearchTree> {
-        self.search_trees.remove(search_tree_ref)
+    fn remove(&mut self, search_tree_ref: u64) -> Option<SearchTree> {
+        self.search_trees.remove(&search_tree_ref)
     }
 }

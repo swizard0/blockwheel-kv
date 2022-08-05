@@ -17,18 +17,18 @@ use futures::{
      StreamExt,
 };
 
+use o1::{
+    set::{
+        Ref,
+    },
+};
+
 use alloc_pool::{
     pool,
     Unique,
     bytes::{
         Bytes,
         BytesPool,
-    },
-};
-
-use o1::{
-    set::{
-        Ref,
     },
 };
 
@@ -55,7 +55,7 @@ mod tests;
 use std::sync::Mutex;
 
 pub struct Args<J> where J: edeltraud::Job {
-    pub search_tree_ref: Ref,
+    pub search_tree_ref: u64,
     pub frozen_memcache: Arc<MemCache>,
     pub wheels_pid: wheels::Pid,
     pub blocks_pool: BytesPool,
@@ -66,7 +66,7 @@ pub struct Args<J> where J: edeltraud::Job {
 }
 
 pub struct Done {
-    pub search_tree_ref: Ref,
+    pub search_tree_ref: u64,
     pub root_block: BlockRef,
 }
 
@@ -130,7 +130,7 @@ where J: edeltraud::Job + From<job::Job>,
 }
 
 async fn inner_run<J>(
-    search_tree_ref: Ref,
+    search_tree_ref: u64,
     frozen_memcache: Arc<MemCache>,
     wheels_pid: WheelsPid,
     blocks_pool: BytesPool,

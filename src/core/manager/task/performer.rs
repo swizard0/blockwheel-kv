@@ -4,12 +4,6 @@ use std::{
     },
 };
 
-use o1::{
-    set::{
-        Ref,
-    },
-};
-
 use crate::{
     job,
     core::{
@@ -82,7 +76,7 @@ impl Incoming {
 }
 
 pub struct EventButcherFlushed {
-    pub search_tree_ref: Ref,
+    pub search_tree_ref: u64,
     pub root_block: BlockRef,
 }
 
@@ -98,7 +92,7 @@ impl Outgoing {
 }
 
 pub struct FlushButcherQuery {
-    pub search_tree_ref: Ref,
+    pub search_tree_ref: u64,
     pub frozen_memcache: Arc<MemCache>,
 }
 
