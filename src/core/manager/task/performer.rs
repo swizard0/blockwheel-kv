@@ -4,6 +4,10 @@ use std::{
     },
 };
 
+use alloc_pool::{
+    Unique,
+};
+
 use crate::{
     job,
     core::{
@@ -64,25 +68,32 @@ pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
     pub request_lookup_range: Vec<RequestLookupRange>,
     pub butcher_flushed: Vec<EventButcherFlushed>,
+    pub lookup_range_merge_done: Vec<EventLookupRangeMergeDone>,
 }
 
 impl Incoming {
     pub fn is_empty(&self) -> bool {
         self.request_insert.is_empty() &&
             self.request_lookup_range.is_empty() &&
-            self.butcher_flushed.is_empty()
+            self.butcher_flushed.is_empty() &&
+            self.lookup_range_merge_done.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
         self.request_insert.extend(from.request_insert.drain(..));
         self.request_lookup_range.extend(from.request_lookup_range.drain(..));
         self.butcher_flushed.extend(from.butcher_flushed.drain(..));
+        self.lookup_range_merge_done.extend(from.lookup_range_merge_done.drain(..));
     }
 }
 
 pub struct EventButcherFlushed {
     pub search_tree_id: u64,
     pub root_block: BlockRef,
+}
+
+pub struct EventLookupRangeMergeDone {
+    pub lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
 }
 
 #[derive(Default)]
@@ -137,6 +148,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     next.begin_lookup_range(search_range, reply_kind)
                 } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
                     next.butcher_flushed(search_tree_id, root_block)
+                } else if let Some(EventLookupRangeMergeDone { lookup_range_sources, }) = env.incoming.lookup_range_merge_done.pop() {
+                    next.commit_lookup_range(lookup_range_sources)
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },

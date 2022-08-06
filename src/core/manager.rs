@@ -686,9 +686,10 @@ where J: edeltraud::Job + From<job::Job>,
                     root_block,
                 }),
 
-            Event::Task(Ok(task::TaskDone::LookupRangeMerge(task::lookup_range_merge::Done {  }))) => {
-                todo!()
-            },
+            Event::Task(Ok(task::TaskDone::LookupRangeMerge(task::lookup_range_merge::Done { lookup_range_sources, }))) =>
+                incoming.lookup_range_merge_done.push(task::performer::EventLookupRangeMergeDone {
+                    lookup_range_sources,
+                }),
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),

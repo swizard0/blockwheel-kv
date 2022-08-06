@@ -8,12 +8,14 @@ pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
     ManagerTaskPerformer(core::manager::task::performer::JobArgs),
     ManagerTaskFlushButcher(core::manager::task::flush_butcher::JobArgs),
+    ManagerTaskLookupRangeMerge(core::manager::task::lookup_range_merge::JobArgs),
 }
 
 pub enum JobOutput {
     BlockwheelFs(blockwheel::job::JobOutput),
     ManagerTaskPerformer(ManagerTaskPerformerDone),
     ManagerTaskFlushButcher(ManagerTaskFlushButcherDone),
+    ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone),
 }
 
 impl edeltraud::Job for Job {
@@ -27,6 +29,8 @@ impl edeltraud::Job for Job {
                 JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args))),
             Job::ManagerTaskFlushButcher(args) =>
                 JobOutput::ManagerTaskFlushButcher(ManagerTaskFlushButcherDone(core::manager::task::flush_butcher::job(args))),
+            Job::ManagerTaskLookupRangeMerge(args) =>
+                JobOutput::ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone(core::manager::task::lookup_range_merge::job(args))),
         }
     }
 }
@@ -76,6 +80,19 @@ impl From<JobOutput> for ManagerTaskFlushButcherDone {
                 done,
             _other =>
                 panic!("expected JobOutput::ManagerTaskFlushButcher but got other"),
+        }
+    }
+}
+
+pub struct ManagerTaskLookupRangeMergeDone(pub core::manager::task::lookup_range_merge::Output);
+
+impl From<JobOutput> for ManagerTaskLookupRangeMergeDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::ManagerTaskLookupRangeMerge(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::ManagerTaskLookupRangeMerge but got other"),
         }
     }
 }
