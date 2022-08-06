@@ -76,7 +76,7 @@ impl Incoming {
 }
 
 pub struct EventButcherFlushed {
-    pub search_tree_ref: u64,
+    pub search_tree_id: u64,
     pub root_block: BlockRef,
 }
 
@@ -92,7 +92,7 @@ impl Outgoing {
 }
 
 pub struct FlushButcherQuery {
-    pub search_tree_ref: u64,
+    pub search_tree_id: u64,
     pub frozen_memcache: Arc<MemCache>,
 }
 
@@ -121,8 +121,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
             Kont::StepPoll { next, } =>
                 if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
                     next.incoming_insert(key, value, reply_tx)
-                } else if let Some(EventButcherFlushed { search_tree_ref, root_block, }) = env.incoming.butcher_flushed.pop() {
-                    next.butcher_flushed(search_tree_ref, root_block)
+                } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
+                    next.butcher_flushed(search_tree_id, root_block)
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },
@@ -140,14 +140,14 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     }
                     next.got_it()
                 },
-                performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_ref, frozen_memcache, next, }) => {
+                performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_id, frozen_memcache, next, }) => {
                     env.outgoing.flush_butcher.push(FlushButcherQuery {
-                        search_tree_ref,
+                        search_tree_id,
                         frozen_memcache,
                     });
                     next.scheduled()
                 },
-                performer::Kont::LookupRangeSourceReady(performer::KontLookupRangeSourceReady { source, lookup_context, next, }) => {
+                performer::Kont::LookupRangeSourceReady(performer::KontLookupRangeSourceReady { ranges_merger, lookup_context, next, }) => {
 
                     todo!();
                 },

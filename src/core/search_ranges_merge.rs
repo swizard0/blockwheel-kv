@@ -3,6 +3,10 @@ use std::{
     sync::{
         Arc,
     },
+    ops::{
+        Deref,
+        DerefMut,
+    },
 };
 
 use alloc_pool::{
@@ -29,62 +33,63 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-pub struct RangesMergeCps {
-    inner: Inner,
+pub struct RangesMergeCps<S> {
+    inner: Inner<S>,
 }
 
-pub enum Kont {
-    RequireBlockAsync(KontRequireBlockAsync),
-    AwaitBlocks(KontAwaitBlocks),
-    EmitDeprecated(KontEmitDeprecated),
-    EmitItem(KontEmitItem),
-    Finished(KontFinished),
+pub enum Kont<S> {
+    RequireBlockAsync(KontRequireBlockAsync<S>),
+    AwaitBlocks(KontAwaitBlocks<S>),
+    EmitDeprecated(KontEmitDeprecated<S>),
+    EmitItem(KontEmitItem<S>),
+    Finished(KontFinished<S>),
 }
 
-pub struct KontRequireBlockAsync {
+pub struct KontRequireBlockAsync<S> {
     pub block_ref: BlockRef,
-    pub async_token: AsyncToken,
-    pub next: KontRequireBlockAsyncNext,
+    pub async_token: AsyncToken<S>,
+    pub next: KontRequireBlockAsyncNext<S>,
 }
 
-pub struct AsyncToken {
+pub struct AsyncToken<S> {
+    await_iter: S,
     walker_next: search_tree_walker::KontRequireBlockNext,
 }
 
-pub struct KontRequireBlockAsyncNext {
-    inner: Inner,
+pub struct KontRequireBlockAsyncNext<S> {
+    inner: Inner<S>,
 }
 
-pub struct KontAwaitBlocks {
-    pub next: KontAwaitBlocksNext,
+pub struct KontAwaitBlocks<S> {
+    pub next: KontAwaitBlocksNext<S>,
 }
 
-pub struct KontAwaitBlocksNext {
-    inner: Inner,
+pub struct KontAwaitBlocksNext<S> {
+    inner: Inner<S>,
 }
 
-pub struct KontEmitDeprecated {
+pub struct KontEmitDeprecated<S> {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-    pub next: KontEmitDeprecatedNext,
+    pub next: KontEmitDeprecatedNext<S>,
 }
 
-pub struct KontEmitDeprecatedNext {
-    merger_next: MergerKontEmitDeprecatedNext,
-    inner: Inner,
+pub struct KontEmitDeprecatedNext<S> {
+    merger_next: MergerKontEmitDeprecatedNext<S>,
+    inner: Inner<S>,
 }
 
-pub struct KontEmitItem {
+pub struct KontEmitItem<S> {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
-    pub next: KontEmitItemNext,
+    pub next: KontEmitItemNext<S>,
 }
 
-pub struct KontEmitItemNext {
-    merger_next: MergerKontEmitItemNext,
-    inner: Inner,
+pub struct KontEmitItemNext<S> {
+    merger_next: MergerKontEmitItemNext<S>,
+    inner: Inner<S>,
 }
 
-pub struct KontFinished {
-    pub sources: Unique<Vec<Source>>,
+pub struct KontFinished<S> {
+    pub sources: Unique<Vec<S>>,
 }
 
 #[derive(Debug)]
@@ -92,9 +97,9 @@ pub enum Error {
     SearchTreeWalker(search_tree_walker::Error),
 }
 
-struct Inner {
-    state: State,
-    await_iters: Vec<Source>,
+struct Inner<S> {
+    state: State<S>,
+    await_iters: Vec<S>,
     kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
 }
@@ -102,6 +107,20 @@ struct Inner {
 pub enum Source {
     Butcher(SourceButcher),
     SearchTree(SourceSearchTree),
+}
+
+impl Deref for Source {
+    type Target = Self;
+
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl DerefMut for Source {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
 }
 
 pub struct SourceButcher {
@@ -124,26 +143,26 @@ enum SourceSearchTreeState {
     Done,
 }
 
-enum State {
-    MergerStep { merger_kont: MergerKont, },
-    AwaitIters { merger_next: MergerKontAwaitScheduledNext, },
+enum State<S> {
+    MergerStep { merger_kont: MergerKont<S>, },
+    AwaitIters { merger_next: MergerKontAwaitScheduledNext<S>, },
     Emitted,
 }
 
-type MergerKont = merger::Kont<Unique<Vec<Source>>, Source>;
-type MergerKontAwaitScheduledNext = merger::KontAwaitScheduledNext<Unique<Vec<Source>>, Source>;
-type MergerKontEmitDeprecatedNext = merger::KontEmitDeprecatedNext<Unique<Vec<Source>>, Source>;
-type MergerKontEmitItemNext = merger::KontEmitItemNext<Unique<Vec<Source>>, Source>;
+type MergerKont<S> = merger::Kont<Unique<Vec<S>>, S>;
+type MergerKontAwaitScheduledNext<S> = merger::KontAwaitScheduledNext<Unique<Vec<S>>, S>;
+type MergerKontEmitDeprecatedNext<S> = merger::KontEmitDeprecatedNext<Unique<Vec<S>>, S>;
+type MergerKontEmitItemNext<S> = merger::KontEmitItemNext<Unique<Vec<S>>, S>;
 
-impl RangesMergeCps {
+impl<S> RangesMergeCps<S> where S: DerefMut<Target = Source> {
     pub fn new<I>(
         sources_iter: I,
-        sources_pool: pool::Pool<Vec<Source>>,
+        sources_pool: pool::Pool<Vec<S>>,
         kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
         block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
     )
         -> Self
-    where I: IntoIterator<Item = Source>
+    where I: IntoIterator<Item = S>
     {
         let mut sources = sources_pool.lend(Vec::new);
         sources.clear();
@@ -164,7 +183,7 @@ impl RangesMergeCps {
         }
     }
 
-    pub fn step(mut self) -> Result<Kont, Error> {
+    pub fn step(mut self) -> Result<Kont<S>, Error> {
         loop {
             match self.inner.state {
 
@@ -217,7 +236,7 @@ impl RangesMergeCps {
                         }));
                     };
                     loop {
-                        match &mut await_iter {
+                        match &mut *await_iter {
                             Source::Butcher(SourceButcher { source_state, }) =>
                                 match mem::replace(source_state, SourceButcherState::Done) {
                                     SourceButcherState::Init { search_range, memcache ,} => {
@@ -278,6 +297,7 @@ impl RangesMergeCps {
                                                 return Ok(Kont::RequireBlockAsync(KontRequireBlockAsync {
                                                     block_ref: kont_require_block.block_ref,
                                                     async_token: AsyncToken {
+                                                        await_iter,
                                                         walker_next: kont_require_block.next,
                                                     },
                                                     next: KontRequireBlockAsyncNext {
@@ -326,16 +346,16 @@ impl RangesMergeCps {
         }
     }
 
-    fn block_arrived(mut self, async_token: AsyncToken, block_bytes: Bytes) -> Result<Kont, Error> {
+    fn block_arrived(mut self, mut async_token: AsyncToken<S>, block_bytes: Bytes) -> Result<Kont<S>, Error> {
         let walker_kont = async_token
             .walker_next
             .block_arrived(block_bytes)
             .map_err(Error::SearchTreeWalker)?;
-        self.inner.await_iters.push(
-            Source::SearchTree(SourceSearchTree {
-                source_state: SourceSearchTreeState::Step { walker_kont, },
-            }),
-        );
+        let source = &mut *async_token.await_iter;
+        *source = Source::SearchTree(SourceSearchTree {
+            source_state: SourceSearchTreeState::Step { walker_kont, },
+        });
+        self.inner.await_iters.push(async_token.await_iter);
         self.step()
     }
 }
@@ -381,28 +401,28 @@ impl SourceSearchTree {
     }
 }
 
-impl KontRequireBlockAsyncNext {
-    pub fn scheduled(self) -> Result<Kont, Error> {
+impl<S> KontRequireBlockAsyncNext<S> where S: DerefMut<Target = Source> {
+    pub fn scheduled(self) -> Result<Kont<S>, Error> {
         RangesMergeCps { inner: self.inner, }.step()
     }
 }
 
-impl KontAwaitBlocksNext {
-    pub fn block_arrived(self, async_token: AsyncToken, block_bytes: Bytes) -> Result<Kont, Error> {
+impl<S> KontAwaitBlocksNext<S> where S: DerefMut<Target = Source> {
+    pub fn block_arrived(self, async_token: AsyncToken<S>, block_bytes: Bytes) -> Result<Kont<S>, Error> {
         RangesMergeCps { inner: self.inner, }.block_arrived(async_token, block_bytes)
     }
 }
 
-impl KontEmitDeprecatedNext {
-    pub fn proceed(mut self) -> Result<Kont, Error> {
+impl<S> KontEmitDeprecatedNext<S> where S: DerefMut<Target = Source> {
+    pub fn proceed(mut self) -> Result<Kont<S>, Error> {
         let merger_kont = self.merger_next.proceed();
         self.inner.state = State::MergerStep { merger_kont, };
         RangesMergeCps { inner: self.inner, }.step()
     }
 }
 
-impl KontEmitItemNext {
-    pub fn proceed(mut self) -> Result<Kont, Error> {
+impl<S> KontEmitItemNext<S> where S: DerefMut<Target = Source> {
+    pub fn proceed(mut self) -> Result<Kont<S>, Error> {
         let merger_kont = self.merger_next.proceed();
         self.inner.state = State::MergerStep { merger_kont, };
         RangesMergeCps { inner: self.inner, }.step()

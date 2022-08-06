@@ -640,7 +640,7 @@ where J: edeltraud::Job + From<job::Job>,
                     kont: task::performer::Kont::StepPoll { next, },
                 };
                 // flush butcher
-                for task::performer::FlushButcherQuery { search_tree_ref, frozen_memcache, } in job_args.env.outgoing.flush_butcher.drain(..) {
+                for task::performer::FlushButcherQuery { search_tree_id, frozen_memcache, } in job_args.env.outgoing.flush_butcher.drain(..) {
                     tasks.push(task::run_args(task::TaskArgs::FlushButcher(
                         task::flush_butcher::Args {
                             search_tree_builder_params: search_tree_builder::Params {
@@ -648,7 +648,7 @@ where J: edeltraud::Job + From<job::Job>,
                                 tree_block_size: state.params.performer_params.tree_block_size,
                             },
                             values_inline_size_limit: state.params.performer_params.values_inline_size_limit,
-                            search_tree_ref,
+                            search_tree_id,
                             frozen_memcache,
                             wheels_pid: state.wheels_pid.clone(),
                             blocks_pool: state.blocks_pool.clone(),
@@ -668,9 +668,9 @@ where J: edeltraud::Job + From<job::Job>,
                 todo!();
             },
 
-            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_ref, root_block, }))) =>
+            Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_id, root_block, }))) =>
                 incoming.butcher_flushed.push(task::performer::EventButcherFlushed {
-                    search_tree_ref,
+                    search_tree_id,
                     root_block,
                 }),
 

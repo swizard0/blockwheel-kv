@@ -8,12 +8,6 @@ use std::{
     },
 };
 
-use o1::{
-    set::{
-        Set,
-    },
-};
-
 use alloc_pool::{
     pool,
     bytes::{
@@ -48,7 +42,7 @@ use crate::{
 
 #[tokio::test]
 async fn basic() {
-    let search_tree_ref = 77;
+    let search_tree_id = 77;
     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
         .worker_threads(1)
         .build()
@@ -73,7 +67,7 @@ async fn basic() {
 
     let done =
         inner_run(
-            search_tree_ref,
+            search_tree_id,
             frozen_memcache,
             wheels_pid,
             blocks_pool,
@@ -84,13 +78,13 @@ async fn basic() {
         )
         .await
         .unwrap();
-    assert_eq!(done.search_tree_ref, search_tree_ref);
+    assert_eq!(done.search_tree_id, search_tree_id);
     assert_eq!(&*done.root_block.blockwheel_filename, BLOCKWHEEL_FILENAME.as_bytes());
 }
 
 #[tokio::test]
 async fn external_value() {
-    let search_tree_ref = 77;
+    let search_tree_id = 77;
     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
         .worker_threads(1)
         .build()
@@ -109,7 +103,7 @@ async fn external_value() {
 
     let done =
         inner_run(
-            search_tree_ref,
+            search_tree_id,
             frozen_memcache,
             wheels_pid,
             blocks_pool,
@@ -120,7 +114,7 @@ async fn external_value() {
         )
         .await
         .unwrap();
-    assert_eq!(done.search_tree_ref, search_tree_ref);
+    assert_eq!(done.search_tree_id, search_tree_id);
     assert_eq!(&*done.root_block.blockwheel_filename, BLOCKWHEEL_FILENAME.as_bytes());
 }
 

@@ -55,7 +55,7 @@ mod tests;
 use std::sync::Mutex;
 
 pub struct Args<J> where J: edeltraud::Job {
-    pub search_tree_ref: u64,
+    pub search_tree_id: u64,
     pub frozen_memcache: Arc<MemCache>,
     pub wheels_pid: wheels::Pid,
     pub blocks_pool: BytesPool,
@@ -66,7 +66,7 @@ pub struct Args<J> where J: edeltraud::Job {
 }
 
 pub struct Done {
-    pub search_tree_ref: u64,
+    pub search_tree_id: u64,
     pub root_block: BlockRef,
 }
 
@@ -102,7 +102,7 @@ enum WheelsPid {
 
 pub async fn run<J>(
     Args {
-        search_tree_ref,
+        search_tree_id,
         frozen_memcache,
         wheels_pid,
         blocks_pool,
@@ -118,7 +118,7 @@ where J: edeltraud::Job + From<job::Job>,
       job::JobOutput: From<J::Output>,
 {
     inner_run(
-        search_tree_ref,
+        search_tree_id,
         frozen_memcache,
         WheelsPid::Regular(wheels_pid),
         blocks_pool,
@@ -130,7 +130,7 @@ where J: edeltraud::Job + From<job::Job>,
 }
 
 async fn inner_run<J>(
-    search_tree_ref: u64,
+    search_tree_id: u64,
     frozen_memcache: Arc<MemCache>,
     wheels_pid: WheelsPid,
     blocks_pool: BytesPool,
@@ -336,7 +336,7 @@ where J: edeltraud::Job + From<job::Job>,
 
             TaskOutput::Job(JobDone::Finished { root_block, }) => {
                 assert!(incoming.is_empty());
-                return Ok(Done { search_tree_ref, root_block, });
+                return Ok(Done { search_tree_id, root_block, });
             },
 
             TaskOutput::WriteValue { block_ref, async_ref, block_entry_index, } =>
