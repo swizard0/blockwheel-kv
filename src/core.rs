@@ -72,15 +72,9 @@ pub struct RequestInsert {
     reply_tx: RequestInsertReplyTx,
 }
 
-#[derive(Debug)]
-pub struct RequestLookup {
-    key: kv::Key,
-    reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
-}
-
 pub struct RequestLookupRange {
-    range: SearchRangeBounds,
-    reply_tx: oneshot::Sender<LookupRange>,
+    search_range: SearchRangeBounds,
+    reply_kind: RequestLookupKind,
 }
 
 #[derive(Debug)]
@@ -168,6 +162,13 @@ impl SearchRangeBounds {
         SearchRangeBounds {
             range_from: Bound::Unbounded,
             range_to: Bound::Unbounded,
+        }
+    }
+
+    fn single(key: kv::Key) -> SearchRangeBounds {
+        SearchRangeBounds {
+            range_from: Bound::Included(key.clone()),
+            range_to: Bound::Included(key),
         }
     }
 }

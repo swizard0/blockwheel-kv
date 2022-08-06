@@ -55,7 +55,7 @@ fn basic() {
     let block_entry_steps_pool = pool::Pool::new();
     let ranges_merge = RangesMergeCps::new(
         vec![source_a, source_b],
-        sources_pool,
+        &sources_pool,
         kv_pool,
         block_entry_steps_pool,
     );

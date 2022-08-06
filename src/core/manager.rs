@@ -52,6 +52,7 @@ use crate::{
     version,
     core::{
         performer,
+        search_tree_walker,
         search_tree_builder,
 //         merger,
 //         butcher,
@@ -61,7 +62,9 @@ use crate::{
         Context,
         RequestInfo,
         RequestInsert,
-        RequestLookup,
+        RequestLookupKind,
+        RequestLookupKindSingle,
+        RequestLookupKindRange,
         RequestLookupRange,
         RequestRemove,
         RequestFlush,
@@ -132,7 +135,7 @@ impl GenServer {
     {
         let terminate_result = restart::restartable(
             ero::Params {
-                name: "ero-blockwheel-kv manager task",
+                name: "ero-blockwheel-kv manager task".to_string(),
                 restart_strategy: RestartStrategy::Delay {
                     restart_after: Duration::from_secs(params.task_restart_sec as u64),
                 },
@@ -234,12 +237,15 @@ impl Pid {
     }
 
     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<kv::Value>>, LookupError> {
+        let search_range = SearchRangeBounds::single(key);
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
-                .send(Request::Lookup(RequestLookup {
-                    key: key.clone(),
-                    reply_tx,
+                .send(Request::LookupRange(RequestLookupRange {
+                    search_range: search_range.clone(),
+                    reply_kind: RequestLookupKind::Single(
+                        RequestLookupKindSingle { reply_tx, },
+                    ),
                 }))
                 .await
                 .map_err(|_send_error| LookupError::GenServer(ero::NoProcError))?;
@@ -254,13 +260,15 @@ impl Pid {
     }
 
     pub async fn lookup_range<R>(&mut self, range: R) -> Result<LookupRange, LookupRangeError> where R: RangeBounds<kv::Key> {
-        let bounds: SearchRangeBounds = range.into();
+        let search_range: SearchRangeBounds = range.into();
         loop {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.request_tx
                 .send(Request::LookupRange(RequestLookupRange {
-                    range: bounds.clone(),
-                    reply_tx,
+                    search_range: search_range.clone(),
+                    reply_kind: RequestLookupKind::Range(
+                        RequestLookupKindRange { reply_tx, },
+                    ),
                 }))
                 .await
                 .map_err(|_send_error| LookupRangeError::GenServer(ero::NoProcError))?;
@@ -314,7 +322,6 @@ impl Pid {
 enum Request {
     Info(RequestInfo),
     Insert(RequestInsert),
-    Lookup(RequestLookup),
     LookupRange(RequestLookupRange),
     Remove(RequestRemove),
     FlushAll(RequestFlush),
@@ -439,6 +446,8 @@ where J: edeltraud::Job + From<job::Job>,
         state.params.performer_params.clone(),
         state.version_provider.clone(),
         pools.kv_pool.clone(),
+        pools.sources_pool.clone(),
+        pools.block_entry_steps_pool.clone(),
         forest,
     );
 
@@ -453,6 +462,8 @@ where J: edeltraud::Job + From<job::Job>,
 struct Pools {
     kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
+    sources_pool: pool::Pool<Vec<performer::LookupRangeSource>>,
+    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
 }
 
 impl Pools {
@@ -460,6 +471,8 @@ impl Pools {
         Self {
             kv_pool: pool::Pool::new(),
             block_entries_pool: pool::Pool::new(),
+            sources_pool: pool::Pool::new(),
+            block_entry_steps_pool: pool::Pool::new(),
         }
     }
 }
@@ -572,21 +585,7 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Insert(request))) =>
                 incoming.request_insert.push(request),
 
-            Event::Request(Some(Request::Lookup(RequestLookup { key: _, reply_tx: _, }))) =>
-                todo!(),
-//                 launch_lookup_request(
-//                     key,
-//                     reply_tx,
-//                     &mut lookup_requests,
-//                     &search_trees,
-//                     &state.butcher_pid,
-//                     |args| {
-//                         tasks.push(task::run_args(args));
-//                         tasks_count += 1;
-//                     },
-//                 ),
-
-            Event::Request(Some(Request::LookupRange(RequestLookupRange { range: _, reply_tx: _, }))) => {
+            Event::Request(Some(Request::LookupRange(RequestLookupRange { search_range: _, reply_kind: _, }))) => {
                 todo!();
 //                 let (key_values_tx, key_values_rx) =
 //                     mpsc::channel(state.params.search_tree_params.iter_send_buffer);
@@ -640,7 +639,8 @@ where J: edeltraud::Job + From<job::Job>,
                     kont: task::performer::Kont::StepPoll { next, },
                 };
                 // flush butcher
-                for task::performer::FlushButcherQuery { search_tree_id, frozen_memcache, } in job_args.env.outgoing.flush_butcher.drain(..) {
+                for flush_butcher_query in job_args.env.outgoing.flush_butcher.drain(..) {
+                    let task::performer::FlushButcherQuery { search_tree_id, frozen_memcache, } = flush_butcher_query;
                     tasks.push(task::run_args(task::TaskArgs::FlushButcher(
                         task::flush_butcher::Args {
                             search_tree_builder_params: search_tree_builder::Params {
@@ -653,6 +653,18 @@ where J: edeltraud::Job + From<job::Job>,
                             wheels_pid: state.wheels_pid.clone(),
                             blocks_pool: state.blocks_pool.clone(),
                             block_entries_pool: pools.block_entries_pool.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
+                }
+                // lookup range merger ready
+                for lookup_range_merger_ready_query in job_args.env.outgoing.lookup_range_merger_ready.drain(..) {
+                    let task::performer::LookupRangeMergerReadyQuery { ranges_merger, lookup_context, } = lookup_range_merger_ready_query;
+                    tasks.push(task::run_args(task::TaskArgs::LookupRangeMerge(
+                        task::lookup_range_merge::Args {
+                            ranges_merger,
+                            lookup_context,
                             thread_pool: state.thread_pool.clone(),
                         },
                     )));
@@ -673,6 +685,10 @@ where J: edeltraud::Job + From<job::Job>,
                     search_tree_id,
                     root_block,
                 }),
+
+            Event::Task(Ok(task::TaskDone::LookupRangeMerge(task::lookup_range_merge::Done {  }))) => {
+                todo!()
+            },
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),

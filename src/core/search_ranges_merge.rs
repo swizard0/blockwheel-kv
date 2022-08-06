@@ -157,7 +157,7 @@ type MergerKontEmitItemNext<S> = merger::KontEmitItemNext<Unique<Vec<S>>, S>;
 impl<S> RangesMergeCps<S> where S: DerefMut<Target = Source> {
     pub fn new<I>(
         sources_iter: I,
-        sources_pool: pool::Pool<Vec<S>>,
+        sources_pool: &pool::Pool<Vec<S>>,
         kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
         block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
     )

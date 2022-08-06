@@ -1,5 +1,10 @@
 use std::{
     mem,
+    iter,
+    ops::{
+        Deref,
+        DerefMut,
+    },
     sync::{
         Arc,
     },
@@ -7,12 +12,14 @@ use std::{
         PhantomData,
     },
     collections::{
+        hash_map,
         HashMap,
     },
 };
 
 use alloc_pool::{
     pool,
+    Unique,
 };
 
 use crate::{
@@ -25,6 +32,7 @@ use crate::{
         bin_merger::{
             BinMerger,
         },
+        search_tree_walker,
         search_ranges_merge,
         OrdKey,
         MemCache,
@@ -64,7 +72,7 @@ pub enum Kont<C> where C: Context {
     Poll(KontPoll<C>),
     Inserted(KontInserted<C>),
     FlushButcher(KontFlushButcher<C>),
-    LookupRangeSourceReady(KontLookupRangeSourceReady<C>),
+    LookupRangeMergerReady(KontLookupRangeMergerReady<C>),
 }
 
 pub struct KontPoll<C> where C: Context {
@@ -95,13 +103,13 @@ pub struct KontFlushButcherNext<C> where C: Context {
     inner: Inner<C>,
 }
 
-pub struct KontLookupRangeSourceReady<C> where C: Context {
+pub struct KontLookupRangeMergerReady<C> where C: Context {
     pub ranges_merger: LookupRangesMerger,
     pub lookup_context: C::Lookup,
-    pub next: KontLookupRangeSourceReadyNext<C>,
+    pub next: KontLookupRangeMergerReadyNext<C>,
 }
 
-pub struct KontLookupRangeSourceReadyNext<C> where C: Context {
+pub struct KontLookupRangeMergerReadyNext<C> where C: Context {
     inner: Inner<C>,
 }
 
@@ -118,6 +126,8 @@ struct Inner<C> where C: Context {
     params: Params,
     version_provider: version::Provider,
     kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
+    sources_pool: pool::Pool<Vec<LookupRangeSource>>,
+    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
     butcher: MemCache,
     forest: SearchForest,
     info: Info,
@@ -128,7 +138,8 @@ pub struct SearchForest {
     next_id: u64,
     search_trees: HashMap<u64, SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
-    search_trees_decay: HashMap<u64, SearchTree>,
+    search_trees_decay: HashMap<u64, SearchTreeConstructed>,
+    accesses_count: usize,
 }
 
 
@@ -137,6 +148,8 @@ impl<C> Performer<C> where C: Context {
         params: Params,
         version_provider: version::Provider,
         kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
+        sources_pool: pool::Pool<Vec<LookupRangeSource>>,
+        block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
         forest: SearchForest,
     )
         -> Self
@@ -147,6 +160,8 @@ impl<C> Performer<C> where C: Context {
                 butcher: MemCache::new(),
                 version_provider,
                 kv_pool,
+                sources_pool,
+                block_entry_steps_pool,
                 forest,
                 info: Info::default(),
                 _marker: PhantomData,
@@ -213,16 +228,90 @@ impl<C> Inner<C> where C: Context {
         self.forest.add_constructed(root_block, items_count);
     }
 
-    fn make_lookup_ranges_merger(&self, search_range: SearchRangeBounds) -> LookupRangesMerger {
-        let butcher_source = search_ranges_merge::Source::Butcher(
-            search_ranges_merge::SourceButcher::from_active_memcache(
-                search_range.clone(),
-                &self.butcher,
-                &self.kv_pool,
+    fn make_lookup_ranges_merger(&mut self, search_range: SearchRangeBounds) -> LookupRangesMerger {
+        let butcher_source = LookupRangeSource {
+            source: search_ranges_merge::Source::Butcher(
+                search_ranges_merge::SourceButcher::from_active_memcache(
+                    search_range.clone(),
+                    &self.butcher,
+                    &self.kv_pool,
+                ),
             ),
+            search_tree_id: None,
+        };
+        let mut total_accesses_count = 0;
+        let forest_iter = self.forest.search_trees
+            .iter_mut()
+            .map(|(search_tree_id, search_tree)|  {
+                match search_tree {
+                    SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
+                        LookupRangeSource {
+                            source: search_ranges_merge::Source::Butcher(
+                                search_ranges_merge::SourceButcher::new(
+                                    search_range.clone(),
+                                    frozen_memcache.clone(),
+                                ),
+                            ),
+                            search_tree_id: None,
+                        },
+                    SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
+                        *accesses_count += 1;
+                        total_accesses_count += 1;
+                        LookupRangeSource {
+                            source: search_ranges_merge::Source::SearchTree(
+                                search_ranges_merge::SourceSearchTree::new(
+                                    search_range.clone(),
+                                    root_block.clone(),
+                                ),
+                            ),
+                            search_tree_id: Some(*search_tree_id),
+                        }
+                    },
+                }
+            });
+        let source = search_ranges_merge::RangesMergeCps::new(
+            iter::once(butcher_source)
+                .chain(forest_iter),
+            &self.sources_pool,
+            self.kv_pool.clone(),
+            self.block_entry_steps_pool.clone(),
         );
+        self.forest.accesses_count += total_accesses_count;
 
-        todo!()
+        LookupRangesMerger { source, }
+    }
+
+    fn commit_lookup_range(&mut self, mut lookup_range_sources: Unique<Vec<LookupRangeSource>>) {
+        for LookupRangeSource { search_tree_id, .. } in lookup_range_sources.drain(..) {
+            if let Some(search_tree_id) = search_tree_id {
+                match self.forest.search_trees.get_mut(&search_tree_id) {
+                    Some(SearchTree::Bootstrap(..)) =>
+                        unreachable!(),
+                    Some(SearchTree::Constructed(search_tree)) => {
+                        assert!(search_tree.accesses_count > 0);
+                        search_tree.accesses_count -= 1;
+                        assert!(self.forest.accesses_count > 0);
+                        self.forest.accesses_count -= 1;
+                    },
+                    None => {
+                        // search tree has been scheduled to decay
+                        match self.forest.search_trees_decay.entry(search_tree_id) {
+                            hash_map::Entry::Vacant(..) =>
+                                unreachable!(),
+                            hash_map::Entry::Occupied(mut oe) => {
+                                let search_tree = oe.get_mut();
+                                assert!(search_tree.accesses_count > 0);
+                                search_tree.accesses_count -= 1;
+                                assert!(self.forest.accesses_count > 0);
+                                self.forest.accesses_count -= 1;
+
+                                todo!();
+                            },
+                        }
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -246,15 +335,21 @@ impl<C> KontPollNext<C> where C: Context {
         })
     }
 
-    pub fn begin_lookup_range(mut self, range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
-	let ranges_merger = self.inner.make_lookup_ranges_merger(range);
-        Kont::LookupRangeSourceReady(KontLookupRangeSourceReady {
+    pub fn begin_lookup_range(mut self, search_range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
+	let ranges_merger = self.inner.make_lookup_ranges_merger(search_range);
+        Kont::LookupRangeMergerReady(KontLookupRangeMergerReady {
             ranges_merger,
             lookup_context,
-            next: KontLookupRangeSourceReadyNext {
+            next: KontLookupRangeMergerReadyNext {
                 inner: self.inner,
             },
         })
+    }
+
+    pub fn commit_lookup_range(mut self, lookup_range_sources: Unique<Vec<LookupRangeSource>>) -> Kont<C> {
+        self.inner.commit_lookup_range(lookup_range_sources);
+
+        todo!();
     }
 
     pub fn butcher_flushed(mut self, search_tree_id: u64, root_block: BlockRef) -> Kont<C> {
@@ -286,7 +381,7 @@ impl<C> KontFlushButcherNext<C> where C: Context {
     }
 }
 
-impl<C> KontLookupRangeSourceReadyNext<C> where C: Context {
+impl<C> KontLookupRangeMergerReadyNext<C> where C: Context {
     pub fn got_it(self) -> Kont<C> {
         Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
     }
@@ -303,6 +398,7 @@ struct SearchTreeBootstrap {
 
 struct SearchTreeConstructed {
     root_block: BlockRef,
+    accesses_count: usize,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -318,6 +414,7 @@ impl SearchForest {
             search_trees: HashMap::new(),
             search_trees_pile: BinMerger::new(),
             search_trees_decay: HashMap::new(),
+            accesses_count: 0,
         }
     }
 
@@ -333,6 +430,7 @@ impl SearchForest {
             search_tree_id,
             SearchTree::Constructed(SearchTreeConstructed {
                 root_block,
+                accesses_count: 0,
             }),
         );
         self.search_trees_pile.push(
@@ -360,5 +458,19 @@ impl SearchForest {
 
     fn remove(&mut self, search_tree_id: u64) -> Option<SearchTree> {
         self.search_trees.remove(&search_tree_id)
+    }
+}
+
+impl Deref for LookupRangeSource {
+    type Target = search_ranges_merge::Source;
+
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
+}
+
+impl DerefMut for LookupRangeSource {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.source
     }
 }

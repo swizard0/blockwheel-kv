@@ -12,6 +12,8 @@ use crate::{
         BlockRef,
         Context as C,
         RequestInsert,
+        RequestLookupKind,
+        RequestLookupRange,
     },
     Inserted,
 };
@@ -60,17 +62,20 @@ pub struct Env {
 #[derive(Default)]
 pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
+    pub request_lookup_range: Vec<RequestLookupRange>,
     pub butcher_flushed: Vec<EventButcherFlushed>,
 }
 
 impl Incoming {
     pub fn is_empty(&self) -> bool {
         self.request_insert.is_empty() &&
+            self.request_lookup_range.is_empty() &&
             self.butcher_flushed.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
         self.request_insert.extend(from.request_insert.drain(..));
+        self.request_lookup_range.extend(from.request_lookup_range.drain(..));
         self.butcher_flushed.extend(from.butcher_flushed.drain(..));
     }
 }
@@ -83,17 +88,24 @@ pub struct EventButcherFlushed {
 #[derive(Default)]
 pub struct Outgoing {
     pub flush_butcher: Vec<FlushButcherQuery>,
+    pub lookup_range_merger_ready: Vec<LookupRangeMergerReadyQuery>,
 }
 
 impl Outgoing {
     fn is_empty(&self) -> bool {
-        self.flush_butcher.is_empty()
+        self.flush_butcher.is_empty() &&
+            self.lookup_range_merger_ready.is_empty()
     }
 }
 
 pub struct FlushButcherQuery {
     pub search_tree_id: u64,
     pub frozen_memcache: Arc<MemCache>,
+}
+
+pub struct LookupRangeMergerReadyQuery {
+    pub ranges_merger: performer::LookupRangesMerger,
+    pub lookup_context: RequestLookupKind,
 }
 
 pub enum Kont {
@@ -121,6 +133,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
             Kont::StepPoll { next, } =>
                 if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
                     next.incoming_insert(key, value, reply_tx)
+                } else if let Some(RequestLookupRange { search_range, reply_kind, }) = env.incoming.request_lookup_range.pop() {
+                    next.begin_lookup_range(search_range, reply_kind)
                 } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
                     next.butcher_flushed(search_tree_id, root_block)
                 } else {
@@ -147,9 +161,12 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     });
                     next.scheduled()
                 },
-                performer::Kont::LookupRangeSourceReady(performer::KontLookupRangeSourceReady { ranges_merger, lookup_context, next, }) => {
-
-                    todo!();
+                performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady { ranges_merger, lookup_context, next, }) => {
+                    env.outgoing.lookup_range_merger_ready.push(LookupRangeMergerReadyQuery {
+                        ranges_merger,
+                        lookup_context,
+                    });
+                    next.got_it()
                 },
             };
         }

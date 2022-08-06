@@ -42,10 +42,14 @@ fn basic_insert() {
     let version_provider =
         version::Provider::from_unix_epoch_seed();
     let kv_pool = pool::Pool::new();
+    let sources_pool = pool::Pool::new();
+    let block_entry_steps_pool = pool::Pool::new();
     let performer: Performer<Context> = Performer::new(
         Params { butcher_block_size: 2, ..Default::default() },
         version_provider,
         kv_pool,
+        sources_pool,
+        block_entry_steps_pool,
         SearchForest::new(),
     );
     let kont = performer.step();
