@@ -4,10 +4,6 @@ use std::{
     },
 };
 
-use alloc_pool::{
-    Unique,
-};
-
 use crate::{
     job,
     core::{
@@ -93,7 +89,7 @@ pub struct EventButcherFlushed {
 }
 
 pub struct EventLookupRangeMergeDone {
-    pub lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
+    pub lookup_range_token: performer::LookupRangeToken,
 }
 
 #[derive(Default)]
@@ -148,8 +144,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     next.begin_lookup_range(search_range, reply_kind)
                 } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
                     next.butcher_flushed(search_tree_id, root_block)
-                } else if let Some(EventLookupRangeMergeDone { lookup_range_sources, }) = env.incoming.lookup_range_merge_done.pop() {
-                    next.commit_lookup_range(lookup_range_sources)
+                } else if let Some(EventLookupRangeMergeDone { lookup_range_token, }) = env.incoming.lookup_range_merge_done.pop() {
+                    next.commit_lookup_range(lookup_range_token)
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },

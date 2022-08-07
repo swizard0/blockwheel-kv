@@ -62,7 +62,12 @@ where J: edeltraud::Job + From<job::Job>,
 }
 
 #[cfg(test)]
-use std::sync::Mutex;
+use std::{
+    sync::{
+        Arc,
+        Mutex,
+    },
+};
 
 #[derive(Clone)]
 enum BlockwheelPid {

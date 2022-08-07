@@ -42,7 +42,7 @@ pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     AwaitBlocks(KontAwaitBlocks<V, S>),
     EmitDeprecated(KontEmitDeprecated<V, S>),
     EmitItem(KontEmitItem<V, S>),
-    Finished(KontFinished<V>),
+    Finished,
 }
 
 pub struct KontRequireBlockAsync<V, S> where V: DerefMut<Target = Vec<S>> {
@@ -86,10 +86,6 @@ pub struct KontEmitItem<V, S> where V: DerefMut<Target = Vec<S>> {
 pub struct KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     merger_next: MergerKontEmitItemNext<V, S>,
     inner: Inner<V, S>,
-}
-
-pub struct KontFinished<V> {
-    pub sources: V,
 }
 
 #[derive(Debug)]
@@ -154,13 +150,7 @@ type MergerKontAwaitScheduledNext<V, S> = merger::KontAwaitScheduledNext<V, S>;
 type MergerKontEmitDeprecatedNext<V, S> = merger::KontEmitDeprecatedNext<V, S>;
 type MergerKontEmitItemNext<V, S> = merger::KontEmitItemNext<V, S>;
 
-pub struct RangesMergeCpsInit<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
-    sources: V,
-    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
-}
-
-impl<V, S> RangesMergeCpsInit<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
+impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
     pub fn new(
         sources: V,
         kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
@@ -168,33 +158,20 @@ impl<V, S> RangesMergeCpsInit<V, S> where V: DerefMut<Target = Vec<S>>, S: Deref
     )
         -> Self
     {
-        Self { sources, kv_pool, block_entry_steps_pool, }
-    }
+        let sources_count = sources.len();
+        let merger = merger::ItersMergerCps::new(sources);
 
-    pub fn decompose(self) -> V {
-        self.sources
-    }
-}
-
-impl<V, S> From<RangesMergeCpsInit<V, S>> for RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
-    fn from(init: RangesMergeCpsInit<V, S>) -> RangesMergeCps<V, S> {
-        let sources_count = init.sources.len();
-        let merger = merger::ItersMergerCps::new(init.sources);
-
-        RangesMergeCps {
+        Self {
             inner: Inner {
                 state: State::MergerStep {
                     merger_kont: merger.step(),
                 },
                 await_iters: Vec::with_capacity(sources_count),
-                kv_pool: init.kv_pool,
-                block_entry_steps_pool: init.block_entry_steps_pool,
+                kv_pool,
+                block_entry_steps_pool,
             },
         }
     }
-}
-
-impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
 
     pub fn step(mut self) -> Result<Kont<V, S>, Error> {
         loop {
@@ -231,9 +208,9 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                 },
                             }));
                         },
-                        merger::Kont::Finished(merger::KontFinished { iters, }) => {
+                        merger::Kont::Finished => {
                             assert!(self.inner.await_iters.is_empty());
-                            return Ok(Kont::Finished(KontFinished { sources: iters, }));
+                            return Ok(Kont::Finished);
                         },
                     },
 

@@ -47,7 +47,7 @@ pub struct Args<J> where J: edeltraud::Job {
 }
 
 pub struct Done {
-    pub lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
+    pub lookup_range_token: performer::LookupRangeToken,
 }
 
 #[derive(Debug)]
@@ -201,7 +201,7 @@ where J: edeltraud::Job + From<job::Job>,
 
     enum ActiveItem {
         ReadyToSend {
-            item: kv::KeyValuePair<kv::Value>,
+            item: KeyValueStreamItem,
         },
         PendingValueLoad,
     }
@@ -227,7 +227,7 @@ where J: edeltraud::Job + From<job::Job>,
             if let Err(_send_error) = reply_tx.send(LookupRange { key_values_rx, }) {
                 log::warn!("client canceled lookup_range request");
                 return Ok(Done {
-                    lookup_range_sources: ranges_merger.source.decompose(),
+                    lookup_range_token: ranges_merger.token,
                 });
             }
             TxState::Idle(TxStateIdle::Stream { key_values_tx, })
@@ -237,7 +237,7 @@ where J: edeltraud::Job + From<job::Job>,
     enum MergerState {
         Ready { job_args: JobArgs, },
         InProgress,
-        Finished { lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>, },
+        Finished,
     }
 
     let mut merger_state = MergerState::Ready {
@@ -257,8 +257,8 @@ where J: edeltraud::Job + From<job::Job>,
     loop {
         if let TxState::Idle(..) = &tx_state {
             if let None = &maybe_active_item {
-                if let MergerState::Finished { lookup_range_sources } = merger_state {
-                    return Ok(Done { lookup_range_sources, });
+                if let MergerState::Finished = merger_state {
+                    return Ok(Done { lookup_range_token: ranges_merger.token, });
                 }
             }
         }
@@ -298,7 +298,13 @@ where J: edeltraud::Job + From<job::Job>,
                     Some(ActiveItem::ReadyToSend { item, }) =>
                         match tx_state_idle {
                             TxStateIdle::Oneshot { maybe_reply_tx: Some(reply_tx), } => {
-                                if let Err(_send_error) = reply_tx.send(Some(item.value_cell)) {
+                                let maybe_value = match item {
+                                    KeyValueStreamItem::KeyValue(kv::KeyValuePair { value_cell, .. }) =>
+                                        Some(value_cell),
+                                    KeyValueStreamItem::NoMore =>
+                                        None,
+                                };
+                                if let Err(_send_error) = reply_tx.send(maybe_value) {
                                     log::warn!("client canceled lookup request");
                                 }
                                 tx_state = TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: None, });
@@ -306,7 +312,7 @@ where J: edeltraud::Job + From<job::Job>,
                             TxStateIdle::Oneshot { maybe_reply_tx: None, } =>
                                 panic!("something went wrong: another item arrived for single lookup"),
                             TxStateIdle::Stream { key_values_tx, } => {
-                                tasks.push(Task::TxItem { item: KeyValueStreamItem::KeyValue(item), key_values_tx, }.run());
+                                tasks.push(Task::TxItem { item, key_values_tx, }.run());
                                 tx_state = TxState::Sending;
                             },
                         },
@@ -347,11 +353,27 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     } =>
                         maybe_active_item = Some(ActiveItem::ReadyToSend {
-                            item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Value(value), }, },
+                            item: KeyValueStreamItem::KeyValue(
+                                kv::KeyValuePair {
+                                    key,
+                                    value_cell: kv::ValueCell {
+                                        version,
+                                        cell: kv::Cell::Value(value),
+                                    },
+                                },
+                            ),
                         }),
                     kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, } =>
                         maybe_active_item = Some(ActiveItem::ReadyToSend {
-                            item: kv::KeyValuePair { key, value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, }, },
+                            item: KeyValueStreamItem::KeyValue(
+                                kv::KeyValuePair {
+                                    key,
+                                    value_cell: kv::ValueCell {
+                                        version,
+                                        cell: kv::Cell::Tombstone,
+                                    },
+                                },
+                            ),
                         }),
                     kv::KeyValuePair {
                         key,
@@ -375,12 +397,18 @@ where J: edeltraud::Job + From<job::Job>,
                 };
             },
 
-            TaskOutput::Job(JobDone::Finished { lookup_range_sources, }) => {
+            TaskOutput::Job(JobDone::Finished) => {
                 assert!(incoming.is_empty());
                 merger_state = match merger_state {
                     MergerState::InProgress =>
-                        MergerState::Finished { lookup_range_sources, },
+                        MergerState::Finished,
                     MergerState::Ready { .. } | MergerState::Finished { .. } =>
+                        unreachable!(),
+                };
+                maybe_active_item = match maybe_active_item {
+                    None =>
+                        Some(ActiveItem::ReadyToSend { item: KeyValueStreamItem::NoMore, }),
+                    _ =>
                         unreachable!(),
                 };
             },
@@ -388,7 +416,7 @@ where J: edeltraud::Job + From<job::Job>,
             TaskOutput::ValueLoad { kv_pair, } =>
                 maybe_active_item = match maybe_active_item {
                     Some(ActiveItem::PendingValueLoad) =>
-                        Some(ActiveItem::ReadyToSend { item: kv_pair, }),
+                        Some(ActiveItem::ReadyToSend { item: KeyValueStreamItem::KeyValue(kv_pair), }),
                     _ =>
                         unreachable!(),
                 },
@@ -404,10 +432,8 @@ where J: edeltraud::Job + From<job::Job>,
                         unreachable!(),
                 },
 
-            TaskOutput::TxDropped => {
-
-                todo!();
-            },
+            TaskOutput::TxDropped =>
+                return Ok(Done { lookup_range_token: ranges_merger.token, }),
 
         }
     }
@@ -461,7 +487,7 @@ struct RetrieveBlockTask {
 
 pub enum Kont {
     Start {
-        merger: search_ranges_merge::RangesMergeCpsInit<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        merger: search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
     ProceedAwaitBlocks {
         next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
@@ -481,9 +507,7 @@ pub enum JobDone {
         env: Env,
         next: search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
-    Finished {
-        lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
-    },
+    Finished,
 }
 
 pub type Output = Result<JobDone, Error>;
@@ -529,10 +553,10 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 ) => {
                     return Ok(JobDone::ItemArrived { item, env, next, });
                 },
-                search_ranges_merge::Kont::Finished(search_ranges_merge::KontFinished { sources, }) => {
+                search_ranges_merge::Kont::Finished => {
                     assert!(env.outgoing.is_empty());
                     assert!(env.incoming.is_empty());
-                    return Ok(JobDone::Finished { lookup_range_sources: sources, });
+                    return Ok(JobDone::Finished);
                 },
             }
         }

@@ -7,7 +7,6 @@ use crate::{
     core::{
         search_ranges_merge::{
             RangesMergeCps,
-            RangesMergeCpsInit,
             Source,
             SourceButcher,
             SourceSearchTree,
@@ -16,7 +15,6 @@ use crate::{
             KontAwaitBlocks,
             KontEmitDeprecated,
             KontEmitItem,
-            KontFinished,
         },
         tests::{
             to_bytes,
@@ -55,12 +53,10 @@ fn basic() {
     let block_entry_steps_pool = pool::Pool::new();
     let mut sources = vec![source_a, source_b];
     let ranges_merge =
-        RangesMergeCps::from(
-            RangesMergeCpsInit::new(
-                &mut sources,
-                kv_pool,
-                block_entry_steps_pool,
-            ),
+        RangesMergeCps::new(
+            &mut sources,
+            kv_pool,
+            block_entry_steps_pool,
         );
 
     let mut found_items = Vec::new();
@@ -87,9 +83,8 @@ fn basic() {
                 found_items.push(kinda_parse_item(item));
                 ranges_merge_kont = next.proceed().unwrap();
             },
-            Kont::Finished(KontFinished { sources, }) => {
+            Kont::Finished => {
                 assert!(await_blocks.is_empty());
-                assert_eq!(sources.len(), 2);
                 break;
             },
         }

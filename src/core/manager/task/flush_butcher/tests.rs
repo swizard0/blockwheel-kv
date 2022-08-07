@@ -24,11 +24,11 @@ use crate::{
         manager::{
             task::{
                 flush_butcher::{
-                    WheelRef,
-                    WheelsPid,
-                    BlockwheelPid,
                     inner_run,
                 },
+                WheelRef,
+                WheelsPid,
+                BlockwheelPid,
             },
         },
         search_tree_builder,
@@ -146,11 +146,14 @@ fn basic_make_wheels_pid() -> WheelsPid {
         block_id
     };
 
+    let read_fn = |_block_id| panic!("unimplemented on purpose");
+
     let blockwheel_filename: wheels::WheelFilename =
         to_bytes(BLOCKWHEEL_FILENAME).into();
-    let blockwheel_pid = BlockwheelPid::Custom(
-        Arc::new(Mutex::new(write_fn)),
-    );
+    let blockwheel_pid = BlockwheelPid::Custom {
+        write_block: Arc::new(Mutex::new(write_fn)),
+        read_block: Arc::new(Mutex::new(read_fn)),
+    };
 
     let acquire_fn = move || {
         WheelRef {
@@ -159,9 +162,12 @@ fn basic_make_wheels_pid() -> WheelsPid {
         }
     };
 
-    WheelsPid::Custom(
-        Arc::new(Mutex::new(acquire_fn))
-    )
+    let get_fn = |_filename| panic!("unimplemented on purpose");
+
+    WheelsPid::Custom {
+        acquire: Arc::new(Mutex::new(acquire_fn)),
+        get: Arc::new(Mutex::new(get_fn)),
+    }
 }
 
 fn external_value_make_wheels_pid() -> WheelsPid {
@@ -193,11 +199,14 @@ fn external_value_make_wheels_pid() -> WheelsPid {
         block_id
     };
 
+    let read_fn = |_block_id| panic!("unimplemented on purpose");
+
     let blockwheel_filename: wheels::WheelFilename =
         to_bytes(BLOCKWHEEL_FILENAME).into();
-    let blockwheel_pid = BlockwheelPid::Custom(
-        Arc::new(Mutex::new(write_fn)),
-    );
+    let blockwheel_pid = BlockwheelPid::Custom {
+        write_block: Arc::new(Mutex::new(write_fn)),
+        read_block: Arc::new(Mutex::new(read_fn)),
+    };
 
     let acquire_fn = move || {
         WheelRef {
@@ -206,9 +215,12 @@ fn external_value_make_wheels_pid() -> WheelsPid {
         }
     };
 
-    WheelsPid::Custom(
-        Arc::new(Mutex::new(acquire_fn))
-    )
+    let get_fn = |_filename| panic!("unimplemented on purpose");
+
+    WheelsPid::Custom {
+        acquire: Arc::new(Mutex::new(acquire_fn)),
+        get: Arc::new(Mutex::new(get_fn)),
+    }
 }
 
 fn deserialize_block_entries(block_bytes: &Bytes) -> Vec<(String, Option<String>, u64)> {

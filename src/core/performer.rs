@@ -113,12 +113,16 @@ pub struct KontLookupRangeMergerReadyNext<C> where C: Context {
 }
 
 pub struct LookupRangesMerger {
-    pub source: search_ranges_merge::RangesMergeCpsInit<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub token: LookupRangeToken,
+}
+
+pub struct LookupRangeToken {
+    search_trees_ids: Vec<u64>,
 }
 
 pub struct LookupRangeSource {
     pub source: search_ranges_merge::Source,
-    pub search_tree_id: Option<u64>,
 }
 
 struct Inner<C> where C: Context {
@@ -140,7 +144,6 @@ pub struct SearchForest {
     search_trees_decay: HashMap<u64, SearchTreeConstructed>,
     accesses_count: usize,
 }
-
 
 impl<C> Performer<C> where C: Context {
     pub fn new(
@@ -231,6 +234,8 @@ impl<C> Inner<C> where C: Context {
         let mut sources = self.sources_pool.lend(Vec::new);
         sources.clear();
 
+        let mut search_trees_ids = Vec::new();
+
         let butcher_source = LookupRangeSource {
             source: search_ranges_merge::Source::Butcher(
                 search_ranges_merge::SourceButcher::from_active_memcache(
@@ -239,7 +244,6 @@ impl<C> Inner<C> where C: Context {
                     &self.kv_pool,
                 ),
             ),
-            search_tree_id: None,
         };
         sources.push(butcher_source);
 
@@ -254,11 +258,11 @@ impl<C> Inner<C> where C: Context {
                                 frozen_memcache.clone(),
                             ),
                         ),
-                        search_tree_id: None,
                     },
                 SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
                     *accesses_count += 1;
                     total_accesses_count += 1;
+                    search_trees_ids.push(*search_tree_id);
                     LookupRangeSource {
                         source: search_ranges_merge::Source::SearchTree(
                             search_ranges_merge::SourceSearchTree::new(
@@ -266,7 +270,6 @@ impl<C> Inner<C> where C: Context {
                                 root_block.clone(),
                             ),
                         ),
-                        search_tree_id: Some(*search_tree_id),
                     }
                 },
             };
@@ -275,44 +278,47 @@ impl<C> Inner<C> where C: Context {
         self.forest.accesses_count += total_accesses_count;
         sources.shrink_to_fit();
 
-        let source = search_ranges_merge::RangesMergeCpsInit::new(
+        let source = search_ranges_merge::RangesMergeCps::new(
             sources,
             self.kv_pool.clone(),
             self.block_entry_steps_pool.clone(),
         );
 
-        LookupRangesMerger { source, }
+        LookupRangesMerger {
+            source,
+            token: LookupRangeToken {
+                search_trees_ids,
+            },
+        }
     }
 
-    fn commit_lookup_range(&mut self, mut lookup_range_sources: Unique<Vec<LookupRangeSource>>) {
-        for LookupRangeSource { search_tree_id, .. } in lookup_range_sources.drain(..) {
-            if let Some(search_tree_id) = search_tree_id {
-                match self.forest.search_trees.get_mut(&search_tree_id) {
-                    Some(SearchTree::Bootstrap(..)) =>
-                        unreachable!(),
-                    Some(SearchTree::Constructed(search_tree)) => {
-                        assert!(search_tree.accesses_count > 0);
-                        search_tree.accesses_count -= 1;
-                        assert!(self.forest.accesses_count > 0);
-                        self.forest.accesses_count -= 1;
-                    },
-                    None => {
-                        // search tree has been scheduled to decay
-                        match self.forest.search_trees_decay.entry(search_tree_id) {
-                            hash_map::Entry::Vacant(..) =>
-                                unreachable!(),
-                            hash_map::Entry::Occupied(mut oe) => {
-                                let search_tree = oe.get_mut();
-                                assert!(search_tree.accesses_count > 0);
-                                search_tree.accesses_count -= 1;
-                                assert!(self.forest.accesses_count > 0);
-                                self.forest.accesses_count -= 1;
+    fn commit_lookup_range(&mut self, lookup_range_token: LookupRangeToken) {
+        for search_tree_id in lookup_range_token.search_trees_ids {
+            match self.forest.search_trees.get_mut(&search_tree_id) {
+                Some(SearchTree::Bootstrap(..)) =>
+                    unreachable!(),
+                Some(SearchTree::Constructed(search_tree)) => {
+                    assert!(search_tree.accesses_count > 0);
+                    search_tree.accesses_count -= 1;
+                    assert!(self.forest.accesses_count > 0);
+                    self.forest.accesses_count -= 1;
+                },
+                None => {
+                    // search tree has been scheduled to decay
+                    match self.forest.search_trees_decay.entry(search_tree_id) {
+                        hash_map::Entry::Vacant(..) =>
+                            unreachable!(),
+                        hash_map::Entry::Occupied(mut oe) => {
+                            let search_tree = oe.get_mut();
+                            assert!(search_tree.accesses_count > 0);
+                            search_tree.accesses_count -= 1;
+                            assert!(self.forest.accesses_count > 0);
+                            self.forest.accesses_count -= 1;
 
-                                todo!();
-                            },
-                        }
-                    },
-                }
+                            todo!();
+                        },
+                    }
+                },
             }
         }
     }
@@ -349,8 +355,8 @@ impl<C> KontPollNext<C> where C: Context {
         })
     }
 
-    pub fn commit_lookup_range(mut self, lookup_range_sources: Unique<Vec<LookupRangeSource>>) -> Kont<C> {
-        self.inner.commit_lookup_range(lookup_range_sources);
+    pub fn commit_lookup_range(mut self, lookup_range_token: LookupRangeToken) -> Kont<C> {
+        self.inner.commit_lookup_range(lookup_range_token);
 
         todo!();
     }
