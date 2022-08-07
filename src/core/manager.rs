@@ -667,6 +667,7 @@ where J: edeltraud::Job + From<job::Job>,
                         task::lookup_range_merge::Args {
                             ranges_merger,
                             lookup_context,
+                            wheels_pid: state.wheels_pid.clone(),
                             thread_pool: state.thread_pool.clone(),
                             iter_send_buffer: state.params.iter_send_buffer,
                         },

@@ -32,14 +32,19 @@ use alloc_pool::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel;
-
 use crate::{
     kv,
     job,
     wheels,
     storage,
     core::{
+        manager::{
+            task::{
+                BlockwheelPid,
+                WheelsPid,
+                WheelRef,
+            },
+        },
         search_tree_builder,
         MemCache,
         BlockRef,
@@ -50,9 +55,6 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-use std::sync::Mutex;
 
 pub struct Args<J> where J: edeltraud::Job {
     pub search_tree_id: u64,
@@ -75,29 +77,10 @@ pub enum Error {
     WheelsGone,
     WheelsEmpty,
     ThreadPoolGone,
-    WriteBlock(blockwheel::WriteBlockError),
+    WriteBlock(ero_blockwheel_fs::WriteBlockError),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),
     SerializeValueBlockStorage(storage::Error),
-}
-
-struct WheelRef {
-    blockwheel_filename: wheels::WheelFilename,
-    blockwheel_pid: BlockwheelPid,
-}
-
-#[derive(Clone)]
-enum BlockwheelPid {
-    Regular(blockwheel::Pid),
-    #[cfg(test)]
-    Custom(Arc<Mutex<dyn FnMut(Bytes) -> blockwheel::block::Id + Send + 'static>>),
-}
-
-#[derive(Clone)]
-enum WheelsPid {
-    Regular(wheels::Pid),
-    #[cfg(test)]
-    Custom(Arc<Mutex<dyn FnMut() -> WheelRef + Send + 'static>>),
 }
 
 pub async fn run<J>(
@@ -599,42 +582,6 @@ fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderNext) -> Output
                     return Ok(JobDone::Finished { root_block, });
                 },
             }
-        }
-    }
-}
-
-impl BlockwheelPid {
-    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel::block::Id, blockwheel::WriteBlockError> {
-        match self {
-            BlockwheelPid::Regular(blockwheel_pid) =>
-                blockwheel_pid.write_block(block_bytes).await,
-            #[cfg(test)]
-            BlockwheelPid::Custom(custom_write_fn) => {
-                let mut fn_lock = custom_write_fn.lock().unwrap();
-                Ok(fn_lock(block_bytes))
-            },
-        }
-    }
-}
-
-impl WheelsPid {
-    async fn acquire(&mut self) -> Result<Option<WheelRef>, ero::NoProcError> {
-        match self {
-            WheelsPid::Regular(wheels_pid) =>
-                match wheels_pid.acquire().await? {
-                    None =>
-                        Ok(None),
-                    Some(wheel_ref) =>
-                        Ok(Some(WheelRef {
-                            blockwheel_filename: wheel_ref.blockwheel_filename,
-                            blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
-                        })),
-                },
-            #[cfg(test)]
-            WheelsPid::Custom(custom_acquire_fn) => {
-                let mut fn_lock = custom_acquire_fn.lock().unwrap();
-                Ok(Some(fn_lock()))
-            },
         }
     }
 }
