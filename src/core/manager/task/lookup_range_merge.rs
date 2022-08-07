@@ -1,8 +1,5 @@
 use std::{
     mem,
-    collections::{
-        VecDeque,
-    },
 };
 
 use futures::{
@@ -13,13 +10,6 @@ use futures::{
         FuturesUnordered,
     },
     StreamExt,
-};
-
-use o1::{
-    set::{
-        Set,
-        Ref,
-    },
 };
 
 use alloc_pool::{
@@ -37,7 +27,6 @@ use crate::{
     core::{
         manager::{
             task::{
-                BlockwheelPid,
                 WheelsPid,
             },
         },
@@ -119,11 +108,22 @@ where J: edeltraud::Job + From<job::Job>,
             wheels_pid: WheelsPid,
             block_ref: BlockRef,
         },
+        BlockLoad {
+            async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+            wheels_pid: WheelsPid,
+            block_ref: BlockRef,
+        },
     }
 
     enum TaskOutput {
         Job(JobDone),
-        ValueLoad { kv_pair: kv::KeyValuePair<kv::Value>, },
+        ValueLoad {
+            kv_pair: kv::KeyValuePair<kv::Value>,
+        },
+        BlockLoad {
+            async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+            block_bytes: Bytes,
+        },
     }
 
     impl<J> Task<J>
@@ -165,6 +165,20 @@ where J: edeltraud::Job + From<job::Job>,
                             },
                         },
                     })
+                },
+                Task::BlockLoad { async_token, mut wheels_pid, block_ref, } => {
+                    let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
+                        .map_err(|ero::NoProcError| Error::WheelsGone)?
+                        .ok_or_else(|| Error::WheelNotFound {
+                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                        })?;
+                    let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
+                        Ok(block_bytes) =>
+                            block_bytes,
+                        Err(error) =>
+                            return Err(Error::ReadBlock(error)),
+                    };
+                    Ok(TaskOutput::BlockLoad { async_token, block_bytes, })
                 },
             }
         }
@@ -225,6 +239,17 @@ where J: edeltraud::Job + From<job::Job>,
     let mut incoming = Incoming::default();
 
     loop {
+        match &tx_state {
+            TxState::Sending =>
+                (),
+            TxState::Oneshot { .. } | TxState::Stream { .. } =>
+                if let None = &maybe_active_item {
+                    if let MergerState::Finished { lookup_range_sources } = merger_state {
+                        return Ok(Done { lookup_range_sources, });
+                    }
+                },
+        }
+
         enum MergerAction<A, S> {
             Run(A),
             KeepState(S),
@@ -255,8 +280,19 @@ where J: edeltraud::Job + From<job::Job>,
         match tasks.next().await.unwrap()? {
 
             TaskOutput::Job(JobDone::AwaitRetrieveBlockTasks { mut env, next, }) => {
-
-                todo!();
+                for RetrieveBlockTask { block_ref, async_token, } in env.outgoing.retrieve_block_tasks.drain(..) {
+                    let wheels_pid = wheels_pid.clone();
+                    tasks.push(Task::BlockLoad { async_token, wheels_pid, block_ref, }.run());
+                }
+                let next_merger_state = MergerState::Ready {
+                    job_args: JobArgs { env, kont: Kont::ProceedAwaitBlocks { next, }, },
+                };
+                match mem::replace(&mut merger_state, next_merger_state) {
+                    MergerState::InProgress =>
+                        (),
+                    MergerState::Ready { .. } | MergerState::Finished { .. } =>
+                        unreachable!(),
+                }
             },
 
             TaskOutput::Job(JobDone::ItemArrived { item, env, next, }) => {
@@ -288,11 +324,25 @@ where J: edeltraud::Job + From<job::Job>,
                         maybe_active_item = Some(ActiveItem::PendingValueLoad);
                     },
                 }
+                let next_merger_state = MergerState::Ready {
+                    job_args: JobArgs { env, kont: Kont::ProceedItem { next, }, },
+                };
+                match mem::replace(&mut merger_state, next_merger_state) {
+                    MergerState::InProgress =>
+                        (),
+                    MergerState::Ready { .. } | MergerState::Finished { .. } =>
+                        unreachable!(),
+                }
             },
 
             TaskOutput::Job(JobDone::Finished { lookup_range_sources, }) => {
                 assert!(incoming.is_empty());
-                return Ok(Done { lookup_range_sources, });
+                match mem::replace(&mut merger_state, MergerState::Finished { lookup_range_sources, }) {
+                    MergerState::InProgress =>
+                        (),
+                    MergerState::Ready { .. } | MergerState::Finished { .. } =>
+                        unreachable!(),
+                }
             },
 
             TaskOutput::ValueLoad { kv_pair, } =>
@@ -302,6 +352,10 @@ where J: edeltraud::Job + From<job::Job>,
                     _ =>
                         unreachable!(),
                 },
+
+            TaskOutput::BlockLoad { async_token, block_bytes, } =>
+                incoming.received_block_tasks.push(ReceivedBlockTask { async_token, block_bytes, }),
+
         }
     }
 }
@@ -359,6 +413,9 @@ pub enum Kont {
     ProceedAwaitBlocks {
         next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
+    ProceedItem {
+        next: search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+    },
 }
 
 pub enum JobDone {
@@ -393,6 +450,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 } else {
                     return Ok(JobDone::AwaitRetrieveBlockTasks { env, next, });
                 },
+            Kont::ProceedItem { next, } =>
+                next.proceed().map_err(Error::SearchRangesMerge)?,
         };
 
         loop {

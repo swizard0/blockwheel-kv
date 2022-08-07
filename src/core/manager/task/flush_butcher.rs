@@ -40,7 +40,6 @@ use crate::{
     core::{
         manager::{
             task::{
-                BlockwheelPid,
                 WheelsPid,
                 WheelRef,
             },
