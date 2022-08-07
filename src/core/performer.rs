@@ -1,6 +1,5 @@
 use std::{
     mem,
-    iter,
     ops::{
         Deref,
         DerefMut,
@@ -114,7 +113,7 @@ pub struct KontLookupRangeMergerReadyNext<C> where C: Context {
 }
 
 pub struct LookupRangesMerger {
-    pub source: search_ranges_merge::RangesMergeCps<LookupRangeSource>,
+    pub source: search_ranges_merge::RangesMergeCpsInit<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
 }
 
 pub struct LookupRangeSource {
@@ -229,6 +228,9 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn make_lookup_ranges_merger(&mut self, search_range: SearchRangeBounds) -> LookupRangesMerger {
+        let mut sources = self.sources_pool.lend(Vec::new);
+        sources.clear();
+
         let butcher_source = LookupRangeSource {
             source: search_ranges_merge::Source::Butcher(
                 search_ranges_merge::SourceButcher::from_active_memcache(
@@ -239,44 +241,45 @@ impl<C> Inner<C> where C: Context {
             ),
             search_tree_id: None,
         };
+        sources.push(butcher_source);
+
         let mut total_accesses_count = 0;
-        let forest_iter = self.forest.search_trees
-            .iter_mut()
-            .map(|(search_tree_id, search_tree)|  {
-                match search_tree {
-                    SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
-                        LookupRangeSource {
-                            source: search_ranges_merge::Source::Butcher(
-                                search_ranges_merge::SourceButcher::new(
-                                    search_range.clone(),
-                                    frozen_memcache.clone(),
-                                ),
+        for (search_tree_id, search_tree) in &mut self.forest.search_trees {
+            let source = match search_tree {
+                SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
+                    LookupRangeSource {
+                        source: search_ranges_merge::Source::Butcher(
+                            search_ranges_merge::SourceButcher::new(
+                                search_range.clone(),
+                                frozen_memcache.clone(),
                             ),
-                            search_tree_id: None,
-                        },
-                    SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
-                        *accesses_count += 1;
-                        total_accesses_count += 1;
-                        LookupRangeSource {
-                            source: search_ranges_merge::Source::SearchTree(
-                                search_ranges_merge::SourceSearchTree::new(
-                                    search_range.clone(),
-                                    root_block.clone(),
-                                ),
-                            ),
-                            search_tree_id: Some(*search_tree_id),
-                        }
+                        ),
+                        search_tree_id: None,
                     },
-                }
-            });
-        let source = search_ranges_merge::RangesMergeCps::new(
-            iter::once(butcher_source)
-                .chain(forest_iter),
-            &self.sources_pool,
+                SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
+                    *accesses_count += 1;
+                    total_accesses_count += 1;
+                    LookupRangeSource {
+                        source: search_ranges_merge::Source::SearchTree(
+                            search_ranges_merge::SourceSearchTree::new(
+                                search_range.clone(),
+                                root_block.clone(),
+                            ),
+                        ),
+                        search_tree_id: Some(*search_tree_id),
+                    }
+                },
+            };
+            sources.push(source);
+        }
+        self.forest.accesses_count += total_accesses_count;
+        sources.shrink_to_fit();
+
+        let source = search_ranges_merge::RangesMergeCpsInit::new(
+            sources,
             self.kv_pool.clone(),
             self.block_entry_steps_pool.clone(),
         );
-        self.forest.accesses_count += total_accesses_count;
 
         LookupRangesMerger { source, }
     }

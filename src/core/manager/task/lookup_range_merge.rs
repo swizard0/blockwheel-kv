@@ -94,7 +94,7 @@ where J: edeltraud::Job + From<job::Job>,
             if let Err(_send_error) = reply_tx.send(LookupRange { key_values_rx, }) {
                 log::warn!("client canceled lookup_range request");
                 return Ok(Done {
-                    lookup_range_sources: todo!(), // ranges_merger.source
+                    lookup_range_sources: ranges_merger.source.decompose(),
                 });
             }
             LookupContext::Stream { key_values_tx, }
@@ -243,22 +243,22 @@ struct RetrieveBlockTask {
 
 pub enum Kont {
     Start {
-        merger: search_ranges_merge::RangesMergeCps<performer::LookupRangeSource>,
+        merger: search_ranges_merge::RangesMergeCpsInit<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
     ProceedAwaitBlocks {
-        next: search_ranges_merge::KontAwaitBlocksNext<performer::LookupRangeSource>,
+        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
 }
 
 pub enum JobDone {
     AwaitRetrieveBlockTasks {
         env: Env,
-        next: search_ranges_merge::KontAwaitBlocksNext<performer::LookupRangeSource>,
+        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
     ItemArrived {
         item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
         env: Env,
-        next: search_ranges_merge::KontEmitItemNext<performer::LookupRangeSource>,
+        next: search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
     },
     Finished {
         lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
@@ -268,11 +268,13 @@ pub enum JobDone {
 pub type Output = Result<JobDone, Error>;
 
 pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
-
     loop {
         let mut merger_kont = match kont {
-            Kont::Start { merger, } =>
-                merger.step().map_err(Error::SearchRangesMerge)?,
+            Kont::Start { merger, } => {
+                search_ranges_merge::RangesMergeCps::from(merger)
+                    .step()
+                    .map_err(Error::SearchRangesMerge)?
+            },
             Kont::ProceedAwaitBlocks { next, } =>
                 if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
                     next.block_arrived(async_token, block_bytes)

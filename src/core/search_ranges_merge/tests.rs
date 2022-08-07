@@ -7,6 +7,7 @@ use crate::{
     core::{
         search_ranges_merge::{
             RangesMergeCps,
+            RangesMergeCpsInit,
             Source,
             SourceButcher,
             SourceSearchTree,
@@ -50,15 +51,17 @@ fn basic() {
         frozen_memcache,
     ));
 
-    let sources_pool = pool::Pool::new();
     let kv_pool = pool::Pool::new();
     let block_entry_steps_pool = pool::Pool::new();
-    let ranges_merge = RangesMergeCps::new(
-        vec![source_a, source_b],
-        &sources_pool,
-        kv_pool,
-        block_entry_steps_pool,
-    );
+    let mut sources = vec![source_a, source_b];
+    let ranges_merge =
+        RangesMergeCps::from(
+            RangesMergeCpsInit::new(
+                &mut sources,
+                kv_pool,
+                block_entry_steps_pool,
+            ),
+        );
 
     let mut found_items = Vec::new();
     let mut found_deprecated = Vec::new();
