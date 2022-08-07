@@ -1,7 +1,3 @@
-use std::{
-    mem,
-};
-
 use futures::{
     channel::{
         mpsc,
@@ -9,6 +5,7 @@ use futures::{
     stream::{
         FuturesUnordered,
     },
+    SinkExt,
     StreamExt,
 };
 
@@ -38,6 +35,7 @@ use crate::{
         RequestLookupKindRange,
     },
     LookupRange,
+    KeyValueStreamItem,
 };
 
 pub struct Args<J> where J: edeltraud::Job {
@@ -113,6 +111,10 @@ where J: edeltraud::Job + From<job::Job>,
             wheels_pid: WheelsPid,
             block_ref: BlockRef,
         },
+        TxItem {
+            item: KeyValueStreamItem,
+            key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+        },
     }
 
     enum TaskOutput {
@@ -124,6 +126,10 @@ where J: edeltraud::Job + From<job::Job>,
             async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
             block_bytes: Bytes,
         },
+        TxItemSent {
+            key_values_tx: mpsc::Sender<KeyValueStreamItem>,
+        },
+        TxDropped,
     }
 
     impl<J> Task<J>
@@ -180,6 +186,13 @@ where J: edeltraud::Job + From<job::Job>,
                     };
                     Ok(TaskOutput::BlockLoad { async_token, block_bytes, })
                 },
+                Task::TxItem { item, mut key_values_tx, } =>
+                    if let Err(_send_error) = key_values_tx.send(item).await {
+                        log::debug!("client dropped iterator in TxItem task");
+                        Ok(TaskOutput::TxDropped)
+                    } else {
+                        Ok(TaskOutput::TxItemSent { key_values_tx, })
+                    },
             }
         }
     }
@@ -191,20 +204,23 @@ where J: edeltraud::Job + From<job::Job>,
             item: kv::KeyValuePair<kv::Value>,
         },
         PendingValueLoad,
-        Finish,
     }
 
     let mut maybe_active_item: Option<ActiveItem> = None;
 
     enum TxState<O, S> {
-        Oneshot { reply_tx: O, },
-        Stream { key_values_tx: S, },
+        Idle(TxStateIdle<O, S>),
         Sending,
+    }
+
+    enum TxStateIdle<O, S> {
+        Oneshot { maybe_reply_tx: Option<O>, },
+        Stream { key_values_tx: S, },
     }
 
     let mut tx_state = match lookup_context {
         RequestLookupKind::Single(RequestLookupKindSingle { reply_tx, }) =>
-            TxState::Oneshot { reply_tx, },
+            TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: Some(reply_tx), }),
         RequestLookupKind::Range(RequestLookupKindRange { reply_tx, }) => {
             let (key_values_tx, key_values_rx) =
                 mpsc::channel(iter_send_buffer);
@@ -214,7 +230,7 @@ where J: edeltraud::Job + From<job::Job>,
                     lookup_range_sources: ranges_merger.source.decompose(),
                 });
             }
-            TxState::Stream { key_values_tx, }
+            TxState::Idle(TxStateIdle::Stream { key_values_tx, })
         },
     };
 
@@ -239,15 +255,12 @@ where J: edeltraud::Job + From<job::Job>,
     let mut incoming = Incoming::default();
 
     loop {
-        match &tx_state {
-            TxState::Sending =>
-                (),
-            TxState::Oneshot { .. } | TxState::Stream { .. } =>
-                if let None = &maybe_active_item {
-                    if let MergerState::Finished { lookup_range_sources } = merger_state {
-                        return Ok(Done { lookup_range_sources, });
-                    }
-                },
+        if let TxState::Idle(..) = &tx_state {
+            if let None = &maybe_active_item {
+                if let MergerState::Finished { lookup_range_sources } = merger_state {
+                    return Ok(Done { lookup_range_sources, });
+                }
+            }
         }
 
         enum MergerAction<A, S> {
@@ -258,7 +271,7 @@ where J: edeltraud::Job + From<job::Job>,
         let merger_action = match merger_state {
             MergerState::Ready { job_args: job_args @ JobArgs { kont: Kont::Start { .. }, .. }, } =>
                 MergerAction::Run(job_args),
-            MergerState::Ready { job_args, } if !incoming.is_empty() || maybe_active_item.is_none() =>
+            MergerState::Ready { job_args, } if maybe_active_item.is_none() =>
                 MergerAction::Run(job_args),
             other =>
                 MergerAction::KeepState(other),
@@ -277,6 +290,35 @@ where J: edeltraud::Job + From<job::Job>,
                 state,
         };
 
+        match tx_state {
+            TxState::Idle(tx_state_idle) =>
+                match maybe_active_item.take() {
+                    None =>
+                        tx_state = TxState::Idle(tx_state_idle),
+                    Some(ActiveItem::ReadyToSend { item, }) =>
+                        match tx_state_idle {
+                            TxStateIdle::Oneshot { maybe_reply_tx: Some(reply_tx), } => {
+                                if let Err(_send_error) = reply_tx.send(Some(item.value_cell)) {
+                                    log::warn!("client canceled lookup request");
+                                }
+                                tx_state = TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: None, });
+                            },
+                            TxStateIdle::Oneshot { maybe_reply_tx: None, } =>
+                                panic!("something went wrong: another item arrived for single lookup"),
+                            TxStateIdle::Stream { key_values_tx, } => {
+                                tasks.push(Task::TxItem { item: KeyValueStreamItem::KeyValue(item), key_values_tx, }.run());
+                                tx_state = TxState::Sending;
+                            },
+                        },
+                    Some(ActiveItem::PendingValueLoad) => {
+                        tx_state = TxState::Idle(tx_state_idle);
+                        maybe_active_item = Some(ActiveItem::PendingValueLoad);
+                    },
+                },
+            TxState::Sending =>
+                tx_state = TxState::Sending,
+        }
+
         match tasks.next().await.unwrap()? {
 
             TaskOutput::Job(JobDone::AwaitRetrieveBlockTasks { mut env, next, }) => {
@@ -284,15 +326,14 @@ where J: edeltraud::Job + From<job::Job>,
                     let wheels_pid = wheels_pid.clone();
                     tasks.push(Task::BlockLoad { async_token, wheels_pid, block_ref, }.run());
                 }
-                let next_merger_state = MergerState::Ready {
-                    job_args: JobArgs { env, kont: Kont::ProceedAwaitBlocks { next, }, },
-                };
-                match mem::replace(&mut merger_state, next_merger_state) {
+                merger_state = match merger_state {
                     MergerState::InProgress =>
-                        (),
+                        MergerState::Ready {
+                            job_args: JobArgs { env, kont: Kont::ProceedAwaitBlocks { next, }, },
+                        },
                     MergerState::Ready { .. } | MergerState::Finished { .. } =>
                         unreachable!(),
-                }
+                };
             },
 
             TaskOutput::Job(JobDone::ItemArrived { item, env, next, }) => {
@@ -324,37 +365,49 @@ where J: edeltraud::Job + From<job::Job>,
                         maybe_active_item = Some(ActiveItem::PendingValueLoad);
                     },
                 }
-                let next_merger_state = MergerState::Ready {
-                    job_args: JobArgs { env, kont: Kont::ProceedItem { next, }, },
-                };
-                match mem::replace(&mut merger_state, next_merger_state) {
+                merger_state = match merger_state {
                     MergerState::InProgress =>
-                        (),
+                        MergerState::Ready {
+                            job_args: JobArgs { env, kont: Kont::ProceedItem { next, }, },
+                        },
                     MergerState::Ready { .. } | MergerState::Finished { .. } =>
                         unreachable!(),
-                }
+                };
             },
 
             TaskOutput::Job(JobDone::Finished { lookup_range_sources, }) => {
                 assert!(incoming.is_empty());
-                match mem::replace(&mut merger_state, MergerState::Finished { lookup_range_sources, }) {
+                merger_state = match merger_state {
                     MergerState::InProgress =>
-                        (),
+                        MergerState::Finished { lookup_range_sources, },
                     MergerState::Ready { .. } | MergerState::Finished { .. } =>
                         unreachable!(),
-                }
+                };
             },
 
             TaskOutput::ValueLoad { kv_pair, } =>
-                match mem::replace(&mut maybe_active_item, Some(ActiveItem::ReadyToSend { item: kv_pair, })) {
+                maybe_active_item = match maybe_active_item {
                     Some(ActiveItem::PendingValueLoad) =>
-                        (),
+                        Some(ActiveItem::ReadyToSend { item: kv_pair, }),
                     _ =>
                         unreachable!(),
                 },
 
             TaskOutput::BlockLoad { async_token, block_bytes, } =>
                 incoming.received_block_tasks.push(ReceivedBlockTask { async_token, block_bytes, }),
+
+            TaskOutput::TxItemSent { key_values_tx, } =>
+                tx_state = match tx_state {
+                    TxState::Sending =>
+                        TxState::Idle(TxStateIdle::Stream { key_values_tx, }),
+                    TxState::Idle(..) =>
+                        unreachable!(),
+                },
+
+            TaskOutput::TxDropped => {
+
+                todo!();
+            },
 
         }
     }
