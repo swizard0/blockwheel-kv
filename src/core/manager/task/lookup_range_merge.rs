@@ -13,7 +13,9 @@ use alloc_pool::{
 };
 
 use crate::{
+    kv,
     job,
+    storage,
     core::{
         performer,
         search_ranges_merge,
@@ -35,6 +37,7 @@ pub struct Done {
 #[derive(Debug)]
 pub enum Error {
     ThreadPoolGone,
+    SearchRangesMerge(search_ranges_merge::Error),
 }
 
 pub async fn run<J>(
@@ -148,6 +151,11 @@ where J: edeltraud::Job + From<job::Job>,
                 todo!();
             },
 
+            TaskOutput::Job(JobDone::ItemArrived { item, env, next, }) => {
+
+                todo!();
+            },
+
             TaskOutput::Job(JobDone::Finished { lookup_range_sources, }) => {
                 assert!(incoming.is_empty());
                 return Ok(Done { lookup_range_sources, });
@@ -169,16 +177,16 @@ pub struct Env {
 
 #[derive(Default)]
 struct Incoming {
-    receved_block_tasks: Vec<ReceivedBlockTask>,
+    received_block_tasks: Vec<ReceivedBlockTask>,
 }
 
 impl Incoming {
     fn is_empty(&self) -> bool {
-        self.receved_block_tasks.is_empty()
+        self.received_block_tasks.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
-        self.receved_block_tasks.extend(from.receved_block_tasks.drain(..));
+        self.received_block_tasks.extend(from.received_block_tasks.drain(..));
     }
 }
 
@@ -217,6 +225,11 @@ pub enum JobDone {
         env: Env,
         next: search_ranges_merge::KontAwaitBlocksNext<performer::LookupRangeSource>,
     },
+    ItemArrived {
+        item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+        env: Env,
+        next: search_ranges_merge::KontEmitItemNext<performer::LookupRangeSource>,
+    },
     Finished {
         lookup_range_sources: Unique<Vec<performer::LookupRangeSource>>,
     },
@@ -224,7 +237,49 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-pub fn job(JobArgs { env, kont, }: JobArgs) -> Output {
+pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
 
-    todo!()
+    loop {
+        let mut merger_kont = match kont {
+            Kont::Start { merger, } =>
+                merger.step().map_err(Error::SearchRangesMerge)?,
+            Kont::ProceedAwaitBlocks { next, } =>
+                if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
+                    next.block_arrived(async_token, block_bytes)
+                        .map_err(Error::SearchRangesMerge)?
+                } else {
+                    return Ok(JobDone::AwaitRetrieveBlockTasks { env, next, });
+                },
+        };
+
+        loop {
+            match merger_kont {
+                search_ranges_merge::Kont::RequireBlockAsync(
+                    search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                ) => {
+                    env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { block_ref, async_token, });
+                    merger_kont = next.scheduled()
+                        .map_err(Error::SearchRangesMerge)?;
+                },
+                search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
+                    kont = Kont::ProceedAwaitBlocks { next, };
+                    break;
+                },
+                search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+                    merger_kont = next.proceed()
+                        .map_err(Error::SearchRangesMerge)?;
+                },
+                search_ranges_merge::Kont::EmitItem(
+                    search_ranges_merge::KontEmitItem { item, next, },
+                ) => {
+                    return Ok(JobDone::ItemArrived { item, env, next, });
+                },
+                search_ranges_merge::Kont::Finished(search_ranges_merge::KontFinished { sources, }) => {
+                    assert!(env.outgoing.is_empty());
+                    assert!(env.incoming.is_empty());
+                    return Ok(JobDone::Finished { lookup_range_sources: sources, });
+                },
+            }
+        }
+    }
 }
