@@ -1,4 +1,7 @@
 use futures::{
+    channel::{
+        mpsc,
+    },
     stream::{
         FuturesUnordered,
     },
@@ -21,13 +24,17 @@ use crate::{
         search_ranges_merge,
         BlockRef,
         RequestLookupKind,
+        RequestLookupKindSingle,
+        RequestLookupKindRange,
     },
+    LookupRange,
 };
 
 pub struct Args<J> where J: edeltraud::Job {
     pub ranges_merger: performer::LookupRangesMerger,
     pub lookup_context: RequestLookupKind,
     pub thread_pool: edeltraud::Edeltraud<J>,
+    pub iter_send_buffer: usize,
 }
 
 pub struct Done {
@@ -45,6 +52,7 @@ pub async fn run<J>(
         ranges_merger,
         lookup_context,
         thread_pool,
+        iter_send_buffer,
     }: Args<J>,
 )
     -> Result<Done, Error>
@@ -56,6 +64,7 @@ where J: edeltraud::Job + From<job::Job>,
         ranges_merger,
         lookup_context,
         thread_pool,
+        iter_send_buffer,
     ).await
 }
 
@@ -63,12 +72,35 @@ async fn inner_run<J>(
     ranges_merger: performer::LookupRangesMerger,
     lookup_context: RequestLookupKind,
     thread_pool: edeltraud::Edeltraud<J>,
+    iter_send_buffer: usize,
 )
     -> Result<Done, Error>
 where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    enum LookupContext<O, S> {
+        Taken,
+        Oneshot { reply_tx: O, },
+        Stream { key_values_tx: S, },
+    }
+
+    let mut lookup_context = match lookup_context {
+        RequestLookupKind::Single(RequestLookupKindSingle { reply_tx, }) =>
+            LookupContext::Oneshot { reply_tx, },
+        RequestLookupKind::Range(RequestLookupKindRange { reply_tx, }) => {
+            let (key_values_tx, key_values_rx) =
+                mpsc::channel(iter_send_buffer);
+            if let Err(_send_error) = reply_tx.send(LookupRange { key_values_rx, }) {
+                log::warn!("client canceled lookup_range request");
+                return Ok(Done {
+                    lookup_range_sources: todo!(), // ranges_merger.source
+                });
+            }
+            LookupContext::Stream { key_values_tx, }
+        },
+    };
+
     enum Task<J> where J: edeltraud::Job + From<job::Job> {
         Job(edeltraud::Handle<J::Output>),
     }
@@ -151,10 +183,8 @@ where J: edeltraud::Job + From<job::Job>,
                 todo!();
             },
 
-            TaskOutput::Job(JobDone::ItemArrived { item, env, next, }) => {
-
-                todo!();
-            },
+            TaskOutput::Job(JobDone::ItemArrived { item, env, next, }) =>
+                todo!(),
 
             TaskOutput::Job(JobDone::Finished { lookup_range_sources, }) => {
                 assert!(incoming.is_empty());

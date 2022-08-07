@@ -84,6 +84,7 @@ pub mod task;
 pub struct Params {
     pub task_restart_sec: usize,
     pub performer_params: performer::Params,
+    pub iter_send_buffer: usize,
 }
 
 impl Default for Params {
@@ -91,6 +92,7 @@ impl Default for Params {
         Params {
             task_restart_sec: 4,
             performer_params: Default::default(),
+            iter_send_buffer: 4,
         }
     }
 }
@@ -666,6 +668,7 @@ where J: edeltraud::Job + From<job::Job>,
                             ranges_merger,
                             lookup_context,
                             thread_pool: state.thread_pool.clone(),
+                            iter_send_buffer: state.params.iter_send_buffer,
                         },
                     )));
                     tasks_count += 1;

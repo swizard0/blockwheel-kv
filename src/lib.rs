@@ -34,6 +34,7 @@ mod storage;
 pub struct Params {
     pub butcher_block_size: usize,
     pub tree_block_size: usize,
+    pub iter_send_buffer: usize,
     pub manager_task_restart_sec: usize,
     pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
@@ -45,6 +46,7 @@ impl Default for Params {
         Params {
             butcher_block_size: 128,
             tree_block_size: 32,
+            iter_send_buffer: 4,
             manager_task_restart_sec: 1,
             search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
@@ -100,6 +102,7 @@ impl GenServer {
                 remove_tasks_limit: params.search_tree_remove_tasks_limit,
                 values_inline_size_limit: params.search_tree_values_inline_size_limit,
             },
+            iter_send_buffer: params.iter_send_buffer,
         };
 
         let child_supervisor_gen_server = parent_supervisor.child_supervisor();

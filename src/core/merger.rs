@@ -613,3 +613,23 @@ mod tests {
         (output, deprecated)
     }
 }
+
+impl<V, S> Kont<V, S> where V: DerefMut<Target = Vec<S>> {
+    fn decompose(self) -> V {
+        match self {
+            Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, mut next, }) => {
+                next.env.iters.push(await_iter);
+                next.env.iters
+            },
+            Kont::AwaitScheduled(KontAwaitScheduled { next, }) =>
+                next.env.iters,
+            Kont::EmitDeprecated(KontEmitDeprecated { next, .. }) =>
+                next.env.iters,
+            Kont::EmitItem(KontEmitItem { next, .. }) =>
+                next.env.iters,
+            Kont::Finished(KontFinished { iters, }) =>
+                iters,
+
+        }
+    }
+}
