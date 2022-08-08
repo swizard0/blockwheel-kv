@@ -288,6 +288,7 @@ where J: edeltraud::Job + From<job::Job>,
                                     log::warn!("client canceled lookup request");
                                 }
                                 tx_state = TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: None, });
+                                continue;
                             },
                             TxStateIdle::Stream { key_values_tx, } => {
                                 tasks.push(Task::TxItem { item, key_values_tx, }.run());

@@ -113,9 +113,9 @@ fn stress() {
     fs::remove_file(&wheel_filename_b).ok();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
-    // next load existing wheel and repeat stress
-    counter.clear();
-    runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+    // // next load existing wheel and repeat stress
+    // counter.clear();
+    // runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
     fs::remove_file(&wheel_filename_a).ok();
     fs::remove_file(&wheel_filename_b).ok();

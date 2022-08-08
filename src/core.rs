@@ -145,15 +145,6 @@ impl DerefMut for MemCache {
     }
 }
 
-#[derive(Debug)]
-pub enum KeyValueRef {
-    Item {
-        key: kv::Key,
-        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
-    },
-    NoMore,
-}
-
 #[derive(Clone, Debug)]
 pub struct SearchRangeBounds {
     range_from: Bound<kv::Key>,

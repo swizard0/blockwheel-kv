@@ -130,7 +130,7 @@ async fn emulate_lookup(lookup: Lookup) -> Vec<(String, Option<String>, u64)> {
 
     let kv_pool = pool::Pool::new();
     let block_entry_steps_pool = pool::Pool::new();
-    let mut sources = Unique::new_detached(vec![source_a, source_b]);
+    let sources = Unique::new_detached(vec![source_a, source_b]);
     let ranges_merge =
         RangesMergeCps::new(
             sources,

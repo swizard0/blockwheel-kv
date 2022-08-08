@@ -13,9 +13,6 @@ use std::{
 use crate::{
     kv,
     storage,
-    core::{
-        KeyValueRef,
-    },
 };
 
 pub struct ItersMergerCps<V, S> {
@@ -213,22 +210,17 @@ impl<V, S> From<KontAwaitScheduledNext<V, S>> for ItersMergerCps<V, S> where V: 
 }
 
 impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
-    pub fn proceed_with_item(mut self, await_iter: S, item: KeyValueRef) -> Kont<V, S> {
+    pub fn item_arrived(mut self, await_iter: S, item: kv::KeyValuePair<storage::OwnedValueBlockRef>) -> Kont<V, S> {
         assert!(self.state_await.pending_count > 0);
-        match item {
-            KeyValueRef::NoMore => {
-                self.state_await.pending_count -= 1;
-                ItersMergerCps::from(self).step()
-            },
-            KeyValueRef::Item { key, value_cell, } => {
-                self.env.fronts.push(Front {
-                    front_item: kv::KeyValuePair { key, value_cell, },
-                    iter: await_iter,
-                });
-                self.state_await.pending_count -= 1;
-                ItersMergerCps::from(self).step()
-           },
-        }
+        self.env.fronts.push(Front { front_item: item, iter: await_iter, });
+        self.state_await.pending_count -= 1;
+        ItersMergerCps::from(self).step()
+    }
+
+    pub fn no_more(mut self) -> Kont<V, S> {
+        assert!(self.state_await.pending_count > 0);
+        self.state_await.pending_count -= 1;
+        ItersMergerCps::from(self).step()
     }
 }
 
@@ -300,7 +292,6 @@ mod tests {
     use crate::{
         kv,
         core::{
-            KeyValueRef,
             merger::{
                 Kont,
                 KontScheduleIterAwait,
@@ -334,16 +325,18 @@ mod tests {
                 },
                 Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
                     let mut await_iter = await_set.pop().unwrap();
-                    let item = if await_iter.is_empty() {
-                        KeyValueRef::NoMore
+                    if await_iter.is_empty() {
+                        next.no_more()
                     } else {
                         let byte = await_iter.remove(0);
-                        KeyValueRef::Item {
-                            key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
-                            value_cell: kv::ValueCell { version: 1, cell: kv::Cell::Tombstone, },
-                        }
-                    };
-                    next.proceed_with_item(await_iter, item)
+                        next.item_arrived(
+                            await_iter,
+                            kv::KeyValuePair {
+                                key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
+                                value_cell: kv::ValueCell { version: 1, cell: kv::Cell::Tombstone, },
+                            },
+                        )
+                    }
                 },
                 Kont::EmitDeprecated(KontEmitDeprecated { .. }) => {
                     unreachable!();
@@ -565,16 +558,18 @@ mod tests {
                 },
                 Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
                     let mut await_iter = await_set.pop().unwrap();
-                    let item = if await_iter.is_empty() {
-                        KeyValueRef::NoMore
+                    if await_iter.is_empty() {
+                        next.no_more()
                     } else {
                         let (key_u64, version) = await_iter.remove(0);
-                        KeyValueRef::Item {
-                            key: kv::Key { key_bytes: BytesMut::new_detached(key_u64.to_be_bytes().to_vec()).freeze(), },
-                            value_cell: kv::ValueCell { version: version.try_into().unwrap(), cell: kv::Cell::Tombstone, },
-                        }
-                    };
-                    next.proceed_with_item(await_iter, item)
+                        next.item_arrived(
+                            await_iter,
+                            kv::KeyValuePair {
+                                key: kv::Key { key_bytes: BytesMut::new_detached(key_u64.to_be_bytes().to_vec()).freeze(), },
+                                value_cell: kv::ValueCell { version: version.try_into().unwrap(), cell: kv::Cell::Tombstone, },
+                            },
+                        )
+                    }
                 },
                 Kont::EmitDeprecated(KontEmitDeprecated { item, next, }) => {
                     deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));

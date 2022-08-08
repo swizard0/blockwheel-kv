@@ -25,7 +25,6 @@ use crate::{
         search_tree_walker,
         MemCache,
         BlockRef,
-        KeyValueRef,
         SearchRangeBounds,
     },
 };
@@ -258,9 +257,9 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                                     kv_pairs_rev,
                                                 };
                                                 self.inner.state = State::MergerStep {
-                                                    merger_kont: merger_next.proceed_with_item(
+                                                    merger_kont: merger_next.item_arrived(
                                                         await_iter,
-                                                        KeyValueRef::Item {
+                                                        kv::KeyValuePair {
                                                             key: kv_pair.key,
                                                             value_cell: kv_pair.value_cell.into(),
                                                         },
@@ -271,10 +270,7 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                         },
                                     SourceButcherState::Done => {
                                         self.inner.state = State::MergerStep {
-                                            merger_kont: merger_next.proceed_with_item(
-                                                await_iter,
-                                                KeyValueRef::NoMore,
-                                            ),
+                                            merger_kont: merger_next.no_more(),
                                         };
                                         break;
                                     },
@@ -327,9 +323,9 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                                         .map_err(Error::SearchTreeWalker)?,
                                                 };
                                                 self.inner.state = State::MergerStep {
-                                                    merger_kont: merger_next.proceed_with_item(
+                                                    merger_kont: merger_next.item_arrived(
                                                         await_iter,
-                                                        KeyValueRef::Item {
+                                                        kv::KeyValuePair {
                                                             key: kont_item_found.item.key,
                                                             value_cell: kont_item_found.item.value_cell.into(),
                                                         },
@@ -342,10 +338,7 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                         },
                                     SourceSearchTreeState::Done => {
                                         self.inner.state = State::MergerStep {
-                                            merger_kont: merger_next.proceed_with_item(
-                                                await_iter,
-                                                KeyValueRef::NoMore,
-                                            ),
+                                            merger_kont: merger_next.no_more(),
                                         };
                                         break;
                                     },
