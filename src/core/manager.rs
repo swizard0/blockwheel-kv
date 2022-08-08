@@ -45,11 +45,6 @@ use crate::{
         performer,
         search_tree_walker,
         search_tree_builder,
-//         merger,
-//         butcher,
-//         bin_merger,
-//         search_tree,
-//         MemCache,
         Context,
         RequestInfo,
         RequestInsert,
@@ -331,55 +326,6 @@ pub enum Error {
     },
 }
 
-// struct InfoRequest {
-//     reply_tx: oneshot::Sender<Info>,
-//     pending_count: usize,
-//     info_fold: Info,
-// }
-
-// struct LookupRequest {
-//     key: kv::Key,
-//     reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
-//     butcher_status: LookupRequestButcherStatus,
-//     pending_count: usize,
-//     found_fold: Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
-// }
-
-// enum LookupRequestButcherStatus {
-//     NotReady,
-//     Done,
-//     Invalidated,
-// }
-
-// struct LookupRangeRequest {
-//     range: SearchRangeBounds,
-//     key_values_tx: mpsc::Sender<KeyValueStreamItem>,
-//     butcher_iter_items: Shared<Vec<kv::KeyValuePair<kv::Value>>>,
-//     merger_iters: Unique<Vec<merger::KeyValuesIterRx>>,
-//     pending_count: usize,
-// }
-
-// struct FlushRequest {
-//     butcher_done: bool,
-//     search_trees_pending_count: usize,
-// }
-
-// fn replace_fold_found(
-//     current: &Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
-//     incoming: &Option<kv::ValueCell<storage::OwnedValueBlockRef>>,
-// )
-//     -> bool
-// {
-//     match (current, incoming) {
-//         (None, None) | (Some(..), None) =>
-//             false,
-//         (None, Some(..)) =>
-//             true,
-//         (Some(kv::ValueCell { version: version_current, .. }), Some(kv::ValueCell { version: version_incoming, .. })) =>
-//             version_current < version_incoming,
-//     }
-// }
-
 async fn load<J>(
     child_supervisor_pid: SupervisorPid,
     mut state: State<J>,
@@ -497,6 +443,13 @@ where J: edeltraud::Job + From<job::Job>,
 
     let mut incoming = task::performer::Incoming::default();
 
+    enum Mode {
+        Regular,
+        Flushing,
+    }
+
+    let mut mode = Mode::Regular;
+
     let mut tasks = FuturesUnordered::new();
     let mut tasks_count = 0;
 
@@ -526,21 +479,27 @@ where J: edeltraud::Job + From<job::Job>,
             Task(T),
         }
 
-        let event = if tasks_count == 0 {
-            Event::Request(state.fused_request_rx.next().await)
-        } else {
-            select! {
-                result = state.fused_request_rx.next() =>
-                    Event::Request(result),
-                result = tasks.next() => match result {
-                    None =>
-                        unreachable!(),
-                    Some(task) => {
-                        tasks_count -= 1;
-                        Event::Task(task)
+        let event = match mode {
+            Mode::Regular if tasks_count == 0 =>
+                Event::Request(state.fused_request_rx.next().await),
+            Mode::Regular =>
+                select! {
+                    result = state.fused_request_rx.next() =>
+                        Event::Request(result),
+                    result = tasks.next() => match result {
+                        None =>
+                            unreachable!(),
+                        Some(task) => {
+                            tasks_count -= 1;
+                            Event::Task(task)
+                        },
                     },
                 },
-            }
+            Mode::Flushing => {
+                let task = tasks.next().await.unwrap();
+                tasks_count -= 1;
+                Event::Task(task)
+            },
         };
 
         match event {
@@ -584,22 +543,9 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Remove(request))) =>
                 incoming.request_remove.push(request),
 
-            Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx: _, }))) => {
-                todo!();
-//                 log::debug!("Request::FlushAll for butcher first");
-
-//                 let request_ref = flush_requests.insert(FlushRequest {
-//                     butcher_done: false,
-//                     search_trees_pending_count: 0,
-//                 });
-//                 tasks.push(task::run_args(task::TaskArgs::FlushButcher(
-//                     task::flush_butcher::Args {
-//                         request_ref,
-//                         butcher_pid: state.butcher_pid.clone(),
-//                     },
-//                 )));
-//                 tasks_count += 1;
-//                 current_mode = Mode::Flushing { done_reply_tx: reply_tx, };
+            Event::Request(Some(Request::FlushAll(request))) => {
+                incoming.request_flush.push(request);
+                mode = Mode::Flushing;
             },
 
             Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next: task::performer::Next::Poll { next, }, }))) => {
@@ -640,6 +586,14 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     )));
                     tasks_count += 1;
+                }
+                // flushed
+                for flushed_query in job_args.env.outgoing.flushed.drain(..) {
+                    let task::performer::FlushedQuery { flush_context: reply_tx, } = flushed_query;
+                    if let Err(_send_error) = reply_tx.send(Flushed) {
+                        log::warn!("client canceled flush request");
+                    }
+                    mode = Mode::Regular;
                 }
 
                 performer_state = match performer_state {

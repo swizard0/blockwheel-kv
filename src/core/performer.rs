@@ -71,6 +71,7 @@ pub enum Kont<C> where C: Context {
     Poll(KontPoll<C>),
     Inserted(KontInserted<C>),
     Removed(KontRemoved<C>),
+    Flushed(KontFlushed<C>),
     FlushButcher(KontFlushButcher<C>),
     LookupRangeMergerReady(KontLookupRangeMergerReady<C>),
 }
@@ -100,6 +101,15 @@ pub struct KontRemoved<C> where C: Context {
 }
 
 pub struct KontRemovedNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
+pub struct KontFlushed<C> where C: Context {
+    pub flush_context: C::Flush,
+    pub next: KontFlushedNext<C>,
+}
+
+pub struct KontFlushedNext<C> where C: Context {
     inner: Inner<C>,
 }
 
@@ -399,6 +409,11 @@ impl<C> KontPollNext<C> where C: Context {
         })
     }
 
+    pub fn incoming_flush(mut self, flush_context: C::Flush) -> Kont<C> {
+
+        todo!()
+    }
+
     pub fn butcher_flushed(mut self, search_tree_id: u64, root_block: BlockRef) -> Kont<C> {
         self.inner.butcher_flushed(search_tree_id, root_block);
         Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
@@ -436,6 +451,12 @@ impl<C> KontRemovedNext<C> where C: Context {
                     },
                 }),
         }
+    }
+}
+
+impl<C> KontFlushedNext<C> where C: Context {
+    pub fn commit_flush(self) -> Kont<C> {
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
     }
 }
 
