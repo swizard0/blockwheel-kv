@@ -38,6 +38,9 @@ use crate::{
     KeyValueStreamItem,
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct Args<J> where J: edeltraud::Job {
     pub ranges_merger: performer::LookupRangesMerger,
     pub lookup_context: RequestLookupKind,
@@ -271,7 +274,9 @@ where J: edeltraud::Job + From<job::Job>,
         let merger_action = match merger_state {
             MergerState::Ready { job_args: job_args @ JobArgs { kont: Kont::Start { .. }, .. }, } =>
                 MergerAction::Run(job_args),
-            MergerState::Ready { job_args, } if maybe_active_item.is_none() =>
+            MergerState::Ready { job_args: job_args @ JobArgs { kont: Kont::ProceedAwaitBlocks { .. }, .. }, } if !incoming.is_empty() =>
+                MergerAction::Run(job_args),
+            MergerState::Ready { job_args: job_args @ JobArgs { kont: Kont::ProceedItem { .. }, .. }, } if maybe_active_item.is_none() =>
                 MergerAction::Run(job_args),
             other =>
                 MergerAction::KeepState(other),
