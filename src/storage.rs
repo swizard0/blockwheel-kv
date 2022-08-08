@@ -401,6 +401,15 @@ impl kv::ValueCell<OwnedValueBlockRef> {
     }
 }
 
+impl From<kv::KeyValuePair<kv::Value>> for kv::KeyValuePair<OwnedValueBlockRef> {
+    fn from(kv_pair: kv::KeyValuePair<kv::Value>) -> kv::KeyValuePair<OwnedValueBlockRef> {
+        kv::KeyValuePair {
+            key: kv_pair.key,
+            value_cell: kv_pair.value_cell.into(),
+        }
+    }
+}
+
 impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<OwnedValueBlockRef> {
     fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<OwnedValueBlockRef> {
         kv::ValueCell {
