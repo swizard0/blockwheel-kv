@@ -26,6 +26,7 @@ use alloc_pool::{
 use crate::{
     kv,
     job,
+    storage,
     core::{
         manager::{
             task::{
@@ -58,6 +59,7 @@ use crate::{
         BlockRef,
         SearchRangeBounds,
         RequestLookupKind,
+        RequestLookupKindSingle,
         RequestLookupKindRange,
     },
     LookupRange,
@@ -65,10 +67,45 @@ use crate::{
 };
 
 #[tokio::test]
-async fn basic() {
+async fn basic_range() {
     let key_from: kv::Key = to_bytes("3 third").into();
     let key_to: kv::Key = to_bytes("6 sixth").into();
-    let search_range: SearchRangeBounds = (key_from .. key_to).into();
+    let found_items = emulate_lookup(Lookup::Range { key_from, key_to, }).await;
+    assert_eq!(
+        found_items,
+        vec![
+            ("3 third".to_string(), Some("data 3".to_string()), 0),
+            ("3 thirdz".to_string(), Some("data 3z".to_string()), 1),
+            ("4 fourth".to_string(), Some("data 4zz".to_string()), 2),
+            ("5 fifth".to_string(), Some("data 5".to_string()), 0),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn basic_single_found() {
+    let key: kv::Key = to_bytes("5 fifth").into();
+    let found_items = emulate_lookup(Lookup::Single { key, }).await;
+    assert_eq!(
+        found_items,
+        vec![
+            ("5 fifth".to_string(), Some("data 5".to_string()), 0),
+        ],
+    );
+}
+
+enum Lookup {
+    Single { key: kv::Key, },
+    Range { key_from: kv::Key, key_to: kv::Key, },
+}
+
+async fn emulate_lookup(lookup: Lookup) -> Vec<(String, Option<String>, u64)> {
+    let search_range: SearchRangeBounds = match &lookup {
+        Lookup::Single { key, } =>
+            (key.clone() ..= key.clone()).into(),
+        Lookup::Range { key_from, key_to, } =>
+            (key_from.clone() .. key_to.clone()).into(),
+    };
 
     let (root_block, kinda_tree) = make_kinda_tree();
     let source_a = LookupRangeSource {
@@ -113,25 +150,47 @@ async fn basic() {
 
     let wheels_pid = kinda_tree_make_wheels_pid(kinda_tree);
 
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let request_lookup_kind = RequestLookupKind::Range(RequestLookupKindRange { reply_tx, });
-
     let (result_tx, result_rx) = oneshot::channel();
-    tokio::spawn(async move {
-        let LookupRange { mut key_values_rx, } = reply_rx.await.unwrap();
-        let mut results = Vec::new();
-        loop {
-            let item = match key_values_rx.next().await.unwrap() {
-                KeyValueStreamItem::KeyValue(item) =>
-                    kinda_parse_item(&item.into()),
-                KeyValueStreamItem::NoMore =>
-                    break,
-            };
-            results.push(item);
-        }
-        assert!(key_values_rx.next().await.is_none());
-        assert!(result_tx.send(results).is_ok());
-    });
+    let request_lookup_kind = match lookup {
+        Lookup::Single { key, } => {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tokio::spawn(async move {
+                let results = match reply_rx.await.unwrap() {
+                    None =>
+                        vec![],
+                    Some(value_cell) => {
+                        let item = kinda_parse_item(&kv::KeyValuePair {
+                            key,
+                            value_cell: kv::ValueCell::<storage::OwnedValueBlockRef>::from(value_cell),
+                        });
+                        vec![item]
+                    },
+                };
+                assert!(result_tx.send(results).is_ok());
+            });
+
+            RequestLookupKind::Single(RequestLookupKindSingle { reply_tx, })
+        },
+        Lookup::Range { .. } => {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tokio::spawn(async move {
+                let LookupRange { mut key_values_rx, } = reply_rx.await.unwrap();
+                let mut results = Vec::new();
+                loop {
+                    let item = match key_values_rx.next().await.unwrap() {
+                        KeyValueStreamItem::KeyValue(item) =>
+                            kinda_parse_item(&item.into()),
+                        KeyValueStreamItem::NoMore =>
+                            break,
+                    };
+                    results.push(item);
+                }
+                assert!(key_values_rx.next().await.is_none());
+                assert!(result_tx.send(results).is_ok());
+            });
+            RequestLookupKind::Range(RequestLookupKindRange { reply_tx, })
+        },
+    };
 
     let _done =
         inner_run(
@@ -144,16 +203,7 @@ async fn basic() {
         .await
         .unwrap();
 
-    let found_items = result_rx.await.unwrap();
-    assert_eq!(
-        found_items,
-        vec![
-            ("3 third".to_string(), Some("data 3".to_string()), 0),
-            ("3 thirdz".to_string(), Some("data 3z".to_string()), 1),
-            ("4 fourth".to_string(), Some("data 4zz".to_string()), 2),
-            ("5 fifth".to_string(), Some("data 5".to_string()), 0),
-        ],
-    );
+    result_rx.await.unwrap()
 }
 
 fn kinda_tree_make_wheels_pid(kinda_tree: HashMap<BlockRef, Bytes>) -> WheelsPid {

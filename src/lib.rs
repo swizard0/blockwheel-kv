@@ -27,8 +27,8 @@ pub mod version;
 mod core;
 mod storage;
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;
 
 #[derive(Clone, Debug)]
 pub struct Params {
