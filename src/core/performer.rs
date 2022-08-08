@@ -117,6 +117,7 @@ pub struct LookupRangesMerger {
     pub token: LookupRangeToken,
 }
 
+#[derive(Default)]
 pub struct LookupRangeToken {
     search_trees_ids: Vec<u64>,
 }
