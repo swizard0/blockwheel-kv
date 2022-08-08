@@ -35,6 +35,7 @@ pub struct WalkerCps {
 pub enum Kont {
     RequireBlock(KontRequireBlock),
     ItemFound(KontItemFound),
+    BlockFinished(KontBlockFinished),
     Finished,
 }
 
@@ -83,8 +84,18 @@ pub struct KontItemFoundNext {
     inner: Inner,
 }
 
+pub struct KontBlockFinished {
+    pub block_ref: BlockRef,
+    pub next: KontBlockFinishedNext,
+}
+
+pub struct KontBlockFinishedNext {
+    inner: Inner,
+}
+
 struct WalkerLevel {
     search_range: SearchRangeBounds,
+    block_ref: BlockRef,
     block_entry_steps: Unique<Vec<BlockEntryStep>>,
     block_entry_steps_index: usize,
 }
@@ -247,6 +258,7 @@ impl WalkerCps {
 
                     self.inner.levels.push(WalkerLevel {
                         search_range,
+                        block_ref,
                         block_entry_steps,
                         block_entry_steps_index: 0,
                     });
@@ -259,8 +271,13 @@ impl WalkerCps {
                 State::WalkLevel => {
                     let current_level = self.inner.levels.last_mut().unwrap();
                     if current_level.block_entry_steps_index >= current_level.block_entry_steps.len() {
-                        self.inner.levels.pop();
-                        continue;
+                        let WalkerLevel { block_ref, .. } = self.inner.levels.pop().unwrap();
+                        return Ok(Kont::BlockFinished(KontBlockFinished {
+                            block_ref,
+                            next: KontBlockFinishedNext {
+                                inner: self.inner,
+                            },
+                        }));
                     }
                     let current_block_entry_step =
                         &mut current_level.block_entry_steps[current_level.block_entry_steps_index];
@@ -324,6 +341,12 @@ impl KontRequireBlockNext {
 
 impl KontItemFoundNext {
     pub fn item_received(self) -> Result<Kont, Error> {
+        WalkerCps { inner: self.inner, }.step()
+    }
+}
+
+impl KontBlockFinishedNext {
+    pub fn proceed(self) -> Result<Kont, Error> {
         WalkerCps { inner: self.inner, }.step()
     }
 }

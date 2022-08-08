@@ -220,14 +220,6 @@ impl<V, S> KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
                 self.state_await.pending_count -= 1;
                 ItersMergerCps::from(self).step()
             },
-            KeyValueRef::BlockFinish(..) =>
-                Kont::ScheduleIterAwait(KontScheduleIterAwait {
-                    await_iter,
-                    next: KontScheduleIterAwaitNext {
-                        state_await: self.state_await,
-                        env: self.env,
-                    },
-                }),
             KeyValueRef::Item { key, value_cell, } => {
                 self.env.fronts.push(Front {
                     front_item: kv::KeyValuePair { key, value_cell, },

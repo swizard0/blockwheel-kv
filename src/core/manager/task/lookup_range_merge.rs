@@ -549,6 +549,10 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     kont = Kont::ProceedAwaitBlocks { next, };
                     break;
                 },
+                search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
+                    merger_kont = next.proceed()
+                        .map_err(Error::SearchRangesMerge)?;
+                },
                 search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
                     merger_kont = next.proceed()
                         .map_err(Error::SearchRangesMerge)?;

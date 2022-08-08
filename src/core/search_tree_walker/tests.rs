@@ -16,6 +16,7 @@ use crate::{
             Kont,
             KontRequireBlock,
             KontItemFound,
+            KontBlockFinished,
         },
         tests::{
             to_bytes,
@@ -102,6 +103,10 @@ fn walk<R>(range: R, sample: &[(&str, &str)]) where R: RangeBounds<kv::Key> {
                 let (key, maybe_value, _version) = kinda_parse_item(&item);
                 found_items.push((key, maybe_value.unwrap()));
                 kont = next.item_received().unwrap();
+            },
+            Kont::BlockFinished(KontBlockFinished { block_ref, next, }) => {
+                assert!(kinda_tree.get(&block_ref).is_some());
+                kont = next.proceed().unwrap();
             },
             Kont::Finished =>
                 break,

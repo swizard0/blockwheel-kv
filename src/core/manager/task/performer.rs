@@ -12,6 +12,7 @@ use crate::{
         BlockRef,
         Context as C,
         RequestInsert,
+        RequestRemove,
         RequestLookupKind,
         RequestLookupRange,
     },
@@ -63,6 +64,7 @@ pub struct Env {
 #[derive(Default)]
 pub struct Incoming {
     pub request_insert: Vec<RequestInsert>,
+    pub request_remove: Vec<RequestRemove>,
     pub request_lookup_range: Vec<RequestLookupRange>,
     pub butcher_flushed: Vec<EventButcherFlushed>,
     pub lookup_range_merge_done: Vec<EventLookupRangeMergeDone>,
@@ -71,6 +73,7 @@ pub struct Incoming {
 impl Incoming {
     pub fn is_empty(&self) -> bool {
         self.request_insert.is_empty() &&
+            self.request_remove.is_empty() &&
             self.request_lookup_range.is_empty() &&
             self.butcher_flushed.is_empty() &&
             self.lookup_range_merge_done.is_empty()
@@ -78,6 +81,7 @@ impl Incoming {
 
     pub fn transfill_from(&mut self, from: &mut Self) {
         self.request_insert.extend(from.request_insert.drain(..));
+        self.request_remove.extend(from.request_remove.drain(..));
         self.request_lookup_range.extend(from.request_lookup_range.drain(..));
         self.butcher_flushed.extend(from.butcher_flushed.drain(..));
         self.lookup_range_merge_done.extend(from.lookup_range_merge_done.drain(..));
@@ -141,6 +145,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
             Kont::StepPoll { next, } =>
                 if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
                     next.incoming_insert(key, value, reply_tx)
+                } else if let Some(RequestRemove { key, reply_tx, }) = env.incoming.request_remove.pop() {
+                    next.incoming_remove(key, reply_tx)
                 } else if let Some(RequestLookupRange { search_range, reply_kind, }) = env.incoming.request_lookup_range.pop() {
                     next.begin_lookup_range(search_range, reply_kind)
                 } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {

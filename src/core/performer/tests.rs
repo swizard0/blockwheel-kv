@@ -17,6 +17,7 @@ use crate::{
             Kont,
             KontPoll,
             KontInserted,
+            KontRemoved,
             KontFlushButcher,
         },
     },
@@ -35,6 +36,8 @@ struct Context;
 impl context::Context for Context {
     type Insert = isize;
     type Lookup = isize;
+    type Remove = isize;
+    type Flush = isize;
 }
 
 #[test]
@@ -108,10 +111,19 @@ fn basic_insert() {
     };
     // database: 3 entries with flush scheduled
     let kont = next.got_it();
-    match kont {
+    let next = match kont {
         Kont::Poll(KontPoll { next, }) =>
             next,
         _ =>
             panic!("expected Kont::Poll, got other"),
     };
+    // database: 2 entries with flush scheduled
+    let kont = next.incoming_remove(key(3), 81);
+    /* let next = */ match kont {
+        Kont::Removed(KontRemoved { next, remove_context: 81, .. }) =>
+            next,
+        _ =>
+            panic!("expected Kont::Removed got other"),
+    };
+
 }

@@ -36,9 +36,9 @@ use super::{
     wheels,
     version,
     storage,
-    blockwheel,
 };
 
+use ero_blockwheel_fs as blockwheel;
 use crate as blockwheel_kv;
 
 #[test]
@@ -584,10 +584,10 @@ async fn stress_loop(
 
     assert!(done_rx.next().await.is_none());
 
-    let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
-        .map_err(Error::Flush)?;
-    let wheels::Flushed = wheels_pid.flush().await
-        .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
+//     let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
+//         .map_err(Error::Flush)?;
+//     let wheels::Flushed = wheels_pid.flush().await
+//         .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
 
     // backwards check with iterator
     let mut checked_blocks = 0;

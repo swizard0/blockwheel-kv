@@ -14,6 +14,7 @@ use crate::{
             KontRequireBlockAsync,
             KontAwaitBlocks,
             KontEmitDeprecated,
+            KontBlockFinished,
             KontEmitItem,
         },
         tests::{
@@ -81,6 +82,10 @@ fn basic() {
             },
             Kont::EmitItem(KontEmitItem { ref item, next, }) => {
                 found_items.push(kinda_parse_item(item));
+                ranges_merge_kont = next.proceed().unwrap();
+            },
+            Kont::BlockFinished(KontBlockFinished { block_ref, next, }) => {
+                assert!(kinda_tree.get(&block_ref).is_some());
                 ranges_merge_kont = next.proceed().unwrap();
             },
             Kont::Finished => {

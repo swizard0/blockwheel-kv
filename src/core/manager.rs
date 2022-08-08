@@ -1,6 +1,4 @@
 use std::{
-    mem,
-//     sync::Arc,
     time::{
         Duration,
     },
@@ -23,11 +21,6 @@ use std::{
      SinkExt,
 };
 
-// use o1::set::{
-//     Set,
-//     Ref,
-// };
-
 use ero::{
     restart,
     ErrorSeverity,
@@ -40,8 +33,6 @@ use alloc_pool::{
     bytes::{
         BytesPool,
     },
-//     Shared,
-//     Unique,
 };
 
 use crate::{
@@ -606,16 +597,8 @@ where J: edeltraud::Job + From<job::Job>,
 //                 tasks_count += 1;
             },
 
-            Event::Request(Some(Request::Remove(_request))) => {
-                todo!();
-//                 tasks.push(task::run_args(task::TaskArgs::RemoveButcher(
-//                     task::remove_butcher::Args {
-//                         request,
-//                         butcher_pid: state.butcher_pid.clone(),
-//                     },
-//                 )));
-//                 tasks_count += 1;
-            },
+            Event::Request(Some(Request::Remove(request))) =>
+                incoming.request_remove.push(request),
 
             Event::Request(Some(Request::FlushAll(RequestFlush { reply_tx: _, }))) => {
                 todo!();
@@ -675,13 +658,12 @@ where J: edeltraud::Job + From<job::Job>,
                     tasks_count += 1;
                 }
 
-                let prev_performer_state = mem::replace(
-                    &mut performer_state,
-                    PerformerState::Ready { job_args, },
-                );
-                assert!(matches!(prev_performer_state, PerformerState::InProgress));
-
-                todo!();
+                performer_state = match performer_state {
+                    PerformerState::InProgress =>
+                        PerformerState::Ready { job_args, },
+                    PerformerState::Ready { .. } =>
+                        unreachable!(),
+                };
             },
 
             Event::Task(Ok(task::TaskDone::FlushButcher(task::flush_butcher::Done { search_tree_id, root_block, }))) =>

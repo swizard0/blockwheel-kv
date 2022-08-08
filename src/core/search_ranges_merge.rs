@@ -42,6 +42,7 @@ pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     AwaitBlocks(KontAwaitBlocks<V, S>),
     EmitDeprecated(KontEmitDeprecated<V, S>),
     EmitItem(KontEmitItem<V, S>),
+    BlockFinished(KontBlockFinished<V, S>),
     Finished,
 }
 
@@ -85,6 +86,17 @@ pub struct KontEmitItem<V, S> where V: DerefMut<Target = Vec<S>> {
 
 pub struct KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     merger_next: MergerKontEmitItemNext<V, S>,
+    inner: Inner<V, S>,
+}
+
+pub struct KontBlockFinished<V, S> where V: DerefMut<Target = Vec<S>> {
+    pub block_ref: BlockRef,
+    pub next: KontBlockFinishedNext<V, S>,
+}
+
+pub struct KontBlockFinishedNext<V, S> where V: DerefMut<Target = Vec<S>> {
+    await_iter: S,
+    walker_next: search_tree_walker::KontBlockFinishedNext,
     inner: Inner<V, S>,
 }
 
@@ -295,6 +307,19 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                                     },
                                                 }));
                                             },
+                                            search_tree_walker::Kont::BlockFinished(
+                                                search_tree_walker::KontBlockFinished { block_ref, next, },
+                                            ) => {
+                                                self.inner.state = State::AwaitIters { merger_next, };
+                                                return Ok(Kont::BlockFinished(KontBlockFinished {
+                                                    block_ref,
+                                                    next: KontBlockFinishedNext {
+                                                        await_iter,
+                                                        walker_next: next,
+                                                        inner: self.inner,
+                                                    },
+                                                }));
+                                            },
                                             search_tree_walker::Kont::ItemFound(kont_item_found) => {
                                                 *source_state = SourceSearchTreeState::Step {
                                                     walker_kont: kont_item_found.next
@@ -400,6 +425,21 @@ impl<V, S> KontRequireBlockAsyncNext<V, S> where V: DerefMut<Target = Vec<S>>, S
 impl<V, S> KontAwaitBlocksNext<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
     pub fn block_arrived(self, async_token: AsyncToken<S>, block_bytes: Bytes) -> Result<Kont<V, S>, Error> {
         RangesMergeCps { inner: self.inner, }.block_arrived(async_token, block_bytes)
+    }
+}
+
+impl<V, S> KontBlockFinishedNext<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
+    pub fn proceed(mut self) -> Result<Kont<V, S>, Error> {
+        let walker_kont = self
+            .walker_next
+            .proceed()
+            .map_err(Error::SearchTreeWalker)?;
+        let source = &mut *self.await_iter;
+        *source = Source::SearchTree(SourceSearchTree {
+            source_state: SourceSearchTreeState::Step { walker_kont, },
+        });
+        self.inner.await_iters.push(self.await_iter);
+        RangesMergeCps { inner: self.inner, }.step()
     }
 }
 

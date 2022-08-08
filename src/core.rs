@@ -151,7 +151,6 @@ pub enum KeyValueRef {
         key: kv::Key,
         value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
     },
-    BlockFinish(BlockRef),
     NoMore,
 }
 
