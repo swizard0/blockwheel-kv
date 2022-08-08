@@ -578,24 +578,8 @@ where J: edeltraud::Job + From<job::Job>,
             Event::Request(Some(Request::Insert(request))) =>
                 incoming.request_insert.push(request),
 
-            Event::Request(Some(Request::LookupRange(RequestLookupRange { search_range: _, reply_kind: _, }))) => {
-                todo!();
-//                 let (key_values_tx, key_values_rx) =
-//                     mpsc::channel(state.params.search_tree_params.iter_send_buffer);
-//                 let lookup_range = LookupRange { key_values_rx, };
-//                 if let Err(_send_error) = reply_tx.send(lookup_range) {
-//                     log::warn!("client canceled lookup_range request");
-//                 }
-//                 tasks.push(task::run_args(task::TaskArgs::LookupRangeButcher(
-//                     task::lookup_range_butcher::Args {
-//                         range,
-//                         key_values_tx,
-//                         iter_items_pool: iter_items_pool.clone(),
-//                         butcher_pid: state.butcher_pid.clone(),
-//                     },
-//                 )));
-//                 tasks_count += 1;
-            },
+            Event::Request(Some(Request::LookupRange(request))) =>
+                incoming.request_lookup_range.push(request),
 
             Event::Request(Some(Request::Remove(request))) =>
                 incoming.request_remove.push(request),

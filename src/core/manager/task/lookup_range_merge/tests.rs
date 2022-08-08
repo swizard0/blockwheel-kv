@@ -19,7 +19,6 @@ use alloc_pool::{
     pool,
     bytes::{
         Bytes,
-        BytesPool,
     },
     Unique,
 };
@@ -27,9 +26,7 @@ use alloc_pool::{
 use crate::{
     kv,
     job,
-    wheels,
     core::{
-        storage,
         manager::{
             task::{
                 lookup_range_merge::{
@@ -136,7 +133,7 @@ async fn basic() {
         assert!(result_tx.send(results).is_ok());
     });
 
-    let done =
+    let _done =
         inner_run(
             lookup_ranges_merger,
             request_lookup_kind,

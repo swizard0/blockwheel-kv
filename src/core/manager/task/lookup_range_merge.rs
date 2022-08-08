@@ -266,6 +266,43 @@ where J: edeltraud::Job + From<job::Job>,
             }
         }
 
+        match tx_state {
+            TxState::Idle(tx_state_idle) =>
+                match maybe_active_item.take() {
+                    None =>
+                        tx_state = TxState::Idle(tx_state_idle),
+                    Some(ActiveItem::ReadyToSend { item, }) =>
+                        match tx_state_idle {
+                            TxStateIdle::Oneshot { maybe_reply_tx, } => {
+                                let send_result = match (maybe_reply_tx, item) {
+                                    (Some(reply_tx), KeyValueStreamItem::KeyValue(kv::KeyValuePair { value_cell, .. })) =>
+                                        reply_tx.send(Some(value_cell)),
+                                    (Some(reply_tx), KeyValueStreamItem::NoMore) =>
+                                        reply_tx.send(None),
+                                    (None, KeyValueStreamItem::KeyValue(..)) =>
+                                        panic!("something went wrong: another item arrived for single lookup"),
+                                    (None, KeyValueStreamItem::NoMore) =>
+                                        Ok(()),
+                                };
+                                if let Err(_send_error) = send_result {
+                                    log::warn!("client canceled lookup request");
+                                }
+                                tx_state = TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: None, });
+                            },
+                            TxStateIdle::Stream { key_values_tx, } => {
+                                tasks.push(Task::TxItem { item, key_values_tx, }.run());
+                                tx_state = TxState::Sending;
+                            },
+                        },
+                    Some(ActiveItem::PendingValueLoad) => {
+                        tx_state = TxState::Idle(tx_state_idle);
+                        maybe_active_item = Some(ActiveItem::PendingValueLoad);
+                    },
+                },
+            TxState::Sending =>
+                tx_state = TxState::Sending,
+        }
+
         enum MergerAction<A, S> {
             Run(A),
             KeepState(S),
@@ -294,41 +331,6 @@ where J: edeltraud::Job + From<job::Job>,
             MergerAction::KeepState(state) =>
                 state,
         };
-
-        match tx_state {
-            TxState::Idle(tx_state_idle) =>
-                match maybe_active_item.take() {
-                    None =>
-                        tx_state = TxState::Idle(tx_state_idle),
-                    Some(ActiveItem::ReadyToSend { item, }) =>
-                        match tx_state_idle {
-                            TxStateIdle::Oneshot { maybe_reply_tx: Some(reply_tx), } => {
-                                let maybe_value = match item {
-                                    KeyValueStreamItem::KeyValue(kv::KeyValuePair { value_cell, .. }) =>
-                                        Some(value_cell),
-                                    KeyValueStreamItem::NoMore =>
-                                        None,
-                                };
-                                if let Err(_send_error) = reply_tx.send(maybe_value) {
-                                    log::warn!("client canceled lookup request");
-                                }
-                                tx_state = TxState::Idle(TxStateIdle::Oneshot { maybe_reply_tx: None, });
-                            },
-                            TxStateIdle::Oneshot { maybe_reply_tx: None, } =>
-                                panic!("something went wrong: another item arrived for single lookup"),
-                            TxStateIdle::Stream { key_values_tx, } => {
-                                tasks.push(Task::TxItem { item, key_values_tx, }.run());
-                                tx_state = TxState::Sending;
-                            },
-                        },
-                    Some(ActiveItem::PendingValueLoad) => {
-                        tx_state = TxState::Idle(tx_state_idle);
-                        maybe_active_item = Some(ActiveItem::PendingValueLoad);
-                    },
-                },
-            TxState::Sending =>
-                tx_state = TxState::Sending,
-        }
 
         match tasks.next().await.unwrap()? {
 
