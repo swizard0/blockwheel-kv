@@ -48,6 +48,8 @@ pub struct RequestInfo {
 }
 
 pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
+pub type RequestRemoveReplyTx = oneshot::Sender<Removed>;
+pub type RequestFlushReplyTx = oneshot::Sender<Flushed>;
 
 pub enum RequestLookupKind {
     Single(RequestLookupKindSingle),
@@ -80,19 +82,21 @@ pub struct RequestLookupRange {
 #[derive(Debug)]
 pub struct RequestRemove {
     key: kv::Key,
-    reply_tx: oneshot::Sender<Removed>,
+    reply_tx: RequestRemoveReplyTx,
 }
 
 #[derive(Debug)]
 pub struct RequestFlush {
-    reply_tx: oneshot::Sender<Flushed>,
+    reply_tx: RequestFlushReplyTx,
 }
 
 pub struct Context;
 
 impl context::Context for Context {
     type Insert = RequestInsertReplyTx;
+    type Remove = RequestRemoveReplyTx;
     type Lookup = RequestLookupKind;
+    type Flush = RequestFlushReplyTx;
 }
 
 pub struct MemCache {

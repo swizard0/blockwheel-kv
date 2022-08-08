@@ -142,12 +142,11 @@ async fn basic() {
             request_lookup_kind,
             wheels_pid,
             thread_pool,
-            0, // iter_send_buffer: usize,
+            0,
         )
         .await
         .unwrap();
-    // assert_eq!(done.lookup_range_token., search_tree_id);
-    // assert_eq!(&*done.root_block.blockwheel_filename, BLOCKWHEEL_FILENAME.as_bytes());
+
     let found_items = result_rx.await.unwrap();
     assert_eq!(
         found_items,

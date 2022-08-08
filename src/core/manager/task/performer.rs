@@ -16,6 +16,7 @@ use crate::{
         RequestLookupRange,
     },
     Inserted,
+    Removed,
 };
 
 pub struct Args<J> where J: edeltraud::Job {
@@ -160,6 +161,12 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 performer::Kont::Inserted(performer::KontInserted { version, insert_context: reply_tx, next, }) => {
                     if let Err(_send_error) = reply_tx.send(Inserted { version, }) {
                         log::warn!("client canceled insert request");
+                    }
+                    next.got_it()
+                },
+                performer::Kont::Removed(performer::KontRemoved { version, remove_context: reply_tx, next, }) => {
+                    if let Err(_send_error) = reply_tx.send(Removed { version, }) {
+                        log::warn!("client canceled remove request");
                     }
                     next.got_it()
                 },

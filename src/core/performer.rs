@@ -70,6 +70,7 @@ pub struct Performer<C> where C: Context {
 pub enum Kont<C> where C: Context {
     Poll(KontPoll<C>),
     Inserted(KontInserted<C>),
+    Removed(KontRemoved<C>),
     FlushButcher(KontFlushButcher<C>),
     LookupRangeMergerReady(KontLookupRangeMergerReady<C>),
 }
@@ -89,6 +90,16 @@ pub struct KontInserted<C> where C: Context {
 }
 
 pub struct KontInsertedNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
+pub struct KontRemoved<C> where C: Context {
+    pub version: u64,
+    pub remove_context: C::Remove,
+    pub next: KontRemovedNext<C>,
+}
+
+pub struct KontRemovedNext<C> where C: Context {
     inner: Inner<C>,
 }
 
@@ -197,6 +208,22 @@ impl<C> Inner<C> where C: Context {
                 assert!(self.info.tombstones_count > 0);
                 self.info.tombstones_count -= 1;
                 self.info.alive_cells_count += 1;
+            },
+        }
+        version
+    }
+
+    fn remove(&mut self, key: kv::Key) -> u64 {
+        let (version, maybe_prev) = self.insert_butcher(key, kv::Cell::Tombstone);
+        match maybe_prev {
+            None =>
+                self.info.tombstones_count += 1,
+            Some(kv::ValueCell { cell: kv::Cell::Tombstone, .. }) =>
+                (),
+            Some(kv::ValueCell { cell: kv::Cell::Value(..), .. }) => {
+                assert!(self.info.alive_cells_count > 0);
+                self.info.alive_cells_count -= 1;
+                self.info.tombstones_count += 1;
             },
         }
         version
@@ -316,7 +343,7 @@ impl<C> Inner<C> where C: Context {
                             assert!(self.forest.accesses_count > 0);
                             self.forest.accesses_count -= 1;
 
-                            todo!();
+                            // todo!();
                         },
                     }
                 },
@@ -358,8 +385,18 @@ impl<C> KontPollNext<C> where C: Context {
 
     pub fn commit_lookup_range(mut self, lookup_range_token: LookupRangeToken) -> Kont<C> {
         self.inner.commit_lookup_range(lookup_range_token);
+        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+    }
 
-        todo!();
+    pub fn incoming_remove(mut self, key: kv::Key, remove_context: C::Remove) -> Kont<C> {
+        let version = self.inner.remove(key);
+        Kont::Removed(KontRemoved {
+            version,
+            remove_context,
+            next: KontRemovedNext {
+                inner: self.inner,
+            },
+        })
     }
 
     pub fn butcher_flushed(mut self, search_tree_id: u64, root_block: BlockRef) -> Kont<C> {
@@ -369,6 +406,23 @@ impl<C> KontPollNext<C> where C: Context {
 }
 
 impl<C> KontInsertedNext<C> where C: Context {
+    pub fn got_it(mut self) -> Kont<C> {
+	match self.inner.maybe_flush() {
+            FlushOutcome::NotFlushed =>
+                Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, }),
+            FlushOutcome::TimeToFlush { search_tree_id, frozen_memcache, } =>
+                Kont::FlushButcher(KontFlushButcher {
+                    search_tree_id,
+                    frozen_memcache,
+                    next: KontFlushButcherNext {
+                        inner: self.inner,
+                    },
+                }),
+        }
+    }
+}
+
+impl<C> KontRemovedNext<C> where C: Context {
     pub fn got_it(mut self) -> Kont<C> {
 	match self.inner.maybe_flush() {
             FlushOutcome::NotFlushed =>
