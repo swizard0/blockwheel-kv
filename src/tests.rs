@@ -625,5 +625,13 @@ async fn stress_loop(
     }
 
     log::info!("FINISHED: blocks checked = {}, entries = {} | {:?}", checked_blocks, checked_entries, counter);
+
+    let info_a = wheel_a_pid.info().await
+        .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
+    log::info!("FINISHED: info_a: {info_a:?}");
+    let info_b = wheel_b_pid.info().await
+        .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
+    log::info!("FINISHED: info_b: {info_b:?}");
+
     Ok::<_, Error>(())
 }
