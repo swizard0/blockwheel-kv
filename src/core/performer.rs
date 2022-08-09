@@ -154,6 +154,7 @@ struct Inner<C> where C: Context {
     forest: SearchForest,
     info: Info,
     pending_events: Vec<PendingEvent<C>>,
+    pending_flushes: Vec<C::Flush>,
 }
 
 pub struct SearchForest {
@@ -162,6 +163,7 @@ pub struct SearchForest {
     search_trees_pile: BinMerger<SearchTreeRef>,
     search_trees_decay: HashMap<u64, SearchTreeConstructed>,
     accesses_count: usize,
+    butcher_flushes_count: usize,
 }
 
 enum PendingEvent<C> where C: Context {
@@ -177,6 +179,9 @@ enum PendingEvent<C> where C: Context {
     LookupRangeMergerReady {
         ranges_merger: LookupRangesMerger,
         lookup_context: C::Lookup,
+    },
+    Flushed {
+        flush_context: C::Flush,
     },
 }
 
@@ -207,6 +212,7 @@ impl<C> Performer<C> where C: Context {
                 forest,
                 info: Info::default(),
                 pending_events: Vec::new(),
+                pending_flushes: Vec::new(),
             },
         }
     }
@@ -263,6 +269,7 @@ impl<C> Inner<C> where C: Context {
             let frozen_memcache =
                 Arc::new(mem::replace(&mut self.butcher, MemCache::new()));
             let search_tree_id = self.forest.add_bootstrap(frozen_memcache.clone());
+            self.forest.butcher_flushes_count += 1;
             // we do not want to merge the tree until it is written to blockwheel
             // self.search_trees_pile
             //     .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
@@ -284,6 +291,8 @@ impl<C> Inner<C> where C: Context {
                 unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
         };
         self.forest.add_constructed(root_block, items_count);
+        assert!(self.forest.butcher_flushes_count > 0);
+        self.forest.butcher_flushes_count -= 1;
     }
 
     fn make_lookup_ranges_merger(&mut self, search_range: SearchRangeBounds) -> LookupRangesMerger {
@@ -371,7 +380,10 @@ impl<C> Inner<C> where C: Context {
                             assert!(self.forest.accesses_count > 0);
                             self.forest.accesses_count -= 1;
 
-                            // todo!();
+                            if search_tree.accesses_count == 0 {
+                                // TODO: demand search tree removal
+
+                            }
                         },
                     }
                 },
@@ -380,8 +392,16 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn poll(mut self) -> Kont<C> {
+        // time to flush butcher
         if let Some(event) = self.maybe_flush() {
             self.pending_events.push(PendingEvent::FlushButcher(event));
+        }
+        // flush done
+        if !self.pending_flushes.is_empty() && self.forest.flush_friendly() {
+            let events = self.pending_flushes
+                .drain(..)
+                .map(|flush_context| PendingEvent::Flushed { flush_context, });
+            self.pending_events.extend(events);
         }
 
         match self.pending_events.pop() {
@@ -411,7 +431,11 @@ impl<C> Inner<C> where C: Context {
                     remove_context,
                     next: KontRemovedNext { inner: self },
                 }),
-
+            Some(PendingEvent::Flushed { flush_context, }) =>
+                Kont::Flushed(KontFlushed {
+                    flush_context,
+                    next: KontFlushedNext { inner: self, },
+                }),
         }
     }
 }
@@ -450,8 +474,8 @@ impl<C> KontPollNext<C> where C: Context {
     }
 
     pub fn incoming_flush(mut self, flush_context: C::Flush) -> Kont<C> {
-
-        todo!()
+        self.inner.pending_flushes.push(flush_context);
+        self.inner.poll()
     }
 
     pub fn butcher_flushed(mut self, search_tree_id: u64, root_block: BlockRef) -> Kont<C> {
@@ -518,11 +542,17 @@ impl SearchForest {
             search_trees_pile: BinMerger::new(),
             search_trees_decay: HashMap::new(),
             accesses_count: 0,
+            butcher_flushes_count: 0,
         }
     }
 
     pub fn len(&self) -> usize {
         self.search_trees.len()
+    }
+
+    pub fn flush_friendly(&self) -> bool {
+        self.butcher_flushes_count == 0 &&
+            self.accesses_count == 0
     }
 
     pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> u64 {

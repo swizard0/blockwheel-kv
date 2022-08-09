@@ -113,9 +113,9 @@ fn stress() {
     fs::remove_file(&wheel_filename_b).ok();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
-    // // next load existing wheel and repeat stress
-    // counter.clear();
-    // runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+    // next load existing wheel and repeat stress
+    counter.clear();
+    runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
 
     fs::remove_file(&wheel_filename_a).ok();
     fs::remove_file(&wheel_filename_b).ok();
@@ -584,10 +584,10 @@ async fn stress_loop(
 
     assert!(done_rx.next().await.is_none());
 
-//     let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
-//         .map_err(Error::Flush)?;
-//     let wheels::Flushed = wheels_pid.flush().await
-//         .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
+    let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
+        .map_err(Error::Flush)?;
+    let wheels::Flushed = wheels_pid.flush().await
+        .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
 
     // backwards check with iterator
     let mut checked_blocks = 0;
