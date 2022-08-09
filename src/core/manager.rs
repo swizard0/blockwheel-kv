@@ -454,8 +454,26 @@ where J: edeltraud::Job + From<job::Job>,
     let mut tasks_count = 0;
 
     loop {
-        match performer_state {
-            PerformerState::Ready { mut job_args, } => {
+        enum PerformerAction<A, S> {
+            Run(A),
+            KeepState(S),
+        }
+
+        let performer_action = match performer_state {
+            PerformerState::Ready {
+                job_args: job_args @ task::performer::JobArgs { kont: task::performer::Kont::Start { .. }, .. },
+            } =>
+                PerformerAction::Run(job_args),
+            PerformerState::Ready {
+                job_args: job_args @ task::performer::JobArgs { kont: task::performer::Kont::StepPoll { .. }, .. },
+            } if !incoming.is_empty() =>
+                PerformerAction::Run(job_args),
+            other =>
+                PerformerAction::KeepState(other),
+        };
+
+        match performer_action {
+            PerformerAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
                 if job_args.env.incoming.is_empty() {
                     performer_state = PerformerState::Ready { job_args, };
@@ -470,8 +488,8 @@ where J: edeltraud::Job + From<job::Job>,
                     performer_state = PerformerState::InProgress;
                 }
             },
-            PerformerState::InProgress =>
-                performer_state = PerformerState::InProgress,
+            PerformerAction::KeepState(state) =>
+                performer_state = state,
         }
 
         enum Event<R, T> {
