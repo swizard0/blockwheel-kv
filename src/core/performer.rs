@@ -263,9 +263,9 @@ impl<C> Inner<C> where C: Context {
         version
     }
 
-    fn maybe_flush(&mut self) -> Option<PendingEventFlushButcher> {
+    fn maybe_flush(&mut self, force: bool) -> Option<PendingEventFlushButcher> {
         let items_count = self.butcher.len();
-        if items_count >= self.params.butcher_block_size {
+        if (!force && items_count >= self.params.butcher_block_size) || (force && items_count > 0) {
             let frozen_memcache =
                 Arc::new(mem::replace(&mut self.butcher, MemCache::new()));
             let search_tree_id = self.forest.add_bootstrap(frozen_memcache.clone());
@@ -393,15 +393,19 @@ impl<C> Inner<C> where C: Context {
 
     fn poll(mut self) -> Kont<C> {
         // time to flush butcher
-        if let Some(event) = self.maybe_flush() {
+        if let Some(event) = self.maybe_flush(false) {
             self.pending_events.push(PendingEvent::FlushButcher(event));
         }
         // flush done
         if !self.pending_flushes.is_empty() && self.forest.flush_friendly() {
-            let events = self.pending_flushes
-                .drain(..)
-                .map(|flush_context| PendingEvent::Flushed { flush_context, });
-            self.pending_events.extend(events);
+            if let Some(event) = self.maybe_flush(true) {
+                self.pending_events.push(PendingEvent::FlushButcher(event));
+            } else {
+                let events = self.pending_flushes
+                    .drain(..)
+                    .map(|flush_context| PendingEvent::Flushed { flush_context, });
+                self.pending_events.extend(events);
+            }
         }
 
         match self.pending_events.pop() {
