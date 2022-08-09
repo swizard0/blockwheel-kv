@@ -77,16 +77,8 @@ fn basic_insert() {
         _ =>
             panic!("expected Kont::Poll, got other"),
     };
-    // database: 1 entries
+    // database: 1 entries, should request flush (max 2 entries limit)
     let kont = next.incoming_insert(key(2), value(2), 72);
-    let next = match kont {
-        Kont::Inserted(KontInserted { next, insert_context: 72,  .. }) =>
-            next,
-        _ =>
-            panic!("expected Kont::Inserted, got other"),
-    };
-    // should request flush (max 2 entries limit)
-    let kont = next.got_it();
     let next = match kont {
         Kont::FlushButcher(KontFlushButcher { next, .. }) =>
             next,
@@ -95,6 +87,14 @@ fn basic_insert() {
     };
     // database: 2 entries with flush requested
     let kont = next.scheduled();
+    let next = match kont {
+        Kont::Inserted(KontInserted { next, insert_context: 72,  .. }) =>
+            next,
+        _ =>
+            panic!("expected Kont::Inserted, got other"),
+    };
+    // database: 2 entries with flush requested
+    let kont = next.got_it();
     let next = match kont {
         Kont::Poll(KontPoll { next, }) =>
             next,

@@ -7,9 +7,6 @@ use std::{
     sync::{
         Arc,
     },
-    marker::{
-        PhantomData,
-    },
     collections::{
         hash_map,
         HashMap,
@@ -156,7 +153,7 @@ struct Inner<C> where C: Context {
     butcher: MemCache,
     forest: SearchForest,
     info: Info,
-    _marker: PhantomData<C>,
+    pending_events: Vec<PendingEvent<C>>,
 }
 
 pub struct SearchForest {
@@ -165,6 +162,27 @@ pub struct SearchForest {
     search_trees_pile: BinMerger<SearchTreeRef>,
     search_trees_decay: HashMap<u64, SearchTreeConstructed>,
     accesses_count: usize,
+}
+
+enum PendingEvent<C> where C: Context {
+    FlushButcher(PendingEventFlushButcher),
+    Inserted {
+        version: u64,
+        insert_context: C::Insert,
+    },
+    Removed {
+        version: u64,
+        remove_context: C::Remove,
+    },
+    LookupRangeMergerReady {
+        ranges_merger: LookupRangesMerger,
+        lookup_context: C::Lookup,
+    },
+}
+
+struct PendingEventFlushButcher {
+    search_tree_id: u64,
+    frozen_memcache: Arc<MemCache>,
 }
 
 impl<C> Performer<C> where C: Context {
@@ -188,7 +206,7 @@ impl<C> Performer<C> where C: Context {
                 block_entry_steps_pool,
                 forest,
                 info: Info::default(),
-                _marker: PhantomData,
+                pending_events: Vec::new(),
             },
         }
     }
@@ -239,7 +257,7 @@ impl<C> Inner<C> where C: Context {
         version
     }
 
-    fn maybe_flush(&mut self) -> FlushOutcome {
+    fn maybe_flush(&mut self) -> Option<PendingEventFlushButcher> {
         let items_count = self.butcher.len();
         if items_count >= self.params.butcher_block_size {
             let frozen_memcache =
@@ -249,12 +267,12 @@ impl<C> Inner<C> where C: Context {
             // self.search_trees_pile
             //     .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
             self.info.reset();
-            FlushOutcome::TimeToFlush {
+            Some(PendingEventFlushButcher {
                 search_tree_id,
                 frozen_memcache,
-            }
+            })
         } else {
-            FlushOutcome::NotFlushed
+            None
         }
     }
 
@@ -360,53 +378,75 @@ impl<C> Inner<C> where C: Context {
             }
         }
     }
-}
 
-enum FlushOutcome {
-    NotFlushed,
-    TimeToFlush {
-        search_tree_id: u64,
-        frozen_memcache: Arc<MemCache>,
-    },
+    fn poll(mut self) -> Kont<C> {
+        if let Some(event) = self.maybe_flush() {
+            self.pending_events.push(PendingEvent::FlushButcher(event));
+        }
+
+        match self.pending_events.pop() {
+            None =>
+                Kont::Poll(KontPoll { next: KontPollNext { inner: self, }, }),
+            Some(PendingEvent::FlushButcher(PendingEventFlushButcher { search_tree_id, frozen_memcache, })) =>
+                Kont::FlushButcher(KontFlushButcher {
+                    search_tree_id,
+                    frozen_memcache,
+                    next: KontFlushButcherNext { inner: self, },
+                }),
+            Some(PendingEvent::Inserted { version, insert_context, }) =>
+                Kont::Inserted(KontInserted {
+                    version,
+                    insert_context,
+                    next: KontInsertedNext { inner: self, },
+                }),
+            Some(PendingEvent::LookupRangeMergerReady { ranges_merger, lookup_context, }) =>
+                Kont::LookupRangeMergerReady(KontLookupRangeMergerReady {
+                    ranges_merger,
+                    lookup_context,
+                    next: KontLookupRangeMergerReadyNext { inner: self },
+                }),
+            Some(PendingEvent::Removed { version, remove_context, }) =>
+                Kont::Removed(KontRemoved {
+                    version,
+                    remove_context,
+                    next: KontRemovedNext { inner: self },
+                }),
+
+        }
+    }
 }
 
 impl<C> KontPollNext<C> where C: Context {
     pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value, insert_context: C::Insert) -> Kont<C> {
         let version = self.inner.insert(key, value);
-        Kont::Inserted(KontInserted {
+        self.inner.pending_events.push(PendingEvent::Inserted {
             version,
             insert_context,
-            next: KontInsertedNext {
-                inner: self.inner,
-            },
-        })
+        });
+        self.inner.poll()
     }
 
     pub fn begin_lookup_range(mut self, search_range: SearchRangeBounds, lookup_context: C::Lookup) -> Kont<C> {
 	let ranges_merger = self.inner.make_lookup_ranges_merger(search_range);
-        Kont::LookupRangeMergerReady(KontLookupRangeMergerReady {
+        self.inner.pending_events.push(PendingEvent::LookupRangeMergerReady {
             ranges_merger,
             lookup_context,
-            next: KontLookupRangeMergerReadyNext {
-                inner: self.inner,
-            },
-        })
+        });
+        self.inner.poll()
     }
 
     pub fn commit_lookup_range(mut self, lookup_range_token: LookupRangeToken) -> Kont<C> {
         self.inner.commit_lookup_range(lookup_range_token);
-        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+        self.inner.poll()
     }
 
     pub fn incoming_remove(mut self, key: kv::Key, remove_context: C::Remove) -> Kont<C> {
         let version = self.inner.remove(key);
-        Kont::Removed(KontRemoved {
+        self.inner.pending_events.push(PendingEvent::Removed {
             version,
             remove_context,
-            next: KontRemovedNext {
-                inner: self.inner,
-            },
-        })
+        });
+        self.inner.poll()
     }
 
     pub fn incoming_flush(mut self, flush_context: C::Flush) -> Kont<C> {
@@ -416,59 +456,37 @@ impl<C> KontPollNext<C> where C: Context {
 
     pub fn butcher_flushed(mut self, search_tree_id: u64, root_block: BlockRef) -> Kont<C> {
         self.inner.butcher_flushed(search_tree_id, root_block);
-        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+        self.inner.poll()
     }
 }
 
 impl<C> KontInsertedNext<C> where C: Context {
-    pub fn got_it(mut self) -> Kont<C> {
-	match self.inner.maybe_flush() {
-            FlushOutcome::NotFlushed =>
-                Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, }),
-            FlushOutcome::TimeToFlush { search_tree_id, frozen_memcache, } =>
-                Kont::FlushButcher(KontFlushButcher {
-                    search_tree_id,
-                    frozen_memcache,
-                    next: KontFlushButcherNext {
-                        inner: self.inner,
-                    },
-                }),
-        }
+    pub fn got_it(self) -> Kont<C> {
+        self.inner.poll()
     }
 }
 
 impl<C> KontRemovedNext<C> where C: Context {
-    pub fn got_it(mut self) -> Kont<C> {
-	match self.inner.maybe_flush() {
-            FlushOutcome::NotFlushed =>
-                Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, }),
-            FlushOutcome::TimeToFlush { search_tree_id, frozen_memcache, } =>
-                Kont::FlushButcher(KontFlushButcher {
-                    search_tree_id,
-                    frozen_memcache,
-                    next: KontFlushButcherNext {
-                        inner: self.inner,
-                    },
-                }),
-        }
+    pub fn got_it(self) -> Kont<C> {
+        self.inner.poll()
     }
 }
 
 impl<C> KontFlushedNext<C> where C: Context {
     pub fn commit_flush(self) -> Kont<C> {
-        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+        self.inner.poll()
     }
 }
 
 impl<C> KontFlushButcherNext<C> where C: Context {
     pub fn scheduled(self) -> Kont<C> {
-        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+        self.inner.poll()
     }
 }
 
 impl<C> KontLookupRangeMergerReadyNext<C> where C: Context {
     pub fn got_it(self) -> Kont<C> {
-        Kont::Poll(KontPoll { next: KontPollNext { inner: self.inner, }, })
+        self.inner.poll()
     }
 }
 
