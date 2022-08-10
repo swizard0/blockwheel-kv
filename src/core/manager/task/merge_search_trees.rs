@@ -1,6 +1,8 @@
 
 use alloc_pool::{
+    Unique,
     bytes::{
+        Bytes,
         BytesPool,
     },
 };
@@ -76,9 +78,111 @@ where J: edeltraud::Job + From<job::Job>,
       J::Output: From<job::JobOutput>,
       job::JobOutput: From<J::Output>,
 {
+    enum Task<J> where J: edeltraud::Job + From<job::Job> {
+        Job(edeltraud::Handle<J::Output>),
+    }
+
+    enum TaskOutput {
+        Job(JobDone),
+    }
+
+    impl<J> Task<J>
+    where J: edeltraud::Job + From<job::Job>,
+          J::Output: From<job::JobOutput>,
+          job::JobOutput: From<J::Output>,
+    {
+        async fn run(self) -> Result<TaskOutput, Error> {
+            match self {
+                Task::Job(job_handle) => {
+                    let job_output = job_handle.await
+                        .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                    let job_output: job::JobOutput = job_output.into();
+                    let job::ManagerTaskMergeSearchTreesDone(job_done) = job_output.into();
+                    Ok(TaskOutput::Job(job_done?))
+                },
+            }
+        }
+    }
+
+    // let mut tasks = FuturesUnordered::new();
 
     todo!()
 }
+
+pub struct JobArgs {
+    env: Env,
+    kont: Kont,
+}
+
+pub struct Env {
+    incoming: Incoming,
+    outgoing: Outgoing,
+}
+
+#[derive(Default)]
+struct Incoming {
+    received_block_tasks: Vec<ReceivedBlockTask>,
+}
+
+impl Incoming {
+    fn is_empty(&self) -> bool {
+        self.received_block_tasks.is_empty()
+    }
+
+    pub fn transfill_from(&mut self, from: &mut Self) {
+        self.received_block_tasks.extend(from.received_block_tasks.drain(..));
+    }
+}
+
+struct ReceivedBlockTask {
+    async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+    block_bytes: Bytes,
+}
+
+#[derive(Default)]
+struct Outgoing {
+    retrieve_block_tasks: Vec<RetrieveBlockTask>,
+}
+
+impl Outgoing {
+    fn is_empty(&self) -> bool {
+        self.retrieve_block_tasks.is_empty()
+    }
+}
+
+struct RetrieveBlockTask {
+    block_ref: BlockRef,
+    async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+}
+
+pub enum Kont {
+    CountStart {
+        merger: search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+    },
+    CountProceedAwaitBlocks {
+        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+    },
+}
+
+pub enum JobDone {
+    CountAwaitRetrieveBlockTasks {
+        env: Env,
+        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+    },
+    Finished,
+}
+
+pub type Output = Result<JobDone, Error>;
+
+pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
+
+    todo!()
+}
+
+
+
+
+
 
 // use std::{
 //     time::{
