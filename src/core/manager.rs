@@ -613,6 +613,20 @@ where J: edeltraud::Job + From<job::Job>,
                     }
                     mode = Mode::Regular;
                 }
+                // merge search trees
+                for merge_search_trees_query in job_args.env.outgoing.merge_search_trees.drain(..) {
+                    let task::performer::MergeSearchTreesQuery { ranges_merger, } = merge_search_trees_query;
+                    tasks.push(task::run_args(task::TaskArgs::MergeSearchTrees(
+                        task::merge_search_trees::Args {
+                            ranges_merger,
+                            wheels_pid: state.wheels_pid.clone(),
+                            blocks_pool: state.blocks_pool.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                            tree_block_size: state.params.performer_params.tree_block_size,
+                        },
+                    )));
+                    tasks_count += 1;
+                }
 
                 performer_state = match performer_state {
                     PerformerState::InProgress =>
@@ -633,166 +647,23 @@ where J: edeltraud::Job + From<job::Job>,
                     lookup_range_token,
                 }),
 
+            Event::Task(Ok(task::TaskDone::MergeSearchTrees(
+                task::merge_search_trees::Done {
+                    merged_search_tree_ref,
+                    merged_search_tree_items_count,
+                    lookup_range_token,
+                }))) =>
+                incoming.merge_search_trees_done.push(task::performer::EventMergeSearchTreesDone {
+                    merged_search_tree_ref,
+                    merged_search_tree_items_count,
+                    lookup_range_token,
+                }),
+
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
 
         }
     }
-
-//     let (bg_tasks_tx, bg_tasks_rx) = mpsc::channel(0);
-//     let mut fused_bg_tasks_rx = bg_tasks_rx.fuse();
-//     let mut bg_tasks_count = 0;
-
-//     let mut bg_tasks_supervisor_pid = child_supervisor_pid.clone();
-//     let mut bg_tasks_push = |args| {
-//         let mut bg_tasks_tx = bg_tasks_tx.clone();
-//         let bg_task = task::run_args(args);
-//         bg_tasks_supervisor_pid.spawn_link_temporary(async move {
-//             let task_result = bg_task.await;
-//             bg_tasks_tx.send(task_result).await.ok();
-//         });
-//     };
-
-//     let mut merge_search_trees_tasks_count = 0;
-
-//     enum Mode {
-//         Regular,
-//         Flushing { done_reply_tx: oneshot::Sender<Flushed>, },
-//     }
-
-//     let mut current_mode = Mode::Regular;
-
-//     loop {
-//         let maybe_task_args = maybe_merge_search_trees(
-//             &mut search_tree_refs,
-//             &search_trees,
-//             &state.thread_pool,
-//             &state.blocks_pool,
-//             &merge_blocks_pool,
-//             &merger_iters_pool,
-//             &state.wheels_pid,
-//             state.params.search_tree_params.tree_block_size,
-//             state.params.search_tree_params.merge_tasks_count_limit,
-//         );
-//         if let Some(task_args) = maybe_task_args {
-//             bg_tasks_push(task_args);
-//             bg_tasks_count += 1;
-//             merge_search_trees_tasks_count += 1;
-//             continue;
-//         }
-//         break;
-//     }
-
-//     loop {
-//         enum Event<R, F, T> {
-//             Request(Option<R>),
-//             FlushCache(Option<F>),
-//             Task(T),
-//         }
-
-//         let event = match mem::replace(&mut current_mode, Mode::Regular) {
-//             Mode::Regular if tasks_count == 0 =>
-//                 select! {
-//                     result = state.fused_request_rx.next() =>
-//                         Event::Request(result),
-//                     result = state.fused_flush_cache_rx.next() =>
-//                         Event::FlushCache(result),
-//                     result = fused_bg_tasks_rx.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             bg_tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                 },
-//             Mode::Regular =>
-//                 select! {
-//                     result = state.fused_request_rx.next() =>
-//                         Event::Request(result),
-//                     result = state.fused_flush_cache_rx.next() =>
-//                         Event::FlushCache(result),
-//                     result = fused_bg_tasks_rx.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             bg_tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                     result = tasks.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                 },
-//             Mode::Flushing { done_reply_tx, } if tasks_count + bg_tasks_count == 0 => {
-//                 log::debug!("Mode::Flushing: all tasks finished, responding Flushed and switching mode");
-//                 if let Err(_send_error) = done_reply_tx.send(Flushed) {
-//                     log::warn!("client canceled flush request");
-//                 }
-//                 continue;
-//             },
-//             Mode::Flushing { done_reply_tx, } if tasks_count == 0 => {
-//                 log::debug!("FlushMode::InProgress: {} tasks left", bg_tasks_count);
-//                 current_mode = Mode::Flushing { done_reply_tx, };
-//                 select! {
-//                     result = state.fused_flush_cache_rx.next() =>
-//                         Event::FlushCache(result),
-//                     result = fused_bg_tasks_rx.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             bg_tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                 }
-//             },
-//             Mode::Flushing { done_reply_tx, } if bg_tasks_count == 0 => {
-//                 log::debug!("FlushMode::InProgress: {} tasks left", tasks_count);
-//                 current_mode = Mode::Flushing { done_reply_tx, };
-//                 select! {
-//                     result = state.fused_flush_cache_rx.next() =>
-//                         Event::FlushCache(result),
-//                     result = tasks.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                 }
-//             },
-//             Mode::Flushing { done_reply_tx, } => {
-//                 log::debug!("FlushMode::InProgress: {} tasks left", tasks_count + bg_tasks_count);
-//                 current_mode = Mode::Flushing { done_reply_tx, };
-//                 select! {
-//                     result = state.fused_flush_cache_rx.next() =>
-//                         Event::FlushCache(result),
-//                     result = fused_bg_tasks_rx.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             bg_tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                     result = tasks.next() => match result {
-//                         None =>
-//                             unreachable!(),
-//                         Some(task) => {
-//                             tasks_count -= 1;
-//                             Event::Task(task)
-//                         },
-//                     },
-//                 }
-//             },
-//         };
 
 //         match event {
 //             Event::FlushCache(None) => {
@@ -1230,79 +1101,3 @@ where J: edeltraud::Job + From<job::Job>,
 //         }
 //     }
 }
-
-// fn launch_lookup_request<T, J>(
-//     key: kv::Key,
-//     reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
-//     lookup_requests: &mut Set<LookupRequest>,
-//     search_trees: &Set<search_tree::Pid>,
-//     butcher_pid: &butcher::Pid,
-//     mut tasks_push: T,
-// )
-// where T: FnMut(task::TaskArgs<J>),
-//       J: edeltraud::Job,
-// {
-//     let request_ref = lookup_requests.insert(LookupRequest {
-//         key: key.clone(),
-//         reply_tx,
-//         butcher_status: LookupRequestButcherStatus::NotReady,
-//         pending_count: 1 + search_trees.len(),
-//         found_fold: None,
-//     });
-//     tasks_push(task::TaskArgs::LookupButcher(
-//         task::lookup_butcher::Args {
-//             key: key.clone(),
-//             request_ref: request_ref.clone(),
-//             butcher_pid: butcher_pid.clone(),
-//         },
-//     ));
-//     for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-//         tasks_push(task::TaskArgs::LookupSearchTree(
-//             task::lookup_search_tree::Args {
-//                 key: key.clone(),
-//                 request_ref: request_ref.clone(),
-//                 search_tree_pid: search_tree_pid.clone(),
-//             },
-//         ));
-//     }
-// }
-
-// #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-// struct SearchTreeRef {
-//     items_count: usize,
-//     search_tree_ref: Ref,
-// }
-
-// fn maybe_merge_search_trees<J>(
-//     search_tree_refs: &mut bin_merger::BinMerger<SearchTreeRef>,
-//     search_trees: &Set<search_tree::Pid>,
-//     thread_pool: &edeltraud::Edeltraud<J>,
-//     blocks_pool: &BytesPool,
-//     merge_blocks_pool: &pool::Pool<Vec<storage::OwnedEntry>>,
-//     merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIterRx>>,
-//     wheels_pid: &wheels::Pid,
-//     tree_block_size: usize,
-//     tasks_count_limit: usize,
-// )
-//     -> Option<task::TaskArgs<J>>
-// where J: edeltraud::Job
-// {
-//     let (search_tree_a_ref, search_tree_b_ref) = search_tree_refs.pop()?;
-//     let search_tree_a_pid = search_trees.get(search_tree_a_ref.search_tree_ref).unwrap().clone();
-//     let search_tree_b_pid = search_trees.get(search_tree_b_ref.search_tree_ref).unwrap().clone();
-//     Some(task::TaskArgs::MergeSearchTrees(
-//         task::merge_search_trees::Args {
-//             search_tree_a_ref: search_tree_a_ref.search_tree_ref,
-//             search_tree_b_ref: search_tree_b_ref.search_tree_ref,
-//             search_tree_a_pid,
-//             search_tree_b_pid,
-//             thread_pool: thread_pool.clone(),
-//             blocks_pool: blocks_pool.clone(),
-//             merge_blocks_pool: merge_blocks_pool.clone(),
-//             merger_iters_pool: merger_iters_pool.clone(),
-//             wheels_pid: wheels_pid.clone(),
-//             tree_block_size,
-//             tasks_count_limit,
-//         },
-//     ))
-// }

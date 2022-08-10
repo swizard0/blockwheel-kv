@@ -71,6 +71,7 @@ pub struct Incoming {
     pub request_flush: Vec<RequestFlush>,
     pub butcher_flushed: Vec<EventButcherFlushed>,
     pub lookup_range_merge_done: Vec<EventLookupRangeMergeDone>,
+    pub merge_search_trees_done: Vec<EventMergeSearchTreesDone>,
 }
 
 impl Incoming {
@@ -80,7 +81,8 @@ impl Incoming {
             self.request_lookup_range.is_empty() &&
             self.request_flush.is_empty() &&
             self.butcher_flushed.is_empty() &&
-            self.lookup_range_merge_done.is_empty()
+            self.lookup_range_merge_done.is_empty() &&
+            self.merge_search_trees_done.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
@@ -90,6 +92,7 @@ impl Incoming {
         self.request_flush.extend(from.request_flush.drain(..));
         self.butcher_flushed.extend(from.butcher_flushed.drain(..));
         self.lookup_range_merge_done.extend(from.lookup_range_merge_done.drain(..));
+        self.merge_search_trees_done.extend(from.merge_search_trees_done.drain(..));
     }
 }
 
@@ -102,18 +105,26 @@ pub struct EventLookupRangeMergeDone {
     pub lookup_range_token: performer::LookupRangeToken,
 }
 
+pub struct EventMergeSearchTreesDone {
+    pub merged_search_tree_ref: BlockRef,
+    pub merged_search_tree_items_count: usize,
+    pub lookup_range_token: performer::LookupRangeToken,
+}
+
 #[derive(Default)]
 pub struct Outgoing {
     pub flush_butcher: Vec<FlushButcherQuery>,
     pub lookup_range_merger_ready: Vec<LookupRangeMergerReadyQuery>,
     pub flushed: Vec<FlushedQuery>,
+    pub merge_search_trees: Vec<MergeSearchTreesQuery>,
 }
 
 impl Outgoing {
     fn is_empty(&self) -> bool {
         self.flush_butcher.is_empty() &&
             self.lookup_range_merger_ready.is_empty() &&
-            self.flushed.is_empty()
+            self.flushed.is_empty() &&
+            self.merge_search_trees.is_empty()
     }
 }
 
@@ -129,6 +140,10 @@ pub struct LookupRangeMergerReadyQuery {
 
 pub struct FlushedQuery {
     pub flush_context: RequestFlushReplyTx,
+}
+
+pub struct MergeSearchTreesQuery {
+    pub ranges_merger: performer::LookupRangesMerger,
 }
 
 pub enum Kont {
@@ -166,6 +181,17 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     next.butcher_flushed(search_tree_id, root_block)
                 } else if let Some(EventLookupRangeMergeDone { lookup_range_token, }) = env.incoming.lookup_range_merge_done.pop() {
                     next.commit_lookup_range(lookup_range_token)
+                } else if let Some(merge_search_trees_done) = env.incoming.merge_search_trees_done.pop() {
+                    let EventMergeSearchTreesDone {
+                        merged_search_tree_ref,
+                        merged_search_tree_items_count,
+                        lookup_range_token,
+                    } = merge_search_trees_done;
+                    next.search_trees_merged(
+                        merged_search_tree_ref,
+                        merged_search_tree_items_count,
+                        lookup_range_token,
+                    )
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },
@@ -206,6 +232,10 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                         lookup_context,
                     });
                     next.got_it()
+                },
+                performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees { ranges_merger, next, }) => {
+                    env.outgoing.merge_search_trees.push(MergeSearchTreesQuery { ranges_merger, });
+                    next.scheduled()
                 },
             };
         }

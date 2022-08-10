@@ -71,6 +71,7 @@ pub enum Kont<C> where C: Context {
     Flushed(KontFlushed<C>),
     FlushButcher(KontFlushButcher<C>),
     LookupRangeMergerReady(KontLookupRangeMergerReady<C>),
+    MergeSearchTrees(KontMergeSearchTrees<C>),
 }
 
 pub struct KontPoll<C> where C: Context {
@@ -130,6 +131,15 @@ pub struct KontLookupRangeMergerReadyNext<C> where C: Context {
     inner: Inner<C>,
 }
 
+pub struct KontMergeSearchTrees<C> where C: Context {
+    pub ranges_merger: LookupRangesMerger,
+    pub next: KontMergeSearchTreesNext<C>,
+}
+
+pub struct KontMergeSearchTreesNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
 pub struct LookupRangesMerger {
     pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
     pub token: LookupRangeToken,
@@ -183,11 +193,16 @@ enum PendingEvent<C> where C: Context {
     Flushed {
         flush_context: C::Flush,
     },
+    MergeSearchTrees(PendingEventMergeSearchTrees),
 }
 
 struct PendingEventFlushButcher {
     search_tree_id: u64,
     frozen_memcache: Arc<MemCache>,
+}
+
+struct PendingEventMergeSearchTrees {
+    ranges_merger: LookupRangesMerger,
 }
 
 impl<C> Performer<C> where C: Context {
@@ -271,7 +286,7 @@ impl<C> Inner<C> where C: Context {
             let search_tree_id = self.forest.add_bootstrap(frozen_memcache.clone());
             self.forest.butcher_flushes_count += 1;
             // we do not want to merge the tree until it is written to blockwheel
-            // self.search_trees_pile
+            // self.forest.search_trees_pile
             //     .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
             self.info.reset();
             Some(PendingEventFlushButcher {
@@ -291,6 +306,8 @@ impl<C> Inner<C> where C: Context {
                 unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
         };
         self.forest.add_constructed(root_block, items_count);
+        self.forest.search_trees_pile
+            .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
         assert!(self.forest.butcher_flushes_count > 0);
         self.forest.butcher_flushes_count -= 1;
     }
@@ -298,8 +315,6 @@ impl<C> Inner<C> where C: Context {
     fn make_lookup_ranges_merger(&mut self, search_range: SearchRangeBounds) -> LookupRangesMerger {
         let mut sources = self.sources_pool.lend(Vec::new);
         sources.clear();
-
-        let mut search_trees_ids = Vec::new();
 
         let butcher_source = LookupRangeSource {
             source: search_ranges_merge::Source::Butcher(
@@ -312,35 +327,16 @@ impl<C> Inner<C> where C: Context {
         };
         sources.push(butcher_source);
 
-        let mut total_accesses_count = 0;
+        let mut search_trees_ids = Vec::new();
         for (search_tree_id, search_tree) in &mut self.forest.search_trees {
-            let source = match search_tree {
-                SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
-                    LookupRangeSource {
-                        source: search_ranges_merge::Source::Butcher(
-                            search_ranges_merge::SourceButcher::new(
-                                search_range.clone(),
-                                frozen_memcache.clone(),
-                            ),
-                        ),
-                    },
-                SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
-                    *accesses_count += 1;
-                    total_accesses_count += 1;
-                    search_trees_ids.push(*search_tree_id);
-                    LookupRangeSource {
-                        source: search_ranges_merge::Source::SearchTree(
-                            search_ranges_merge::SourceSearchTree::new(
-                                search_range.clone(),
-                                root_block.clone(),
-                            ),
-                        ),
-                    }
-                },
-            };
+            let source = search_tree.build_source(
+                *search_tree_id,
+                &search_range,
+                &mut self.forest.accesses_count,
+                &mut search_trees_ids,
+            );
             sources.push(source);
         }
-        self.forest.accesses_count += total_accesses_count;
         sources.shrink_to_fit();
 
         let source = search_ranges_merge::RangesMergeCps::new(
@@ -381,14 +377,79 @@ impl<C> Inner<C> where C: Context {
                             self.forest.accesses_count -= 1;
 
                             if search_tree.accesses_count == 0 {
-                                // TODO: demand search tree removal
 
+                                todo!(); // TODO: demand search tree removal
                             }
                         },
                     }
                 },
             }
         }
+    }
+
+    fn maybe_merge_search_trees(&mut self) -> Option<PendingEventMergeSearchTrees> {
+        let (SearchTreeRef { search_tree_id: search_tree_id_a, .. }, SearchTreeRef { search_tree_id: search_tree_id_b, .. }) =
+             self.forest.search_trees_pile.pop()?;
+
+        let search_range = SearchRangeBounds::unbounded();
+        let mut search_trees_ids = Vec::new();
+        let mut sources = self.sources_pool.lend(Vec::new);
+        sources.clear();
+        let search_tree_a = self.forest.search_trees.get_mut(&search_tree_id_a).unwrap();
+        sources.push(search_tree_a.build_source(
+            search_tree_id_a,
+            &search_range,
+            &mut self.forest.accesses_count,
+            &mut search_trees_ids,
+        ));
+        let search_tree_b = self.forest.search_trees.get_mut(&search_tree_id_b).unwrap();
+        sources.push(search_tree_b.build_source(
+            search_tree_id_b,
+            &search_range,
+            &mut self.forest.accesses_count,
+            &mut search_trees_ids,
+        ));
+        sources.shrink_to_fit();
+
+        Some(PendingEventMergeSearchTrees {
+            ranges_merger: LookupRangesMerger {
+                source: search_ranges_merge::RangesMergeCps::new(
+                    sources,
+                    self.kv_pool.clone(),
+                    self.block_entry_steps_pool.clone(),
+                ),
+                token: LookupRangeToken {
+                    search_trees_ids,
+                },
+            },
+        })
+    }
+
+    fn search_trees_merged(&mut self, root_block: BlockRef, items_count: usize, lookup_range_token: LookupRangeToken) {
+        for search_tree_id in lookup_range_token.search_trees_ids {
+            match self.forest.search_trees.remove(&search_tree_id) {
+                None | Some(SearchTree::Bootstrap(..)) =>
+                    unreachable!(),
+                Some(SearchTree::Constructed(mut search_tree)) => {
+                    assert!(search_tree.accesses_count > 0);
+                    search_tree.accesses_count -= 1;
+                    assert!(self.forest.accesses_count > 0);
+                    self.forest.accesses_count -= 1;
+                    if search_tree.accesses_count == 0 {
+
+                        todo!(); // TODO: demand search tree removal
+                    } else {
+                        // schedule for decay
+                        self.forest.search_trees_decay
+                            .insert(search_tree_id, search_tree);
+                    }
+                },
+            }
+        }
+        let search_tree_id =
+            self.forest.add_constructed(root_block, items_count);
+        self.forest.search_trees_pile
+            .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
     }
 
     fn poll(mut self) -> Kont<C> {
@@ -406,6 +467,10 @@ impl<C> Inner<C> where C: Context {
                     .map(|flush_context| PendingEvent::Flushed { flush_context, });
                 self.pending_events.extend(events);
             }
+        }
+        // search trees merge
+        while let Some(event) = self.maybe_merge_search_trees() {
+            self.pending_events.push(PendingEvent::MergeSearchTrees(event));
         }
 
         match self.pending_events.pop() {
@@ -439,6 +504,11 @@ impl<C> Inner<C> where C: Context {
                 Kont::Flushed(KontFlushed {
                     flush_context,
                     next: KontFlushedNext { inner: self, },
+                }),
+            Some(PendingEvent::MergeSearchTrees(PendingEventMergeSearchTrees { ranges_merger, })) =>
+                Kont::MergeSearchTrees(KontMergeSearchTrees {
+                    ranges_merger,
+                    next: KontMergeSearchTreesNext { inner: self, },
                 }),
         }
     }
@@ -486,6 +556,18 @@ impl<C> KontPollNext<C> where C: Context {
         self.inner.butcher_flushed(search_tree_id, root_block);
         self.inner.poll()
     }
+
+    pub fn search_trees_merged(
+        mut self,
+        merged_search_tree_ref: BlockRef,
+        merged_search_tree_items_count: usize,
+        lookup_range_token: LookupRangeToken,
+    )
+        -> Kont<C>
+    {
+        self.inner.search_trees_merged(merged_search_tree_ref, merged_search_tree_items_count, lookup_range_token);
+        self.inner.poll()
+    }
 }
 
 impl<C> KontInsertedNext<C> where C: Context {
@@ -514,6 +596,12 @@ impl<C> KontFlushButcherNext<C> where C: Context {
 
 impl<C> KontLookupRangeMergerReadyNext<C> where C: Context {
     pub fn got_it(self) -> Kont<C> {
+        self.inner.poll()
+    }
+}
+
+impl<C> KontMergeSearchTreesNext<C> where C: Context {
+    pub fn scheduled(self) -> Kont<C> {
         self.inner.poll()
     }
 }
@@ -595,6 +683,43 @@ impl SearchForest {
 
     fn remove(&mut self, search_tree_id: u64) -> Option<SearchTree> {
         self.search_trees.remove(&search_tree_id)
+    }
+}
+
+impl SearchTree {
+    fn build_source(
+        &mut self,
+        search_tree_id: u64,
+        search_range: &SearchRangeBounds,
+        total_accesses_count: &mut usize,
+        search_trees_ids: &mut Vec<u64>,
+    )
+        -> LookupRangeSource
+    {
+        match self {
+            SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
+                LookupRangeSource {
+                    source: search_ranges_merge::Source::Butcher(
+                        search_ranges_merge::SourceButcher::new(
+                            search_range.clone(),
+                            frozen_memcache.clone(),
+                        ),
+                    ),
+                },
+            SearchTree::Constructed(SearchTreeConstructed { root_block, accesses_count, }) => {
+                *accesses_count += 1;
+                *total_accesses_count += 1;
+                search_trees_ids.push(search_tree_id);
+                LookupRangeSource {
+                    source: search_ranges_merge::Source::SearchTree(
+                        search_ranges_merge::SourceSearchTree::new(
+                            search_range.clone(),
+                            root_block.clone(),
+                        ),
+                    ),
+                }
+            },
+        }
     }
 }
 

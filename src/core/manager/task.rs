@@ -17,17 +17,20 @@ use crate::{
 pub mod performer;
 pub mod flush_butcher;
 pub mod lookup_range_merge;
+pub mod merge_search_trees;
 
 pub enum TaskArgs<J> where J: edeltraud::Job {
     Performer(performer::Args<J>),
     FlushButcher(flush_butcher::Args<J>),
     LookupRangeMerge(lookup_range_merge::Args<J>),
+    MergeSearchTrees(merge_search_trees::Args<J>),
 }
 
 pub enum TaskDone {
     Performer(performer::Done),
     FlushButcher(flush_butcher::Done),
     LookupRangeMerge(lookup_range_merge::Done),
+    MergeSearchTrees(merge_search_trees::Done),
 }
 
 #[derive(Debug)]
@@ -35,6 +38,7 @@ pub enum Error {
     Performer(performer::Error),
     FlushButcher(flush_butcher::Error),
     LookupRangeMerge(lookup_range_merge::Error),
+    MergeSearchTrees(merge_search_trees::Error),
 }
 
 pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
@@ -57,6 +61,11 @@ where J: edeltraud::Job + From<job::Job>,
             TaskDone::LookupRangeMerge(
                 lookup_range_merge::run(args).await
                     .map_err(Error::LookupRangeMerge)?,
+            ),
+        TaskArgs::MergeSearchTrees(args) =>
+            TaskDone::MergeSearchTrees(
+                merge_search_trees::run(args).await
+                    .map_err(Error::MergeSearchTrees)?,
             ),
     })
 }

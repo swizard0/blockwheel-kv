@@ -1,3 +1,9 @@
+use std::{
+    marker::{
+        PhantomData,
+    },
+};
+
 use serde_derive::{
     Serialize,
     Deserialize,
@@ -171,9 +177,9 @@ pub enum BlockSerializerContinue<B> {
 
 pub struct BlockDeserializeIter<'a, R, O> where O: Options {
     deserializer: bincode::Deserializer<R, O>,
-    block_bytes: &'a Bytes,
     block_header: BlockHeader,
     entries_read: usize,
+    _marker: PhantomData<&'a ()>,
 }
 
 pub fn block_deserialize_iter<'a>(
@@ -191,23 +197,15 @@ pub fn block_deserialize_iter<'a>(
         .map_err(Error::BlockHeaderDeserialize)?;
     Ok(BlockDeserializeIter {
         deserializer,
-        block_bytes,
         block_header,
         entries_read: 0,
+        _marker: PhantomData,
     })
 }
 
 impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
-    }
-
-    pub fn to_owned_entry(&'a self, entry: &Entry<'a>) -> OwnedEntry {
-        OwnedEntry::from_entry(entry, &self.block_bytes)
-    }
-
-    pub fn to_owned_jump_ref(&'a self, jump_ref: &JumpRef<'a>) -> OwnedJumpRef {
-        OwnedJumpRef::from_jump_ref(jump_ref, &self.block_bytes)
     }
 }
 
