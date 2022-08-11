@@ -102,13 +102,13 @@ pub struct EventButcherFlushed {
 }
 
 pub struct EventLookupRangeMergeDone {
-    pub lookup_range_token: performer::LookupRangeToken,
+    pub access_token: performer::AccessToken,
 }
 
 pub struct EventMergeSearchTreesDone {
     pub merged_search_tree_ref: BlockRef,
     pub merged_search_tree_items_count: usize,
-    pub lookup_range_token: performer::LookupRangeToken,
+    pub access_token: performer::AccessToken,
 }
 
 #[derive(Default)]
@@ -143,7 +143,7 @@ pub struct FlushedQuery {
 }
 
 pub struct MergeSearchTreesQuery {
-    pub ranges_merger: performer::LookupRangesMerger,
+    pub ranges_merger: performer::SearchTreesMerger,
 }
 
 pub enum Kont {
@@ -179,18 +179,18 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     next.incoming_flush(reply_tx)
                 } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
                     next.butcher_flushed(search_tree_id, root_block)
-                } else if let Some(EventLookupRangeMergeDone { lookup_range_token, }) = env.incoming.lookup_range_merge_done.pop() {
-                    next.commit_lookup_range(lookup_range_token)
+                } else if let Some(EventLookupRangeMergeDone { access_token, }) = env.incoming.lookup_range_merge_done.pop() {
+                    next.commit_lookup_range(access_token)
                 } else if let Some(merge_search_trees_done) = env.incoming.merge_search_trees_done.pop() {
                     let EventMergeSearchTreesDone {
                         merged_search_tree_ref,
                         merged_search_tree_items_count,
-                        lookup_range_token,
+                        access_token,
                     } = merge_search_trees_done;
                     next.search_trees_merged(
                         merged_search_tree_ref,
                         merged_search_tree_items_count,
-                        lookup_range_token,
+                        access_token,
                     )
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });

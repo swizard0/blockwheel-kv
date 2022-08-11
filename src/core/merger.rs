@@ -20,7 +20,6 @@ pub struct ItersMergerCps<V, S> {
     env: Env<V, S>,
 }
 
-#[derive(Clone)]
 pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     ScheduleIterAwait(KontScheduleIterAwait<V, S>),
     AwaitScheduled(KontAwaitScheduled<V, S>),
@@ -29,59 +28,49 @@ pub enum Kont<V, S> where V: DerefMut<Target = Vec<S>> {
     Finished,
 }
 
-#[derive(Clone)]
 pub struct KontScheduleIterAwait<V, S> where V: DerefMut<Target = Vec<S>> {
     pub await_iter: S,
     pub next: KontScheduleIterAwaitNext<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontScheduleIterAwaitNext<V, S> where V: DerefMut<Target = Vec<S>> {
     state_await: StateAwait,
     env: Env<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontAwaitScheduled<V, S> where V: DerefMut<Target = Vec<S>> {
     pub next: KontAwaitScheduledNext<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontAwaitScheduledNext<V, S> where V: DerefMut<Target = Vec<S>> {
     state_await: StateAwait,
     env: Env<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontEmitDeprecated<V, S> where V: DerefMut<Target = Vec<S>> {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
     pub next: KontEmitDeprecatedNext<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontEmitDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontEmitItem<V, S> where V: DerefMut<Target = Vec<S>>  {
     pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
     pub next: KontEmitItemNext<V, S>,
 }
 
-#[derive(Clone)]
 pub struct KontEmitItemNext<V, S> where V: DerefMut<Target = Vec<S>> {
     env: Env<V, S>,
 }
 
-#[derive(Clone)]
 struct Env<V, S> {
     iters: V,
     fronts: BinaryHeap<Front<S>>,
     candidate: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
 }
 
-#[derive(Clone)]
 struct Front<S> {
     front_item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
     iter: S,
@@ -92,7 +81,7 @@ enum State {
     Flush,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct StateAwait {
     pending_count: usize,
 }

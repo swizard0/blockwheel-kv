@@ -52,7 +52,7 @@ pub struct Args<J> where J: edeltraud::Job {
 }
 
 pub struct Done {
-    pub lookup_range_token: performer::LookupRangeToken,
+    pub access_token: performer::AccessToken,
 }
 
 #[derive(Debug)]
@@ -230,7 +230,7 @@ where J: edeltraud::Job + From<job::Job>,
             if let Err(_send_error) = reply_tx.send(LookupRange { key_values_rx, }) {
                 log::warn!("client canceled lookup_range request");
                 return Ok(Done {
-                    lookup_range_token: ranges_merger.token,
+                    access_token: ranges_merger.token,
                 });
             }
             TxState::Idle(TxStateIdle::Stream { key_values_tx, })
@@ -261,7 +261,7 @@ where J: edeltraud::Job + From<job::Job>,
         if let TxState::Idle(..) = &tx_state {
             if let None = &maybe_active_item {
                 if let MergerState::Finished = merger_state {
-                    return Ok(Done { lookup_range_token: ranges_merger.token, });
+                    return Ok(Done { access_token: ranges_merger.token, });
                 }
             }
         }
@@ -441,7 +441,7 @@ where J: edeltraud::Job + From<job::Job>,
                 },
 
             TaskOutput::TxDropped =>
-                return Ok(Done { lookup_range_token: ranges_merger.token, }),
+                return Ok(Done { access_token: ranges_merger.token, }),
 
         }
     }

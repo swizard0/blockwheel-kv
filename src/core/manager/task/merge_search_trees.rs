@@ -1,5 +1,12 @@
+use futures::{
+    stream::{
+        FuturesUnordered,
+    },
+    StreamExt,
+};
 
 use alloc_pool::{
+    pool,
     bytes::{
         Bytes,
         BytesPool,
@@ -21,6 +28,7 @@ use crate::{
         manager::{
             task::{
                 Wheels,
+                WheelRef,
             },
         },
         performer,
@@ -30,6 +38,7 @@ use crate::{
         SearchTreeBuilderCps,
         SearchTreeBuilderKont,
         SearchTreeBuilderBlockNext,
+        SearchTreeBuilderBlockEntry,
         SearchTreeBuilderItemOrBlockNext,
         SearchRangesMergeCps,
         SearchRangesMergeKont,
@@ -39,9 +48,10 @@ use crate::{
 };
 
 pub struct Args<J> where J: edeltraud::Job {
-    pub ranges_merger: performer::LookupRangesMerger,
+    pub ranges_merger: performer::SearchTreesMerger,
     pub wheels: wheels::Wheels,
     pub blocks_pool: BytesPool,
+    pub block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub tree_block_size: usize,
 }
@@ -49,7 +59,7 @@ pub struct Args<J> where J: edeltraud::Job {
 pub struct Done {
     pub merged_search_tree_ref: BlockRef,
     pub merged_search_tree_items_count: usize,
-    pub lookup_range_token: performer::LookupRangeToken,
+    pub access_token: performer::AccessToken,
 }
 
 #[derive(Debug)]
@@ -66,6 +76,7 @@ pub async fn run<J>(
         ranges_merger,
         wheels,
         blocks_pool,
+        block_entries_pool,
         thread_pool,
         tree_block_size,
     }: Args<J>,
@@ -79,15 +90,17 @@ where J: edeltraud::Job + From<job::Job>,
         ranges_merger,
         Wheels::Regular(wheels),
         blocks_pool,
+        block_entries_pool,
         thread_pool,
         tree_block_size,
     ).await
 }
 
 async fn inner_run<J>(
-    ranges_merger: performer::LookupRangesMerger,
+    ranges_merger: performer::SearchTreesMerger,
     wheels: Wheels,
     blocks_pool: BytesPool,
+    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     thread_pool: edeltraud::Edeltraud<J>,
     tree_block_size: usize,
 )
@@ -122,11 +135,126 @@ where J: edeltraud::Job + From<job::Job>,
         }
     }
 
+    let mut tasks = FuturesUnordered::new();
 
+    enum JobState {
+        Ready { job_args: JobArgs, },
+        InProgress,
+        Finished,
+    }
 
-    // let mut tasks = FuturesUnordered::new();
+    let mut job_state = JobState::Ready {
+        job_args: JobArgs {
+            env: Env {
+                wheels: wheels.clone(),
+                blocks_pool: blocks_pool.clone(),
+                incoming: Incoming::default(),
+                outgoing: Outgoing::default(),
+            },
+            merge_kont: MergeKont::Start {
+                merger: ranges_merger.source_count_items,
+            },
+            build_kont: BuildKont::CountItems {
+                items_count: 0,
+                merger_source_build: ranges_merger.source_build,
+            },
+        },
+    };
 
-    todo!()
+    let mut incoming = Incoming::default();
+
+    loop {
+        enum JobAction<A, S> {
+            Run(A),
+            KeepState(S),
+        }
+
+        let job_action = match job_state {
+            JobState::Ready { job_args: job_args @ JobArgs { merge_kont: MergeKont::Start { .. }, .. }, } =>
+                JobAction::Run(job_args),
+            JobState::Ready { job_args: job_args @ JobArgs { build_kont: BuildKont::Active { kont: BuildKontActive::Start { .. }, .. }, .. }, } =>
+                JobAction::Run(job_args),
+            JobState::Ready { job_args: job_args @ JobArgs { merge_kont: MergeKont::ProceedAwaitBlocks { .. }, .. }, } if !incoming.is_empty() =>
+                JobAction::Run(job_args),
+            JobState::Ready {
+                job_args: job_args @ JobArgs {
+                    build_kont: BuildKont::Active {
+                        kont: BuildKontActive::ProceedItemOrWrittenBlock { .. },
+                        ..
+                    },
+                    ..
+                },
+            } if !incoming.is_empty() =>
+                JobAction::Run(job_args),
+            JobState::Ready {
+                job_args: job_args @ JobArgs {
+                    build_kont: BuildKont::Active {
+                        kont: BuildKontActive::ProceedWrittenBlock { .. },
+                        ..
+                    },
+                    ..
+                },
+            } if !incoming.is_empty() =>
+                JobAction::Run(job_args),
+            other =>
+                JobAction::KeepState(other),
+        };
+
+        job_state = match job_action {
+            JobAction::Run(mut job_args) => {
+                job_args.env.incoming.transfill_from(&mut incoming);
+                let job = job::Job::ManagerTaskMergeSearchTrees(job_args);
+                let job_handle = thread_pool.spawn_handle(job)
+                    .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                tasks.push(Task::<J>::Job(job_handle).run());
+                JobState::InProgress
+            },
+            JobAction::KeepState(state) =>
+                state,
+        };
+
+        match tasks.next().await.unwrap()? {
+
+            TaskOutput::Job(JobDone::Await { mut env, await_merge_kont, await_build_kont, }) => {
+
+                todo!();
+            },
+
+            TaskOutput::Job(JobDone::ItemsCounted { env, items_count, merger_source_build, }) =>
+                job_state = match job_state {
+                    JobState::InProgress =>
+                        JobState::Ready {
+                            job_args: JobArgs {
+                                env,
+                                merge_kont: MergeKont::Start {
+                                    merger: merger_source_build,
+                                },
+                                build_kont: BuildKont::Active {
+                                    item_arrived: None,
+                                    kont: BuildKontActive::Start {
+                                        builder: search_tree_builder::BuilderCps::new(
+                                            block_entries_pool.clone(),
+                                            search_tree_builder::Params {
+                                                tree_items_count: items_count,
+                                                tree_block_size,
+                                            },
+                                        ),
+                                    },
+                                },
+                            },
+                        },
+                    JobState::Ready { .. } | JobState::Finished { .. } =>
+                        unreachable!(),
+                },
+
+            TaskOutput::Job(JobDone::Finished { root_block, }) => {
+
+                todo!();
+            },
+
+        }
+
+    }
 }
 
 pub struct JobArgs {
@@ -136,6 +264,7 @@ pub struct JobArgs {
 }
 
 pub struct Env {
+    wheels: Wheels,
     blocks_pool: BytesPool,
     incoming: Incoming,
     outgoing: Outgoing,
@@ -189,6 +318,7 @@ struct RetrieveBlockTask {
 
 struct WriteBlockTask {
     async_ref: Ref,
+    wheel_ref: WheelRef,
     block_bytes: Bytes,
 }
 
@@ -209,6 +339,7 @@ pub enum MergeKont {
 pub enum BuildKont {
     CountItems {
         items_count: usize,
+        merger_source_build: SearchRangesMergeCps,
     },
     Active {
         item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
@@ -239,6 +370,7 @@ pub enum JobDone {
     },
     ItemsCounted {
         items_count: usize,
+        merger_source_build: SearchRangesMergeCps,
         env: Env,
     },
     Finished {
@@ -275,7 +407,7 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 },
             MergeKont::ProceedItem { item, next, } =>
                 match &mut build_kont {
-                    BuildKont::CountItems { items_count, } => {
+                    BuildKont::CountItems { items_count, .. } => {
                         *items_count += 1;
                         MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
                     },
@@ -291,7 +423,10 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
         };
 
         enum BuildKontState<K, A, I> {
-            CountItems { items_count: usize, },
+            CountItems {
+                items_count: usize,
+                merger_source_build: SearchRangesMergeCps,
+            },
             Active {
                 item_arrived: I,
                 kont: Active<K, A>,
@@ -305,8 +440,8 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
         }
 
         let build_kont_state = match build_kont {
-            BuildKont::CountItems { items_count, } =>
-                BuildKontState::CountItems { items_count, },
+            BuildKont::CountItems { items_count, merger_source_build, } =>
+                BuildKontState::CountItems { items_count, merger_source_build, },
             BuildKont::Active { item_arrived, kont: BuildKontActive::Start { builder, }, } =>
                 BuildKontState::Active {
                     item_arrived,
@@ -358,22 +493,22 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
         };
 
         match (merge_kont_state, build_kont_state) {
-            (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, }) => {
+            (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
                 merge_kont = job_step_merger(&mut env, merger_kont)?;
-                build_kont = BuildKont::CountItems { items_count, };
+                build_kont = BuildKont::CountItems { items_count, merger_source_build, };
             },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, }) => {
+            (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
                 assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont,
-                    await_build_kont: BuildKont::CountItems { items_count, },
+                    await_build_kont: BuildKont::CountItems { items_count, merger_source_build, },
                 });
             },
             (MergeKontState::Idle(..), BuildKontState::CountItems { .. }) =>
                 unreachable!(),
-            (MergeKontState::Finished, BuildKontState::CountItems { items_count, }) =>
-                return Ok(JobDone::ItemsCounted { items_count, env, }),
+            (MergeKontState::Finished, BuildKontState::CountItems { items_count, merger_source_build, }) =>
+                return Ok(JobDone::ItemsCounted { items_count, merger_source_build, env, }),
 
             (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
                 merge_kont = job_step_merger(&mut env, merger_kont)?;
@@ -433,7 +568,7 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
             },
             (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
                 unreachable!(),
-            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+            (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { root_block, }, .. }) => {
                 assert!(env.outgoing.is_empty());
                 assert!(env.incoming.is_empty());
                 return Ok(JobDone::Finished { root_block, });
@@ -492,6 +627,9 @@ pub fn job_step_builder(
             search_tree_builder::Kont::ProcessBlockAsync(
                 search_tree_builder::KontProcessBlockAsync { node_type, mut block_entries, async_ref, next, },
             ) => {
+                // acquire target wheel
+                let wheel_ref = env.wheels.acquire();
+
                 // serialize block
                 let block_bytes = env.blocks_pool.lend();
                 let mut serialize_kont = storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes)
@@ -503,33 +641,29 @@ pub fn job_step_builder(
                             break block_bytes.freeze(),
                         storage::BlockSerializerContinue::More(serializer) => {
                             let block_entry = block_entries_iter.next().unwrap();
-
-                            todo!();
-                            // let ref value_ref_cell = block_entry.item.value_cell
-                            //     .into_owned_value_ref(&serialize_block_task.wheel_ref.blockwheel_filename);
-
-                            // let entry = storage::Entry {
-                            //     jump_ref: storage::JumpRef::from_maybe_block_ref(
-                            //         &block_entry.child_block_ref,
-                            //         &serialize_block_task.wheel_ref.blockwheel_filename,
-                            //     ),
-                            //     key: &block_entry.item.key.key_bytes,
-                            //     value_cell: value_ref_cell.into(),
-                            // };
-                            // kont = serializer.entry(entry)
-                            //     .map_err(Error::SerializeBlockStorage)?;
+                            let ref value_ref_cell = block_entry.item.value_cell
+                                .into_owned_value_ref(&wheel_ref.blockwheel_filename);
+                            let entry = storage::Entry {
+                                jump_ref: storage::JumpRef::from_maybe_block_ref(
+                                    &block_entry.child_block_ref,
+                                    &wheel_ref.blockwheel_filename,
+                                ),
+                                key: &block_entry.item.key.key_bytes,
+                                value_cell: value_ref_cell.into(),
+                            };
+                            serialize_kont = serializer.entry(entry)
+                                .map_err(Error::SerializeBlockStorage)?;
                         },
                     }
                 };
 
-                todo!()
-                // env.outgoing.prepare_block_tasks.push(PrepareBlockTask { ???
-                //     node_type,
-                //     async_ref,
-                //     block_entries,
-                // });
-                // builder_kont = next.process_scheduled()
-                //     .map_err(Error::SearchTreeBuilder)?;
+                env.outgoing.write_block_tasks.push(WriteBlockTask {
+                    wheel_ref,
+                    async_ref,
+                    block_bytes,
+                });
+                builder_kont = next.process_scheduled()
+                    .map_err(Error::SearchTreeBuilder)?;
             },
             search_tree_builder::Kont::Finished { root_block_ref: root_block, } =>
                 return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, }),

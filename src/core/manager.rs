@@ -622,6 +622,7 @@ where J: edeltraud::Job + From<job::Job>,
                             ranges_merger,
                             wheels: state.wheels.clone(),
                             blocks_pool: state.blocks_pool.clone(),
+                            block_entries_pool: pools.block_entries_pool.clone(),
                             thread_pool: state.thread_pool.clone(),
                             tree_block_size: state.params.performer_params.tree_block_size,
                         },
@@ -643,21 +644,21 @@ where J: edeltraud::Job + From<job::Job>,
                     root_block,
                 }),
 
-            Event::Task(Ok(task::TaskDone::LookupRangeMerge(task::lookup_range_merge::Done { lookup_range_token, }))) =>
+            Event::Task(Ok(task::TaskDone::LookupRangeMerge(task::lookup_range_merge::Done { access_token, }))) =>
                 incoming.lookup_range_merge_done.push(task::performer::EventLookupRangeMergeDone {
-                    lookup_range_token,
+                    access_token,
                 }),
 
             Event::Task(Ok(task::TaskDone::MergeSearchTrees(
                 task::merge_search_trees::Done {
                     merged_search_tree_ref,
                     merged_search_tree_items_count,
-                    lookup_range_token,
+                    access_token,
                 }))) =>
                 incoming.merge_search_trees_done.push(task::performer::EventMergeSearchTreesDone {
                     merged_search_tree_ref,
                     merged_search_tree_items_count,
-                    lookup_range_token,
+                    access_token,
                 }),
 
             Event::Task(Err(error)) =>
