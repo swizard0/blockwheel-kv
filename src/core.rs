@@ -16,7 +16,11 @@ use futures::{
     },
 };
 
-use super::{
+use alloc_pool::{
+    Unique,
+};
+
+use crate::{
     kv,
     storage,
     wheels::{
@@ -65,7 +69,16 @@ pub struct RequestLookupKindRange {
 }
 
 pub type SearchTreeBuilderCps = search_tree_builder::BuilderCps<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+pub type SearchTreeBuilderKont = search_tree_builder::Kont<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
 pub type SearchTreeBuilderBlockEntry = search_tree_builder::BlockEntry<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+pub type SearchTreeBuilderBlockNext = search_tree_builder::KontPollProcessedBlockNext<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+pub type SearchTreeBuilderItemOrBlockNext =
+    search_tree_builder::KontPollNextItemOrProcessedBlockNext<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+
+pub type SearchRangesMergeCps = search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+pub type SearchRangesMergeKont = search_ranges_merge::Kont<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+pub type SearchRangesMergeBlockNext = search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+pub type SearchRangesMergeItemNext = search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 
 #[derive(Debug)]
 pub struct RequestInsert {

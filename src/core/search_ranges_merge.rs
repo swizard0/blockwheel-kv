@@ -32,6 +32,7 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone)]
 pub struct RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>> {
     inner: Inner<V, S>,
 }
@@ -104,6 +105,7 @@ pub enum Error {
     SearchTreeWalker(search_tree_walker::Error),
 }
 
+#[derive(Clone)]
 struct Inner<V, S> where V: DerefMut<Target = Vec<S>> {
     state: State<V, S>,
     await_iters: Vec<S>,
@@ -150,6 +152,7 @@ enum SourceSearchTreeState {
     Done,
 }
 
+#[derive(Clone)]
 enum State<V, S> where V: DerefMut<Target = Vec<S>> {
     MergerStep { merger_kont: MergerKont<V, S>, },
     AwaitIters { merger_next: MergerKontAwaitScheduledNext<V, S>, },

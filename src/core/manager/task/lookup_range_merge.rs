@@ -10,7 +10,6 @@ use futures::{
 };
 
 use alloc_pool::{
-    Unique,
     bytes::{
         Bytes,
     },
@@ -33,6 +32,9 @@ use crate::{
         RequestLookupKind,
         RequestLookupKindSingle,
         RequestLookupKindRange,
+        SearchRangesMergeCps,
+        SearchRangesMergeBlockNext,
+        SearchRangesMergeItemNext,
     },
     LookupRange,
     KeyValueStreamItem,
@@ -495,25 +497,25 @@ struct RetrieveBlockTask {
 
 pub enum Kont {
     Start {
-        merger: search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        merger: SearchRangesMergeCps,
     },
     ProceedAwaitBlocks {
-        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        next: SearchRangesMergeBlockNext,
     },
     ProceedItem {
-        next: search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        next: SearchRangesMergeItemNext,
     },
 }
 
 pub enum JobDone {
     AwaitRetrieveBlockTasks {
         env: Env,
-        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        next: SearchRangesMergeBlockNext,
     },
     ItemArrived {
         item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
         env: Env,
-        next: search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+        next: SearchRangesMergeItemNext,
     },
     Finished,
 }
@@ -524,8 +526,7 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
     loop {
         let mut merger_kont = match kont {
             Kont::Start { merger, } => {
-                search_ranges_merge::RangesMergeCps::from(merger)
-                    .step()
+                merger.step()
                     .map_err(Error::SearchRangesMerge)?
             },
             Kont::ProceedAwaitBlocks { next, } =>

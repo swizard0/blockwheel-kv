@@ -48,6 +48,7 @@ use crate::{
         MemCache,
         BlockRef,
         SearchTreeBuilderCps,
+        SearchTreeBuilderBlockNext,
         SearchTreeBuilderBlockEntry,
     },
 };
@@ -427,22 +428,20 @@ struct WriteBlockTask {
     block_bytes: Bytes,
 }
 
-pub type SearchTreeBuilderNext = search_tree_builder::KontPollProcessedBlockNext<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
-
 pub enum Kont {
     Start {
         frozen_memcache: Arc<MemCache>,
         builder: SearchTreeBuilderCps,
     },
     Continue {
-        next: SearchTreeBuilderNext,
+        next: SearchTreeBuilderBlockNext,
     },
 }
 
 pub enum JobDone {
     AwaitWriteBlockTasks {
         env: Env,
-        next: SearchTreeBuilderNext,
+        next: SearchTreeBuilderBlockNext,
     },
     Finished {
         root_block: BlockRef,
@@ -504,7 +503,7 @@ fn job_build(mut env: Env, frozen_memcache: Arc<MemCache>, builder: SearchTreeBu
     }
 }
 
-fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderNext) -> Output {
+fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderBlockNext) -> Output {
     loop {
         let mut builder_kont = if let Some(mut serialize_block_task) = env.incoming.serialize_block_tasks.pop() {
             let block_bytes = env.blocks_pool.lend();

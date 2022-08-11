@@ -1,15 +1,22 @@
 
 use alloc_pool::{
-    Unique,
     bytes::{
         Bytes,
         BytesPool,
     },
 };
 
+use o1::{
+    set::{
+        Ref,
+    },
+};
+
 use crate::{
+    kv,
     job,
     wheels,
+    storage,
     core::{
         manager::{
             task::{
@@ -17,8 +24,17 @@ use crate::{
             },
         },
         performer,
+        search_tree_builder,
         search_ranges_merge,
         BlockRef,
+        SearchTreeBuilderCps,
+        SearchTreeBuilderKont,
+        SearchTreeBuilderBlockNext,
+        SearchTreeBuilderItemOrBlockNext,
+        SearchRangesMergeCps,
+        SearchRangesMergeKont,
+        SearchRangesMergeBlockNext,
+        SearchRangesMergeItemNext,
     },
 };
 
@@ -41,6 +57,8 @@ pub enum Error {
     WheelsGone,
     ThreadPoolGone,
     SearchRangesMerge(search_ranges_merge::Error),
+    SearchTreeBuilder(search_tree_builder::Error),
+    SerializeBlockStorage(storage::Error),
 }
 
 pub async fn run<J>(
@@ -104,6 +122,8 @@ where J: edeltraud::Job + From<job::Job>,
         }
     }
 
+
+
     // let mut tasks = FuturesUnordered::new();
 
     todo!()
@@ -111,10 +131,12 @@ where J: edeltraud::Job + From<job::Job>,
 
 pub struct JobArgs {
     env: Env,
-    kont: Kont,
+    merge_kont: MergeKont,
+    build_kont: BuildKont,
 }
 
 pub struct Env {
+    blocks_pool: BytesPool,
     incoming: Incoming,
     outgoing: Outgoing,
 }
@@ -122,15 +144,18 @@ pub struct Env {
 #[derive(Default)]
 struct Incoming {
     received_block_tasks: Vec<ReceivedBlockTask>,
+    written_block_tasks: Vec<WrittenBlockTask>,
 }
 
 impl Incoming {
     fn is_empty(&self) -> bool {
-        self.received_block_tasks.is_empty()
+        self.received_block_tasks.is_empty() &&
+            self.written_block_tasks.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
         self.received_block_tasks.extend(from.received_block_tasks.drain(..));
+        self.written_block_tasks.extend(from.written_block_tasks.drain(..));
     }
 }
 
@@ -139,14 +164,21 @@ struct ReceivedBlockTask {
     block_bytes: Bytes,
 }
 
+struct WrittenBlockTask {
+    async_ref: Ref,
+    block_ref: BlockRef,
+}
+
 #[derive(Default)]
 struct Outgoing {
     retrieve_block_tasks: Vec<RetrieveBlockTask>,
+    write_block_tasks: Vec<WriteBlockTask>,
 }
 
 impl Outgoing {
     fn is_empty(&self) -> bool {
-        self.retrieve_block_tasks.is_empty()
+        self.retrieve_block_tasks.is_empty() &&
+            self.write_block_tasks.is_empty()
     }
 }
 
@@ -155,479 +187,352 @@ struct RetrieveBlockTask {
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
 }
 
-pub enum Kont {
-    CountStart {
-        merger: search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
-    },
-    CountProceedAwaitBlocks {
-        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
-    },
+struct WriteBlockTask {
+    async_ref: Ref,
+    block_bytes: Bytes,
 }
 
-pub enum JobDone {
-    CountAwaitRetrieveBlockTasks {
-        env: Env,
-        next: search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>,
+pub enum MergeKont {
+    Start {
+        merger: SearchRangesMergeCps,
+    },
+    ProceedAwaitBlocks {
+        next: SearchRangesMergeBlockNext,
+    },
+    ProceedItem {
+        item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+        next: SearchRangesMergeItemNext,
     },
     Finished,
 }
 
-pub type Output = Result<JobDone, Error>;
-
-pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
-
-    todo!()
+pub enum BuildKont {
+    CountItems {
+        items_count: usize,
+    },
+    Active {
+        item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
+        kont: BuildKontActive,
+    },
 }
 
+pub enum BuildKontActive {
+    Start {
+        builder: SearchTreeBuilderCps,
+    },
+    ProceedItemOrWrittenBlock {
+        next: SearchTreeBuilderItemOrBlockNext,
+    },
+    ProceedWrittenBlock {
+        next: SearchTreeBuilderBlockNext,
+    },
+    Finished {
+        root_block: BlockRef,
+    },
+}
 
+pub enum JobDone {
+    Await {
+        env: Env,
+        await_merge_kont: MergeKont,
+        await_build_kont: BuildKont,
+    },
+    ItemsCounted {
+        items_count: usize,
+        env: Env,
+    },
+    Finished {
+        root_block: BlockRef,
+    },
+}
 
+pub type Output = Result<JobDone, Error>;
 
+pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Output {
 
+    loop {
+        enum MergeKontState<K, A, I> {
+            Ready(K),
+            Await(A),
+            Idle(I),
+            Finished,
+        }
 
-// use std::{
-//     time::{
-//         Instant,
-//         Duration,
-//     },
-// };
+        let merge_kont_state = match merge_kont {
+            MergeKont::Start { merger, } =>
+                MergeKontState::Ready(
+                    merger.step()
+                        .map_err(Error::SearchRangesMerge)?,
+                ),
+            MergeKont::ProceedAwaitBlocks { next, } =>
+                if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
+                    MergeKontState::Ready(
+                        next.block_arrived(async_token, block_bytes)
+                            .map_err(Error::SearchRangesMerge)?,
+                    )
+                } else {
+                    MergeKontState::Await(MergeKont::ProceedAwaitBlocks { next, })
+                },
+            MergeKont::ProceedItem { item, next, } =>
+                match &mut build_kont {
+                    BuildKont::CountItems { items_count, } => {
+                        *items_count += 1;
+                        MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
+                    },
+                    BuildKont::Active { item_arrived: item_arrived @ None, .. } => {
+                        *item_arrived = Some(item);
+                        MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
+                    },
+                    BuildKont::Active { item_arrived: Some(..), .. } =>
+                        MergeKontState::Idle(MergeKont::ProceedItem { item, next, }),
+                },
+            MergeKont::Finished =>
+                MergeKontState::Finished,
+        };
 
-// use futures::{
-//     future,
-//     stream::{
-//         FuturesUnordered,
-//     },
-//     StreamExt,
-// };
+        enum BuildKontState<K, A, I> {
+            CountItems { items_count: usize, },
+            Active {
+                item_arrived: I,
+                kont: Active<K, A>,
+            },
+        }
 
-// use o1::set::Ref;
+        enum Active<K, A> {
+            Ready(K),
+            Await(A),
+            Finished { root_block: BlockRef, },
+        }
 
-// use bntree::{
-//     sketch,
-//     writer::{
-//         plan,
-//         fold,
-//     },
-// };
+        let build_kont_state = match build_kont {
+            BuildKont::CountItems { items_count, } =>
+                BuildKontState::CountItems { items_count, },
+            BuildKont::Active { item_arrived, kont: BuildKontActive::Start { builder, }, } =>
+                BuildKontState::Active {
+                    item_arrived,
+                    kont: Active::Ready(
+                        builder.step()
+                            .map_err(Error::SearchTreeBuilder)?,
+                    ),
+                },
+            BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedWrittenBlock { next, }, } =>
+                if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Ready(
+                            next.block_processed(async_ref, block_ref)
+                                .map_err(Error::SearchTreeBuilder)?,
+                        ),
+                    }
+                } else {
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Await(BuildKontActive::ProceedWrittenBlock { next, }),
+                    }
+                },
+            BuildKont::Active { mut item_arrived, kont: BuildKontActive::ProceedItemOrWrittenBlock { next, }, } =>
+                if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Ready(
+                            next.block_processed(async_ref, block_ref)
+                                .map_err(Error::SearchTreeBuilder)?,
+                        ),
+                    }
+                } else if let Some(item) = item_arrived.take() {
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Ready(
+                            next.item_arrived(item)
+                                .map_err(Error::SearchTreeBuilder)?,
+                        ),
+                    }
+                } else {
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Await(BuildKontActive::ProceedItemOrWrittenBlock { next, }),
+                    }
+                },
+            BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, .. } =>
+                BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, },
+        };
 
-// use alloc_pool::{
-//     pool,
-//     bytes::{
-//         Bytes,
-//         BytesPool,
-//     },
-//     Unique,
-// };
+        match (merge_kont_state, build_kont_state) {
+            (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, }) => {
+                merge_kont = job_step_merger(&mut env, merger_kont)?;
+                build_kont = BuildKont::CountItems { items_count, };
+            },
+            (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, }) => {
+                assert!(!env.outgoing.is_empty());
+                return Ok(JobDone::Await {
+                    env,
+                    await_merge_kont,
+                    await_build_kont: BuildKont::CountItems { items_count, },
+                });
+            },
+            (MergeKontState::Idle(..), BuildKontState::CountItems { .. }) =>
+                unreachable!(),
+            (MergeKontState::Finished, BuildKontState::CountItems { items_count, }) =>
+                return Ok(JobDone::ItemsCounted { items_count, env, }),
 
-// use crate::{
-//     kv,
-//     job,
-//     wheels,
-//     storage,
-//     blockwheel,
-//     core::{
-//         merger,
-//         search_tree,
-//         BlockRef,
-//         SearchRangeBounds,
-//     },
-// };
+            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                merge_kont = job_step_merger(&mut env, merger_kont)?;
+                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+            },
+            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                merge_kont = job_step_merger(&mut env, merger_kont)?;
+                build_kont = BuildKont::Active { item_arrived, kont: await_build_kont, };
+            },
+            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                merge_kont = await_merge_kont;
+                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+            },
+            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                assert!(!env.outgoing.is_empty());
+                return Ok(JobDone::Await {
+                    env,
+                    await_merge_kont,
+                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                });
+            },
+            (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                merge_kont = idle_merge_kont;
+                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+            },
+            (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                assert!(!env.outgoing.is_empty());
+                return Ok(JobDone::Await {
+                    env,
+                    await_merge_kont: idle_merge_kont,
+                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                });
+            },
+            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                merge_kont = MergeKont::Finished;
+                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+            },
+            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                assert!(!env.outgoing.is_empty());
+                return Ok(JobDone::Await {
+                    env,
+                    await_merge_kont: MergeKont::Finished,
+                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                });
+            },
+            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+                merge_kont = job_step_merger(&mut env, merger_kont)?;
+                build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, };
+            },
+            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+                assert!(!env.outgoing.is_empty());
+                return Ok(JobDone::Await {
+                    env,
+                    await_merge_kont,
+                    await_build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, },
+                });
+            },
+            (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
+                unreachable!(),
+            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+                assert!(env.outgoing.is_empty());
+                assert!(env.incoming.is_empty());
+                return Ok(JobDone::Finished { root_block, });
+            },
+        }
+    }
+}
 
-// pub mod task;
-// pub mod merge_cps;
+pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) -> Result<MergeKont, Error> {
+    loop {
+        match merger_kont {
+            search_ranges_merge::Kont::RequireBlockAsync(
+                search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+            ) => {
+                env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { block_ref, async_token, });
+                merger_kont = next.scheduled()
+                    .map_err(Error::SearchRangesMerge)?;
+            },
+            search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) =>
+                return Ok(MergeKont::ProceedAwaitBlocks { next, }),
+            search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
+                merger_kont = next.proceed()
+                    .map_err(Error::SearchRangesMerge)?;
+            },
+            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+                merger_kont = next.proceed()
+                    .map_err(Error::SearchRangesMerge)?;
+            },
+            search_ranges_merge::Kont::EmitItem(
+                search_ranges_merge::KontEmitItem { item, next, },
+            ) =>
+                return Ok(MergeKont::ProceedItem { item, next, }),
+            search_ranges_merge::Kont::Finished =>
+                return Ok(MergeKont::Finished),
+        }
+    }
+}
 
-// pub struct Args<J> where J: edeltraud::Job {
-//     pub search_tree_a_ref: Ref,
-//     pub search_tree_b_ref: Ref,
-//     pub search_tree_a_pid: search_tree::Pid,
-//     pub search_tree_b_pid: search_tree::Pid,
-//     pub thread_pool: edeltraud::Edeltraud<J>,
-//     pub blocks_pool: BytesPool,
-//     pub merge_blocks_pool: pool::Pool<Vec<storage::OwnedEntry>>,
-//     pub merger_iters_pool: pool::Pool<Vec<merger::KeyValuesIterRx>>,
-//     pub wheels_pid: wheels::Pid,
-//     pub tree_block_size: usize,
-//     pub tasks_count_limit: usize,
-// }
+pub fn job_step_builder(
+    env: &mut Env,
+    item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
+    mut builder_kont: SearchTreeBuilderKont,
+)
+    -> Result<BuildKont, Error>
+{
+    loop {
+        match builder_kont {
+            search_tree_builder::Kont::PollNextItemOrProcessedBlock(
+                search_tree_builder::KontPollNextItemOrProcessedBlock { next, },
+            ) =>
+                return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedItemOrWrittenBlock { next, }, }),
+            search_tree_builder::Kont::PollProcessedBlock(
+                search_tree_builder::KontPollProcessedBlock { next, },
+            ) =>
+                return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedWrittenBlock { next, }, }),
+            search_tree_builder::Kont::ProcessBlockAsync(
+                search_tree_builder::KontProcessBlockAsync { node_type, mut block_entries, async_ref, next, },
+            ) => {
+                // serialize block
+                let block_bytes = env.blocks_pool.lend();
+                let mut serialize_kont = storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes)
+                    .map_err(Error::SerializeBlockStorage)?;
+                let mut block_entries_iter = block_entries.drain(..);
+                let block_bytes = loop {
+                    match serialize_kont {
+                        storage::BlockSerializerContinue::Done(block_bytes) =>
+                            break block_bytes.freeze(),
+                        storage::BlockSerializerContinue::More(serializer) => {
+                            let block_entry = block_entries_iter.next().unwrap();
 
-// #[derive(Default, Debug)]
-// pub struct Timings {
-//     pub count: Duration,
-//     pub merge: Duration,
-//     pub merge_next: Duration,
-//     pub block_prepare: Duration,
-//     pub block_write: Duration,
-//     pub total: Duration,
-// }
+                            todo!();
+                            // let ref value_ref_cell = block_entry.item.value_cell
+                            //     .into_owned_value_ref(&serialize_block_task.wheel_ref.blockwheel_filename);
 
-// pub struct Done {
-//     pub search_tree_a_ref: Ref,
-//     pub search_tree_b_ref: Ref,
-//     pub root_block: BlockRef,
-//     pub items_count: usize,
-//     pub timings: Timings,
-// }
+                            // let entry = storage::Entry {
+                            //     jump_ref: storage::JumpRef::from_maybe_block_ref(
+                            //         &block_entry.child_block_ref,
+                            //         &serialize_block_task.wheel_ref.blockwheel_filename,
+                            //     ),
+                            //     key: &block_entry.item.key.key_bytes,
+                            //     value_cell: value_ref_cell.into(),
+                            // };
+                            // kont = serializer.entry(entry)
+                            //     .map_err(Error::SerializeBlockStorage)?;
+                        },
+                    }
+                };
 
-// #[derive(Debug)]
-// pub enum Error {
-//     SearchTreeIter {
-//         search_tree_ref: Ref,
-//         error: search_tree::IterError,
-//     },
-//     WheelsGone,
-//     WheelsEmpty,
-//     ThreadPoolGone,
-//     BuildTree(fold::Error),
-//     BuildTreeUnexpectedLevelSeedOnVisitBlockStart,
-//     BuildTreeUnexpectedLevelSeedOnVisitItem,
-//     BuildTreeUnexpectedLevelSeedOnVisitBlockFinish,
-//     BuildTreeUnexpectedChildRefOnVisitBlockFinish {
-//         level_index: usize,
-//         block_index: usize,
-//     },
-//     BuildTreeUnexpectedEmptyTree,
-//     BuildTreeMergeIterDepleted,
-//     BlockSerializerStart(storage::Error),
-//     BlockSerializerEntry(storage::Error),
-//     WriteBlock(blockwheel::WriteBlockError),
-//     Merger(merger::Error),
-//     WheelNotFound {
-//         blockwheel_filename: wheels::WheelFilename,
-//     },
-//     DeleteBlock(blockwheel::DeleteBlockError),
-// }
-
-// pub async fn run<J>(
-//     mut args: Args<J>,
-// )
-//     -> Result<Done, Error>
-// where J: edeltraud::Job + From<job::Job>,
-//       J::Output: From<job::JobOutput>,
-//       job::JobOutput: From<J::Output>,
-// {
-//     let run_start = Instant::now();
-//     let mut timings = Timings::default();
-
-//     let mut remove_tasks = FuturesUnordered::new();
-
-//     let mut tree_items_count = 0;
-
-//     let mut merger = merger_start(
-//         args.search_tree_a_ref,
-//         args.search_tree_b_ref,
-//         &mut args.search_tree_a_pid,
-//         &mut args.search_tree_b_pid,
-//         &args.merger_iters_pool,
-//     ).await?;
-
-//     let remove_add = |key_value| {
-//         match key_value {
-//             kv::KeyValuePair {
-//                 value_cell: kv::ValueCell {
-//                     cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-//                     ..
-//                 },
-//                 ..
-//             } => {
-//                 let mut wheels_pid = args.wheels_pid.clone();
-//                 remove_tasks.push(async move {
-//                     let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
-//                         .map_err(|ero::NoProcError| Error::WheelsGone)?
-//                         .ok_or_else(|| Error::WheelNotFound {
-//                             blockwheel_filename: block_ref.blockwheel_filename.clone(),
-//                         })?;
-//                     let blockwheel::Deleted = wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await
-//                         .map_err(Error::DeleteBlock)?;
-//                     log::debug!("deleted: {:?}", block_ref);
-//                     Ok(())
-//                 });
-//             },
-//             _ =>
-//                 (),
-//         }
-//     };
-
-//     while let Some(..) = merger.next_with_deprecated(remove_add).await.map_err(Error::Merger)? {
-//         tree_items_count += 1;
-//     }
-//     timings.count += run_start.elapsed();
-
-//     let merge_start = Instant::now();
-//     let join_task = future::try_join(
-//         perform_merge(args, tree_items_count, timings),
-//         async move {
-//             while let Some(result) = remove_tasks.next().await {
-//                 let () = result?;
-//             }
-//             Ok(())
-//         },
-//     );
-//     let (mut done, ()) = join_task.await?;
-//     done.timings.merge += merge_start.elapsed();
-
-//     done.timings.total += run_start.elapsed();
-//     Ok(done)
-// }
-
-// pub type JobOutput = Result<JobDone, Error>;
-
-// pub struct JobArgs {
-//     block_entries: Unique<Vec<storage::OwnedEntry>>,
-//     node_type: storage::NodeType,
-//     blocks_pool: BytesPool,
-// }
-
-// pub struct JobDone {
-//     block_bytes: Bytes,
-// }
-
-// pub fn job(JobArgs { mut block_entries, node_type, blocks_pool, }: JobArgs) -> JobOutput {
-//     let block_bytes = blocks_pool.lend();
-//     let items_count = block_entries.len();
-//     block_entries.shrink_to_fit();
-
-//     let mut block_serializer_kont = storage::BlockSerializer::start(node_type, items_count, block_bytes)
-//         .map_err(Error::BlockSerializerStart)?;
-//     for ref owned_entry in block_entries.drain(..) {
-//         match block_serializer_kont {
-//             storage::BlockSerializerContinue::More(block_serializer) => {
-//                 block_serializer_kont = block_serializer.entry(owned_entry.into())
-//                     .map_err(Error::BlockSerializerEntry)?;
-//             },
-//             storage::BlockSerializerContinue::Done(..) =>
-//                 unreachable!(),
-//         }
-//     }
-//     match block_serializer_kont {
-//         storage::BlockSerializerContinue::Done(block_bytes) =>
-//             Ok(JobDone { block_bytes: block_bytes.freeze(), }),
-//         storage::BlockSerializerContinue::More(..) =>
-//             unreachable!(),
-//     }
-// }
-
-// async fn perform_merge<J>(
-//     Args {
-//         search_tree_a_ref,
-//         search_tree_b_ref,
-//         mut search_tree_a_pid,
-//         mut search_tree_b_pid,
-//         thread_pool,
-//         blocks_pool,
-//         merge_blocks_pool,
-//         merger_iters_pool,
-//         mut wheels_pid,
-//         tree_block_size,
-//         tasks_count_limit: _,
-//     }: Args<J>,
-//     tree_items_count: usize,
-//     mut timings: Timings,
-// )
-//     -> Result<Done, Error>
-// where J: edeltraud::Job + From<job::Job>,
-//       J::Output: From<job::JobOutput>,
-//       job::JobOutput: From<J::Output>,
-// {
-//     let sketch = sketch::Tree::new(tree_items_count, tree_block_size);
-//     let mut fold_ctx = fold::Context::new(
-//         plan::Context::new(&sketch),
-//         &sketch,
-//     );
-
-//     enum LevelSeed {
-//         Empty,
-//         BlockInProgress {
-//             block_entries: Unique<Vec<storage::OwnedEntry>>,
-//             wheel_ref: wheels::WheelRef,
-//             node_type: storage::NodeType,
-//         },
-//     }
-
-//     let mut merger = merger_start(
-//         search_tree_a_ref,
-//         search_tree_b_ref,
-//         &mut search_tree_a_pid,
-//         &mut search_tree_b_pid,
-//         &merger_iters_pool,
-//     ).await?;
-
-//     let mut child_ref = None;
-
-//     let mut kont = fold::Script::boot();
-//     let root_block = loop {
-//         let kont_step = kont.step_rec(&mut fold_ctx)
-//             .map_err(Error::BuildTree)?;
-//         kont = match kont_step {
-//             // VisitLevel
-//             fold::Instruction::Op(fold::Op::VisitLevel(fold::VisitLevel { next, .. })) => {
-//                 next.level_ready(LevelSeed::Empty, &mut fold_ctx)
-//                     .map_err(Error::BuildTree)?
-//             },
-
-//             // VisitBlockStart
-//             fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart {
-//                 level_seed: LevelSeed::Empty,
-//                 level_index,
-//                 items_count,
-//                 next,
-//                 ..
-//             })) => {
-//                 let wheel_ref = wheels_pid.acquire().await
-//                     .map_err(|ero::NoProcError| Error::WheelsGone)?
-//                     .ok_or(Error::WheelsEmpty)?;
-//                 let node_type = if level_index == 0 {
-//                     storage::NodeType::Root { tree_entries_count: tree_items_count, }
-//                 } else {
-//                     storage::NodeType::Leaf
-//                 };
-//                 let mut block_entries = merge_blocks_pool.lend(Vec::new);
-//                 block_entries.clear();
-//                 block_entries.reserve(items_count);
-//                 let level_seed = LevelSeed::BlockInProgress {
-//                     block_entries,
-//                     wheel_ref,
-//                     node_type,
-//                 };
-//                 next.block_ready(level_seed, &mut fold_ctx)
-//                     .map_err(Error::BuildTree)?
-//             },
-//             fold::Instruction::Op(fold::Op::VisitBlockStart(fold::VisitBlockStart { .. })) =>
-//                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockStart),
-
-//             // VisitItem
-//             fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem {
-//                 level_seed: LevelSeed::BlockInProgress {
-//                     mut block_entries,
-//                     wheel_ref,
-//                     node_type,
-//                 },
-//                 next,
-//                 ..
-//             })) => {
-//                 let now = Instant::now();
-//                 let kv::KeyValuePair { key, value_cell, } = merger.next().await
-//                     .map_err(Error::Merger)?
-//                     .ok_or(Error::BuildTreeMergeIterDepleted)?;
-//                 timings.merge_next += now.elapsed();
-
-//                 let child_ref_taken = child_ref.take();
-//                 let owned_jump_ref = match child_ref_taken {
-//                     None =>
-//                         storage::OwnedJumpRef::None,
-//                     Some(BlockRef { blockwheel_filename, block_id, }) if blockwheel_filename == wheel_ref.blockwheel_filename =>
-//                         storage::OwnedJumpRef::Local(storage::LocalRef { block_id, }),
-//                     Some(block_ref) =>
-//                         storage::OwnedJumpRef::External(block_ref),
-//                 };
-//                 let owned_entry = storage::OwnedEntry {
-//                     jump_ref: owned_jump_ref,
-//                     key,
-//                     value_cell: value_cell.into_owned_value_ref(&wheel_ref.blockwheel_filename),
-//                 };
-//                 block_entries.push(owned_entry);
-//                 let level_seed = LevelSeed::BlockInProgress {
-//                     block_entries,
-//                     wheel_ref,
-//                     node_type,
-//                 };
-//                 next.item_ready(level_seed, &mut fold_ctx)
-//                     .map_err(Error::BuildTree)?
-//             },
-//             fold::Instruction::Op(fold::Op::VisitItem(fold::VisitItem { level_seed: LevelSeed::Empty, .. })) =>
-//                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitItem),
-
-//             // VisitBlockFinish
-//             fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish {
-//                 level_seed: LevelSeed::BlockInProgress {
-//                     block_entries,
-//                     mut wheel_ref,
-//                     node_type,
-//                 },
-//                 level_index,
-//                 block_index,
-//                 next,
-//                 ..
-//             })) => {
-//                 if let Some(..) = child_ref {
-//                     return Err(Error::BuildTreeUnexpectedChildRefOnVisitBlockFinish { level_index, block_index, });
-//                 }
-
-//                 let now = Instant::now();
-//                 let job_args = JobArgs {
-//                     block_entries,
-//                     node_type,
-//                     blocks_pool: blocks_pool.clone(),
-//                 };
-//                 let job_output = thread_pool.spawn(job::Job::MergeSearchTrees(job_args)).await
-//                     .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
-//                 let job_output: job::JobOutput = job_output.into();
-//                 let job::MergeSearchTreesDone(job_result) = job_output.into();
-//                 let JobDone { block_bytes, } = job_result?;
-//                 timings.block_prepare += now.elapsed();
-
-//                 let now = Instant::now();
-//                 let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
-//                     .map_err(Error::WriteBlock)?;
-//                 timings.block_write += now.elapsed();
-//                 child_ref = Some(BlockRef {
-//                     blockwheel_filename: wheel_ref.blockwheel_filename,
-//                     block_id,
-//                 });
-
-//                 let level_seed = LevelSeed::Empty;
-//                 next.block_flushed(level_seed, &mut fold_ctx)
-//                     .map_err(Error::BuildTree)?
-//             },
-//             fold::Instruction::Op(fold::Op::VisitBlockFinish(fold::VisitBlockFinish { level_seed: LevelSeed::Empty, .. })) =>
-//                 return Err(Error::BuildTreeUnexpectedLevelSeedOnVisitBlockFinish),
-
-//             // Done
-//             fold::Instruction::Done =>
-//                 match child_ref {
-//                     Some(root_block_ref) =>
-//                         break root_block_ref,
-//                     None =>
-//                         return Err(Error::BuildTreeUnexpectedEmptyTree),
-//                 },
-//         };
-//     };
-//     assert_eq!(merger.next().await.map_err(Error::Merger)?, None);
-
-//     Ok(Done {
-//         search_tree_a_ref,
-//         search_tree_b_ref,
-//         root_block,
-//         items_count: tree_items_count,
-//         timings,
-//     })
-// }
-
-// async fn merger_start(
-//     search_tree_a_ref: Ref,
-//     search_tree_b_ref: Ref,
-//     search_tree_a_pid: &mut search_tree::Pid,
-//     search_tree_b_pid: &mut search_tree::Pid,
-//     merger_iters_pool: &pool::Pool<Vec<merger::KeyValuesIterRx>>,
-// )
-//     -> Result<merger::ItersMerger<Unique<Vec<merger::KeyValuesIterRx>>>, Error>
-// {
-//     let (items_a_rx, items_b_rx) = futures::future::try_join(
-//         async {
-//             let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_a_pid.iter(SearchRangeBounds::unbounded()).await
-//                 .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_a_ref.clone(), error, })?;
-//             Ok(items_rx)
-//         },
-//         async {
-//             let search_tree::SearchTreeIterItemsRx { items_rx, } = search_tree_b_pid.iter(SearchRangeBounds::unbounded()).await
-//                 .map_err(|error| Error::SearchTreeIter { search_tree_ref: search_tree_b_ref.clone(), error, })?;
-//             Ok(items_rx)
-//         },
-//     ).await?;
-
-//     let mut iters = merger_iters_pool.lend(Vec::new);
-//     iters.clear();
-//     iters.push(items_a_rx);
-//     iters.push(items_b_rx);
-//     iters.shrink_to_fit();
-
-//     Ok(merger::ItersMerger::new(iters))
-// }
+                todo!()
+                // env.outgoing.prepare_block_tasks.push(PrepareBlockTask { ???
+                //     node_type,
+                //     async_ref,
+                //     block_entries,
+                // });
+                // builder_kont = next.process_scheduled()
+                //     .map_err(Error::SearchTreeBuilder)?;
+            },
+            search_tree_builder::Kont::Finished { root_block_ref: root_block, } =>
+                return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, }),
+        }
+    }
+}
