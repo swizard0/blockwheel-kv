@@ -23,7 +23,7 @@ use crate::{
     core::{
         manager::{
             task::{
-                WheelsPid,
+                Wheels,
             },
         },
         performer,
@@ -46,7 +46,7 @@ mod tests;
 pub struct Args<J> where J: edeltraud::Job {
     pub ranges_merger: performer::LookupRangesMerger,
     pub lookup_context: RequestLookupKind,
-    pub wheels_pid: wheels::Pid,
+    pub wheels: wheels::Wheels,
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub iter_send_buffer: usize,
 }
@@ -72,7 +72,7 @@ pub async fn run<J>(
     Args {
         ranges_merger,
         lookup_context,
-        wheels_pid,
+        wheels,
         thread_pool,
         iter_send_buffer,
     }: Args<J>,
@@ -85,7 +85,7 @@ where J: edeltraud::Job + From<job::Job>,
     inner_run(
         ranges_merger,
         lookup_context,
-        WheelsPid::Regular(wheels_pid),
+        Wheels::Regular(wheels),
         thread_pool,
         iter_send_buffer,
     ).await
@@ -94,7 +94,7 @@ where J: edeltraud::Job + From<job::Job>,
 async fn inner_run<J>(
     ranges_merger: performer::LookupRangesMerger,
     lookup_context: RequestLookupKind,
-    wheels_pid: WheelsPid,
+    wheels: Wheels,
     thread_pool: edeltraud::Edeltraud<J>,
     iter_send_buffer: usize,
 )
@@ -108,12 +108,12 @@ where J: edeltraud::Job + From<job::Job>,
         ValueLoad {
             key: kv::Key,
             version: u64,
-            wheels_pid: WheelsPid,
+            wheels: Wheels,
             block_ref: BlockRef,
         },
         BlockLoad {
             async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
-            wheels_pid: WheelsPid,
+            wheels: Wheels,
             block_ref: BlockRef,
         },
         TxItem {
@@ -151,9 +151,8 @@ where J: edeltraud::Job + From<job::Job>,
                     let job::ManagerTaskLookupRangeMergeDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
-                Task::ValueLoad { key, version, mut wheels_pid, block_ref, } => {
-                    let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
-                        .map_err(|ero::NoProcError| Error::WheelsGone)?
+                Task::ValueLoad { key, version, mut wheels, block_ref, } => {
+                    let mut wheel_ref = wheels.get(block_ref.blockwheel_filename.clone())
                         .ok_or_else(|| Error::WheelNotFound {
                             blockwheel_filename: block_ref.blockwheel_filename.clone(),
                         })?;
@@ -177,9 +176,8 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     })
                 },
-                Task::BlockLoad { async_token, mut wheels_pid, block_ref, } => {
-                    let mut wheel_ref = wheels_pid.get(block_ref.blockwheel_filename.clone()).await
-                        .map_err(|ero::NoProcError| Error::WheelsGone)?
+                Task::BlockLoad { async_token, mut wheels, block_ref, } => {
+                    let mut wheel_ref = wheels.get(block_ref.blockwheel_filename.clone())
                         .ok_or_else(|| Error::WheelNotFound {
                             blockwheel_filename: block_ref.blockwheel_filename.clone(),
                         })?;
@@ -339,8 +337,8 @@ where J: edeltraud::Job + From<job::Job>,
 
             TaskOutput::Job(JobDone::AwaitRetrieveBlockTasks { mut env, next, }) => {
                 for RetrieveBlockTask { block_ref, async_token, } in env.outgoing.retrieve_block_tasks.drain(..) {
-                    let wheels_pid = wheels_pid.clone();
-                    tasks.push(Task::BlockLoad { async_token, wheels_pid, block_ref, }.run());
+                    let wheels = wheels.clone();
+                    tasks.push(Task::BlockLoad { async_token, wheels, block_ref, }.run());
                 }
                 merger_state = match merger_state {
                     MergerState::InProgress =>
@@ -392,8 +390,8 @@ where J: edeltraud::Job + From<job::Job>,
                             cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
                         },
                     } => {
-                        let wheels_pid = wheels_pid.clone();
-                        tasks.push(Task::ValueLoad { key, version, wheels_pid, block_ref, }.run());
+                        let wheels = wheels.clone();
+                        tasks.push(Task::ValueLoad { key, version, wheels, block_ref, }.run());
                         maybe_active_item = Some(ActiveItem::PendingValueLoad);
                     },
                 }

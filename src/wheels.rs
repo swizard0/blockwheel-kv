@@ -1,28 +1,44 @@
 use std::{
-    fmt,
     str,
+    fmt,
     path,
-    ops::Deref,
-    time::Duration,
+    pin::{
+        Pin,
+    },
+    ops::{
+        Deref,
+    },
+    sync::{
+        Arc,
+    },
     collections::{
-        HashMap,
         hash_map,
+        HashMap,
     },
 };
 
 use futures::{
-    channel::{
-        mpsc,
-        oneshot,
+    future::{
+        try_join_all,
     },
     stream::{
         FuturesUnordered,
     },
+    channel::{
+        mpsc,
+    },
+    task::{
+        Context,
+        Poll,
+    },
+    Stream,
+    Future,
     StreamExt,
-    SinkExt,
 };
 
-use rand::Rng;
+use rand::{
+    Rng,
+};
 
 use alloc_pool::{
     bytes::{
@@ -31,16 +47,7 @@ use alloc_pool::{
     },
 };
 
-use ero::{
-    restart,
-    ErrorSeverity,
-    RestartStrategy,
-};
-
-use ero_blockwheel_fs::{
-    self as blockwheel,
-    block,
-};
+use ero_blockwheel_fs as blockwheel_fs;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WheelFilename {
@@ -92,307 +99,230 @@ impl AsRef<[u8]> for WheelFilename {
 #[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,
-    pub blockwheel_pid: blockwheel::Pid,
+    pub blockwheel_pid: blockwheel_fs::Pid,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BlockRef {
     pub blockwheel_filename: WheelFilename,
-    pub block_id: block::Id,
-}
-
-#[derive(Clone, Debug)]
-pub struct Params {
-    pub task_restart_sec: usize,
-}
-
-impl Default for Params {
-    fn default() -> Params {
-        Params {
-            task_restart_sec: 1,
-        }
-    }
-}
-
-pub struct GenServer {
-    request_tx: mpsc::Sender<Request>,
-    request_rx: mpsc::Receiver<Request>,
+    pub block_id: blockwheel_fs::block::Id,
 }
 
 #[derive(Clone)]
-pub struct Pid {
-    request_tx: mpsc::Sender<Request>,
+pub struct Wheels {
+    inner: Arc<Inner>,
 }
 
-impl GenServer {
-    pub fn new() -> GenServer {
-        let (request_tx, request_rx) = mpsc::channel(0);
-        GenServer { request_tx, request_rx, }
-    }
-
-    pub fn pid(&self) -> Pid {
-        Pid {
-            request_tx: self.request_tx.clone(),
-        }
-    }
-
-    pub async fn run<I>(
-        self,
-        wheels_iter: I,
-        params: Params,
-    ) where I: IntoIterator<Item = WheelRef>
-    {
-        let mut wheels = Vec::new();
-        let mut index = HashMap::new();
-        for wheel_ref in wheels_iter {
-            let offset = wheels.len();
-            let filename = wheel_ref.blockwheel_filename.clone();
-            match index.entry(filename.clone()) {
-                hash_map::Entry::Vacant(ve) => {
-                    ve.insert(offset);
-                    wheels.push(wheel_ref);
-                },
-                hash_map::Entry::Occupied(..) =>
-                    (),
-            }
-        }
-
-        let terminate_result = restart::restartable(
-            ero::Params {
-                name: "ero-blockwheel-kv wheels task",
-                restart_strategy: RestartStrategy::Delay {
-                    restart_after: Duration::from_secs(params.task_restart_sec as u64),
-                },
-            },
-            State {
-                request_rx: self.request_rx,
-                wheels,
-                index,
-            },
-            |state| busyloop(state),
-        ).await;
-        if let Err(error) = terminate_result {
-            log::error!("fatal error: {:?}", error);
-        }
-    }
-}
-
-struct State {
-    request_rx: mpsc::Receiver<Request>,
+struct Inner {
     wheels: Vec<WheelRef>,
     index: HashMap<WheelFilename, usize>,
+}
+
+pub struct WheelsBuilder {
+    inner: Inner,
+}
+
+#[derive(Debug)]
+pub enum BuilderError {
+    NoWheelRefs,
+}
+
+impl WheelsBuilder {
+    pub fn new() -> Self {
+        Self {
+            inner: Inner {
+                wheels: Vec::new(),
+                index: HashMap::new(),
+            },
+        }
+    }
+
+    pub fn add_wheel_ref(&mut self, wheel_ref: WheelRef) -> &mut Self {
+        let offset = self.inner.wheels.len();
+        let filename = wheel_ref.blockwheel_filename.clone();
+        match self.inner.index.entry(filename.clone()) {
+            hash_map::Entry::Vacant(ve) => {
+                ve.insert(offset);
+                self.inner.wheels.push(wheel_ref);
+            },
+            hash_map::Entry::Occupied(..) =>
+                (),
+        }
+        self
+    }
+
+    pub fn build(self) -> Result<Wheels, BuilderError> {
+        if self.inner.wheels.is_empty() {
+            return Err(BuilderError::NoWheelRefs);
+        }
+
+        Ok(Wheels { inner: Arc::new(self.inner), })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Flushed;
 
 #[derive(Debug)]
-pub enum IterBlocksError {
-    GenServer(ero::NoProcError),
-}
-
-pub struct IterBlocks {
-    pub block_refs_rx: mpsc::Receiver<IterBlocksItem>,
+pub enum FlushError {
+    WheelGone {
+        blockwheel_filename: WheelFilename,
+    },
 }
 
 pub enum IterBlocksItem {
-    Block { block_ref: BlockRef, block_bytes: Bytes, },
+    Block {
+        block_ref: BlockRef,
+        block_bytes: Bytes,
+    },
     NoMoreBlocks,
 }
 
-impl Pid {
-    pub async fn acquire(&mut self) -> Result<Option<WheelRef>, ero::NoProcError> {
-        loop {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Acquire { reply_tx, }).await
-                .map_err(|_send_error| ero::NoProcError)?;
-            match reply_rx.await {
-                Ok(maybe_wheel_ref) =>
-                    return Ok(maybe_wheel_ref),
-                Err(oneshot::Canceled) =>
-                    (),
-            }
-        }
-    }
-
-    pub async fn get(&mut self, blockwheel_filename: WheelFilename) -> Result<Option<WheelRef>, ero::NoProcError> {
-        loop {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Get { blockwheel_filename: blockwheel_filename.clone(), reply_tx, }).await
-                .map_err(|_send_error| ero::NoProcError)?;
-            match reply_rx.await {
-                Ok(maybe_wheel_ref) =>
-                    return Ok(maybe_wheel_ref),
-                Err(oneshot::Canceled) =>
-                    (),
-            }
-        }
-    }
-
-    pub async fn flush(&mut self) -> Result<Flushed, ero::NoProcError> {
-        loop {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::Flush { reply_tx, }).await
-                .map_err(|_send_error| ero::NoProcError)?;
-            match reply_rx.await {
-                Ok(Flushed) =>
-                    return Ok(Flushed),
-                Err(oneshot::Canceled) =>
-                    (),
-            }
-        }
-    }
-
-    pub async fn iter_blocks(&mut self) -> Result<IterBlocks, IterBlocksError> {
-        loop {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.request_tx.send(Request::IterBlocks { reply_tx, }).await
-                .map_err(|_send_error| IterBlocksError::GenServer(ero::NoProcError))?;
-            match reply_rx.await {
-                Ok(iter_blocks) =>
-                    return Ok(iter_blocks),
-                Err(oneshot::Canceled) =>
-                    (),
-            }
-        }
-    }
-
-    pub fn from_external(request_tx: mpsc::Sender<Request>) -> Pid {
-        Pid { request_tx, }
-    }
-}
-
-pub enum Request {
-    Acquire { reply_tx: oneshot::Sender<Option<WheelRef>>, },
-    Get { blockwheel_filename: WheelFilename, reply_tx: oneshot::Sender<Option<WheelRef>>, },
-    Flush { reply_tx: oneshot::Sender<Flushed>, },
-    IterBlocks { reply_tx: oneshot::Sender<IterBlocks>, },
-}
-
 #[derive(Debug)]
-pub enum Error {
-    WheelGoneDuringFlush {
-        blockwheel_filename: WheelFilename,
-    },
+pub enum IterBlocksItemError {
     WheelIterBlocks {
         blockwheel_filename: WheelFilename,
-        error: blockwheel::IterBlocksError,
+        error: blockwheel_fs::IterBlocksError,
     },
-    WheelIterBlocksRxDropped {
-        blockwheel_filename: WheelFilename,
-    },
+    WheelIterBlocksRxDropped,
 }
 
-async fn busyloop(mut state: State) -> Result<(), ErrorSeverity<State, Error>> {
-    while let Some(request) = state.request_rx.next().await {
-        match request {
-            Request::Acquire { reply_tx, } => {
-                let maybe_wheel_ref = if state.wheels.is_empty() {
-                    None
-                } else {
-                    let mut rng = rand::thread_rng();
-                    let offset = rng.gen_range(0 .. state.wheels.len());
-                    Some(state.wheels[offset].clone())
-                };
-                if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
-                    log::warn!("client canceled add request");
-                }
-            },
-
-            Request::Get { blockwheel_filename, reply_tx, } => {
-                let maybe_wheel_ref = state.index.get(&blockwheel_filename)
-                    .map(|&offset| state.wheels[offset].clone());
-                if let Err(_send_error) = reply_tx.send(maybe_wheel_ref) {
-                    log::warn!("client canceled get request");
-                }
-            },
-
-            Request::Flush { reply_tx, } => {
-                let mut flush_tasks = FuturesUnordered::new();
-                for WheelRef { blockwheel_pid, blockwheel_filename, } in &state.wheels {
-                    let mut blockwheel_pid = blockwheel_pid.clone();
-                    let blockwheel_filename = blockwheel_filename.clone();
-                    flush_tasks.push(async move {
-                        let status = blockwheel_pid.flush().await;
-                        (blockwheel_filename, status)
-                    });
-                }
-                while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
-                    match flush_status {
-                        Ok(blockwheel::Flushed) =>
-                            (),
-                        Err(ero::NoProcError) =>
-                            return Err(ErrorSeverity::Fatal(Error::WheelGoneDuringFlush { blockwheel_filename, })),
-                    }
-                }
-                if let Err(_send_error) = reply_tx.send(Flushed) {
-                    log::warn!("client canceled flush request");
-                }
-            },
-
-            Request::IterBlocks { reply_tx, } => {
-                let (mut block_refs_tx, block_refs_rx) = mpsc::channel(0);
-                if let Err(_send_error) = reply_tx.send(IterBlocks { block_refs_rx, }) {
-                    log::warn!("client canceled iter request");
-                    continue;
-                }
-
-                enum TaskDone { Finished, Canceled, }
-                let mut iter_tasks = FuturesUnordered::new();
-                for WheelRef { blockwheel_pid, blockwheel_filename, } in &state.wheels {
-                    let mut blockwheel_pid = blockwheel_pid.clone();
-                    let blockwheel_filename = blockwheel_filename.clone();
-                    let mut block_refs_tx = block_refs_tx.clone();
-                    iter_tasks.push(async move {
-                        let mut iter_blocks = blockwheel_pid.iter_blocks().await
-                            .map_err(|error| Error::WheelIterBlocks {
-                                blockwheel_filename: blockwheel_filename.clone(),
-                                error,
-                            })?;
-                        loop {
-                            match iter_blocks.blocks_rx.next().await {
-                                None =>
-                                    return Err(Error::WheelIterBlocksRxDropped {
-                                        blockwheel_filename,
-                                    }),
-                                Some(blockwheel::IterBlocksItem::Block { block_id, block_bytes, }) => {
-                                    let block_ref = BlockRef {
-                                        blockwheel_filename: blockwheel_filename.clone(),
-                                        block_id,
-                                    };
-                                    let item = IterBlocksItem::Block { block_ref, block_bytes, };
-                                    if let Err(_send_error) = block_refs_tx.send(item).await {
-                                        return Ok(TaskDone::Canceled);
-                                    }
-                                },
-                                Some(blockwheel::IterBlocksItem::NoMoreBlocks) =>
-                                    break,
-                            }
-                        }
-                        Ok(TaskDone::Finished)
-                    });
-                }
-                loop {
-                    match iter_tasks.next().await {
-                        None => {
-                            if let Err(_send_error) = block_refs_tx.send(IterBlocksItem::NoMoreBlocks).await {
-                                log::warn!("client canceled iter request");
-                            }
-                            break;
-                        },
-                        Some(Err(error)) =>
-                            return Err(ErrorSeverity::Fatal(error)),
-                        Some(Ok(TaskDone::Canceled)) => {
-                            log::warn!("client canceled iter request");
-                            break;
-                        },
-                        Some(Ok(TaskDone::Finished)) =>
-                            (),
-                    }
-                }
-            },
-        }
+impl Wheels {
+    pub fn acquire(&self) -> WheelRef {
+        let mut rng = rand::thread_rng();
+        let offset = rng.gen_range(0 .. self.inner.wheels.len());
+        self.inner.wheels[offset].clone()
     }
 
-    Ok(())
+    pub fn get(&self, blockwheel_filename: &WheelFilename) -> Option<WheelRef> {
+        self.inner.index.get(blockwheel_filename)
+            .and_then(|&offset| self.inner.wheels.get(offset))
+            .map(Clone::clone)
+    }
+
+    pub async fn flush(&self) -> Result<Flushed, FlushError> {
+        let mut flush_tasks = FuturesUnordered::new();
+        for WheelRef { blockwheel_pid, blockwheel_filename, } in &self.inner.wheels {
+            let mut blockwheel_pid = blockwheel_pid.clone();
+            flush_tasks.push(async move {
+                let status = blockwheel_pid.flush().await;
+                (blockwheel_filename, status)
+            });
+        }
+        while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
+            match flush_status {
+                Ok(blockwheel_fs::Flushed) =>
+                    (),
+                Err(ero::NoProcError) =>
+                    return Err(FlushError::WheelGone { blockwheel_filename: blockwheel_filename.clone(), }),
+            }
+        }
+        Ok(Flushed)
+    }
+
+    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<Vec<Rx>, IterBlocksItemError>> + '_> {
+        make_iter_blocks(self.inner.wheels.iter().cloned())
+    }
+}
+
+pub struct IterBlocks<F> {
+    state: IterBlocksState<F>,
+    rxs_ready: Vec<Rx>,
+    committed: bool,
+}
+
+enum IterBlocksState<F> {
+    AwaitRxs { rxs_future: F, },
+    RxsReady,
+}
+
+pub struct Rx {
+    rx: mpsc::Receiver<blockwheel_fs::IterBlocksItem>,
+    blockwheel_filename: WheelFilename,
+}
+
+fn make_iter_blocks<I>(
+    wheels_refs: I
+)
+    -> IterBlocks<impl Future<Output = Result<Vec<Rx>, IterBlocksItemError>>>
+where I: IntoIterator<Item = WheelRef>
+{
+    let rxs_future = try_join_all(
+        wheels_refs
+            .into_iter()
+            .map(|WheelRef { mut blockwheel_pid, blockwheel_filename, }| {
+                async move {
+                    let iter_blocks = blockwheel_pid.iter_blocks().await
+                        .map_err(|error| IterBlocksItemError::WheelIterBlocks {
+                            blockwheel_filename: blockwheel_filename.clone(),
+                            error,
+                        })?;
+                    Ok(Rx { rx: iter_blocks.blocks_rx, blockwheel_filename, })
+                }
+            })
+    );
+
+    IterBlocks {
+        state: IterBlocksState::AwaitRxs { rxs_future, },
+        rxs_ready: Vec::new(),
+        committed: false,
+    }
+}
+
+impl<F> Stream for IterBlocks<F>
+where F: Future<Output = Result<Vec<Rx>, IterBlocksItemError>> + Unpin
+{
+    type Item = Result<IterBlocksItem, IterBlocksItemError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match &mut this.state {
+            IterBlocksState::AwaitRxs { rxs_future, } => {
+                let rxs_future_pin = Pin::new(rxs_future);
+                match rxs_future_pin.poll(cx) {
+                    Poll::Ready(Ok(rxs)) => {
+                        this.rxs_ready.extend(rxs);
+                        this.state = IterBlocksState::RxsReady;
+                    },
+                    Poll::Ready(Err(error)) =>
+                        return Poll::Ready(Some(Err(error))),
+                    Poll::Pending =>
+                        (),
+                }
+            },
+            IterBlocksState::RxsReady =>
+                (),
+        }
+
+        let mut i = 0;
+        while i < this.rxs_ready.len() {
+            let rx_pin = Pin::new(&mut this.rxs_ready[i].rx);
+            match rx_pin.poll_next(cx) {
+                Poll::Ready(None) =>
+                    return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped))),
+                Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) => {
+                    this.rxs_ready.swap_remove(i);
+                },
+                Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, })) => {
+                    let block_ref = BlockRef {
+                        blockwheel_filename: this.rxs_ready[i].blockwheel_filename.clone(),
+                        block_id,
+                    };
+                    return Poll::Ready(Some(Ok(IterBlocksItem::Block { block_ref, block_bytes, })));
+                },
+                Poll::Pending =>
+                    i += 1,
+            }
+        }
+
+        if this.rxs_ready.is_empty() {
+            if this.committed {
+                Poll::Ready(None)
+            } else {
+                Poll::Ready(Some(Ok(IterBlocksItem::NoMoreBlocks)))
+            }
+        } else {
+            Poll::Pending
+        }
+    }
 }

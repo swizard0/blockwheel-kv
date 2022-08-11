@@ -20,7 +20,7 @@ use crate::{
     core::{
         manager::{
             task::{
-                WheelsPid,
+                Wheels,
             },
         },
         performer,
@@ -40,7 +40,7 @@ use crate::{
 
 pub struct Args<J> where J: edeltraud::Job {
     pub ranges_merger: performer::LookupRangesMerger,
-    pub wheels_pid: wheels::Pid,
+    pub wheels: wheels::Wheels,
     pub blocks_pool: BytesPool,
     pub thread_pool: edeltraud::Edeltraud<J>,
     pub tree_block_size: usize,
@@ -64,7 +64,7 @@ pub enum Error {
 pub async fn run<J>(
     Args {
         ranges_merger,
-        wheels_pid,
+        wheels,
         blocks_pool,
         thread_pool,
         tree_block_size,
@@ -77,7 +77,7 @@ where J: edeltraud::Job + From<job::Job>,
 {
     inner_run(
         ranges_merger,
-        WheelsPid::Regular(wheels_pid),
+        Wheels::Regular(wheels),
         blocks_pool,
         thread_pool,
         tree_block_size,
@@ -86,7 +86,7 @@ where J: edeltraud::Job + From<job::Job>,
 
 async fn inner_run<J>(
     ranges_merger: performer::LookupRangesMerger,
-    wheels_pid: WheelsPid,
+    wheels: Wheels,
     blocks_pool: BytesPool,
     thread_pool: edeltraud::Edeltraud<J>,
     tree_block_size: usize,

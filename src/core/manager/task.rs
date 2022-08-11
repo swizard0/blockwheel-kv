@@ -89,8 +89,8 @@ enum BlockwheelPid {
 }
 
 #[derive(Clone)]
-enum WheelsPid {
-    Regular(wheels::Pid),
+enum Wheels {
+    Regular(wheels::Wheels),
     #[cfg(test)]
     Custom {
         acquire: Arc<Mutex<dyn FnMut() -> WheelRef + Send + 'static>>,
@@ -129,43 +129,37 @@ impl BlockwheelPid {
     }
 }
 
-impl WheelsPid {
-    async fn acquire(&mut self) -> Result<Option<WheelRef>, ero::NoProcError> {
+impl Wheels {
+    fn acquire(&mut self) -> WheelRef {
         match self {
-            WheelsPid::Regular(wheels_pid) =>
-                match wheels_pid.acquire().await? {
-                    None =>
-                        Ok(None),
-                    Some(wheel_ref) =>
-                        Ok(Some(WheelRef {
-                            blockwheel_filename: wheel_ref.blockwheel_filename,
-                            blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
-                        })),
-                },
+            Wheels::Regular(wheels) => {
+                let wheel_ref = wheels.acquire();
+                WheelRef {
+                    blockwheel_filename: wheel_ref.blockwheel_filename,
+                    blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
+                }
+            },
             #[cfg(test)]
-            WheelsPid::Custom { acquire: custom_acquire_fn, .. } => {
+            Wheels::Custom { acquire: custom_acquire_fn, .. } => {
                 let mut fn_lock = custom_acquire_fn.lock().unwrap();
-                Ok(Some(fn_lock()))
+                fn_lock()
             },
         }
     }
 
-    pub async fn get(&mut self, blockwheel_filename: wheels::WheelFilename) -> Result<Option<WheelRef>, ero::NoProcError> {
+    pub fn get(&mut self, blockwheel_filename: wheels::WheelFilename) -> Option<WheelRef> {
         match self {
-            WheelsPid::Regular(wheels_pid) =>
-                match wheels_pid.get(blockwheel_filename).await? {
-                    None =>
-                        Ok(None),
-                    Some(wheel_ref) =>
-                        Ok(Some(WheelRef {
-                            blockwheel_filename: wheel_ref.blockwheel_filename,
-                            blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
-                        })),
-                },
+            Wheels::Regular(wheels) => {
+                let wheel_ref = wheels.get(&blockwheel_filename)?;
+                Some(WheelRef {
+                    blockwheel_filename: wheel_ref.blockwheel_filename,
+                    blockwheel_pid: BlockwheelPid::Regular(wheel_ref.blockwheel_pid),
+                })
+            },
             #[cfg(test)]
-            WheelsPid::Custom { get: custom_acquire_fn, .. } => {
+            Wheels::Custom { get: custom_acquire_fn, .. } => {
                 let mut fn_lock = custom_acquire_fn.lock().unwrap();
-                Ok(Some(fn_lock(blockwheel_filename)))
+                Some(fn_lock(blockwheel_filename))
             },
         }
     }

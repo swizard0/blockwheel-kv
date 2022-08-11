@@ -114,7 +114,7 @@ impl GenServer {
         thread_pool: edeltraud::Edeltraud<J>,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
-        wheels_pid: wheels::Pid,
+        wheels: wheels::Wheels,
         params: Params,
     )
     where J: edeltraud::Job + From<job::Job>,
@@ -134,7 +134,7 @@ impl GenServer {
                 thread_pool,
                 blocks_pool,
                 version_provider,
-                wheels_pid,
+                wheels,
                 params,
             },
             |mut state| async move {
@@ -159,7 +159,7 @@ struct State<J> where J: edeltraud::Job {
     thread_pool: edeltraud::Edeltraud<J>,
     blocks_pool: BytesPool,
     version_provider: version::Provider,
-    wheels_pid: wheels::Pid,
+    wheels: wheels::Wheels,
     params: Params,
 }
 
@@ -318,7 +318,7 @@ enum Request {
 #[derive(Debug)]
 pub enum Error {
     Task(task::Error),
-    WheelsIterBlocks(wheels::IterBlocksError),
+    WheelsIterBlocks(wheels::IterBlocksItemError),
     WheelsIterBlocksRxDropped,
     DeserializeBlock {
         block_ref: wheels::BlockRef,
@@ -328,7 +328,7 @@ pub enum Error {
 
 async fn load<J>(
     child_supervisor_pid: SupervisorPid,
-    mut state: State<J>,
+    state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
 where J: edeltraud::Job + From<job::Job>,
@@ -340,15 +340,15 @@ where J: edeltraud::Job + From<job::Job>,
 
     log::info!("loading search_tree roots from wheels");
 
-    let mut iter_blocks = state.wheels_pid.iter_blocks().await
-        .map_err(Error::WheelsIterBlocks)
-        .map_err(ErrorSeverity::Fatal)?;
+    let mut iter_blocks = state.wheels.iter_blocks();
 
     loop {
-        match iter_blocks.block_refs_rx.next().await {
+        match iter_blocks.next().await {
             None =>
                 return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocksRxDropped)),
-            Some(wheels::IterBlocksItem::Block { block_ref, block_bytes, }) => {
+            Some(Err(error)) =>
+                return Err(ErrorSeverity::Fatal(Error::WheelsIterBlocks(error))),
+            Some(Ok(wheels::IterBlocksItem::Block { block_ref, block_bytes, })) => {
                 blocks_total += 1;
                 let deserializer = match storage::block_deserialize_iter(&block_bytes) {
                     Ok(deserializer) =>
@@ -372,10 +372,11 @@ where J: edeltraud::Job + From<job::Job>,
                         (),
                 }
             },
-            Some(wheels::IterBlocksItem::NoMoreBlocks) =>
+            Some(Ok(wheels::IterBlocksItem::NoMoreBlocks)) =>
                 break,
         }
     }
+    drop(iter_blocks);
 
     log::info!("loading done, {} search_trees restored within {} blocks", forest.len(), blocks_total);
 
@@ -583,7 +584,7 @@ where J: edeltraud::Job + From<job::Job>,
                             values_inline_size_limit: state.params.performer_params.values_inline_size_limit,
                             search_tree_id,
                             frozen_memcache,
-                            wheels_pid: state.wheels_pid.clone(),
+                            wheels: state.wheels.clone(),
                             blocks_pool: state.blocks_pool.clone(),
                             block_entries_pool: pools.block_entries_pool.clone(),
                             thread_pool: state.thread_pool.clone(),
@@ -598,7 +599,7 @@ where J: edeltraud::Job + From<job::Job>,
                         task::lookup_range_merge::Args {
                             ranges_merger,
                             lookup_context,
-                            wheels_pid: state.wheels_pid.clone(),
+                            wheels: state.wheels.clone(),
                             thread_pool: state.thread_pool.clone(),
                             iter_send_buffer: state.params.iter_send_buffer,
                         },
@@ -619,7 +620,7 @@ where J: edeltraud::Job + From<job::Job>,
                     tasks.push(task::run_args(task::TaskArgs::MergeSearchTrees(
                         task::merge_search_trees::Args {
                             ranges_merger,
-                            wheels_pid: state.wheels_pid.clone(),
+                            wheels: state.wheels.clone(),
                             blocks_pool: state.blocks_pool.clone(),
                             thread_pool: state.thread_pool.clone(),
                             tree_block_size: state.params.performer_params.tree_block_size,

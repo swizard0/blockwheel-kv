@@ -87,7 +87,7 @@ impl GenServer {
         thread_pool: edeltraud::Edeltraud<J>,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
-        wheels_pid: wheels::Pid,
+        wheels: wheels::Wheels,
         params: Params,
     )
     where J: edeltraud::Job + From<job::Job>,
@@ -116,7 +116,7 @@ impl GenServer {
             thread_pool,
             blocks_pool,
             version_provider,
-            wheels_pid,
+            wheels,
             manager_params,
         );
         manager_task.await
