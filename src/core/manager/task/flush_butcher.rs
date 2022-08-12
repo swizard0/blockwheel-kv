@@ -114,7 +114,7 @@ where J: edeltraud::Job + From<job::Job>,
 async fn inner_run<J>(
     search_tree_id: u64,
     frozen_memcache: Arc<MemCache>,
-    wheels: Wheels,
+    mut wheels: Wheels,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     search_tree_builder_params: search_tree_builder::Params,
@@ -129,17 +129,13 @@ where J: edeltraud::Job + From<job::Job>,
     enum Task<J> where J: edeltraud::Job + From<job::Job> {
         Job(edeltraud::Handle<J::Output>),
         WriteValue {
-            wheels: Wheels,
+            wheel_ref: WheelRef,
             block_bytes: Bytes,
             async_ref: Ref,
             block_entry_index: usize,
         },
         WriteBlock {
             write_block_task: WriteBlockTask,
-        },
-        AcquireWheelRef {
-            wheels: Wheels,
-            prepare_block_task: PrepareBlockTask,
         },
     }
 
@@ -153,10 +149,6 @@ where J: edeltraud::Job + From<job::Job>,
         WriteBlock {
             block_ref: BlockRef,
             async_ref: Ref,
-        },
-        AcquireWheelRef {
-            wheel_ref: WheelRef,
-            prepare_block_task: PrepareBlockTask,
         },
     }
 
@@ -174,8 +166,7 @@ where J: edeltraud::Job + From<job::Job>,
                     let job::ManagerTaskFlushButcherDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
-                Task::WriteValue { mut wheels, block_bytes, async_ref, block_entry_index, } => {
-                    let mut wheel_ref = wheels.acquire();
+                Task::WriteValue { mut wheel_ref, block_bytes, async_ref, block_entry_index, } => {
                     let blockwheel_filename = wheel_ref.blockwheel_filename.clone();
                     let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
                         .map_err(Error::WriteBlock)?;
@@ -192,10 +183,6 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                         async_ref,
                     })
-                },
-                Task::AcquireWheelRef { mut wheels, prepare_block_task, } => {
-                    let wheel_ref = wheels.acquire();
-                    Ok(TaskOutput::AcquireWheelRef { wheel_ref, prepare_block_task, })
                 },
             }
         }
@@ -274,9 +261,9 @@ where J: edeltraud::Job + From<job::Job>,
                                 let mut block_bytes = blocks_pool.lend();
                                 storage::value_block_serialize(value_bytes, &mut block_bytes)
                                     .map_err(Error::SerializeValueBlockStorage)?;
-                                let wheels = wheels.clone();
+                                let wheel_ref = wheels.acquire();
                                 tasks.push(Task::WriteValue {
-                                    wheels,
+                                    wheel_ref,
                                     block_bytes: block_bytes.freeze(),
                                     async_ref: prepare_block_task.async_ref,
                                     block_entry_index,
@@ -289,8 +276,14 @@ where J: edeltraud::Job + From<job::Job>,
                     }
 
                     if values_write_pending == 0 {
-                        let wheels = wheels.clone();
-                        tasks.push(Task::AcquireWheelRef { wheels, prepare_block_task, }.run());
+                        incoming.serialize_block_tasks.push(
+                            SerializeBlockTask {
+                                wheel_ref: wheels.acquire(),
+                                node_type: prepare_block_task.node_type,
+                                async_ref: prepare_block_task.async_ref,
+                                block_entries: prepare_block_task.block_entries,
+                            },
+                        );
                     } else {
                         value_writes_pending.insert(
                             prepare_block_task.async_ref,
@@ -301,12 +294,10 @@ where J: edeltraud::Job + From<job::Job>,
                         );
                     }
                 }
-
                 for write_block_task in env.outgoing.write_block_tasks.drain(..) {
                     tasks.push(Task::WriteBlock { write_block_task, }.run());
                 }
 
-                assert!(env.incoming.is_empty());
                 builder_state = BuilderState::Ready {
                     job_args: JobArgs { env, kont: Kont::Continue { next, }, },
                 };
@@ -327,18 +318,23 @@ where J: edeltraud::Job + From<job::Job>,
                             .prepare_block_task
                             .block_entries[block_entry_index];
                         match &mut block_entry.item.value_cell.cell {
-                            value @ kv::Cell::Value(..) =>
+                            value @ kv::Cell::Value(storage::OwnedValueBlockRef::Inline(..)) =>
                                 *value = kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                            kv::Cell::Value(storage::OwnedValueBlockRef::Ref(..)) =>
+                                unreachable!(),
                             kv::Cell::Tombstone =>
                                 unreachable!(),
                         }
                         if value_write_pending.pending_count == 0 {
                             let (_, value_write_pending) = oe.remove_entry();
-                            let wheels = wheels.clone();
-                            tasks.push(Task::AcquireWheelRef {
-                                wheels,
-                                prepare_block_task: value_write_pending.prepare_block_task,
-                            }.run());
+                            incoming.serialize_block_tasks.push(
+                                SerializeBlockTask {
+                                    wheel_ref: wheels.acquire(),
+                                    node_type: value_write_pending.prepare_block_task.node_type,
+                                    async_ref: value_write_pending.prepare_block_task.async_ref,
+                                    block_entries: value_write_pending.prepare_block_task.block_entries,
+                                },
+                            );
                         }
                     },
                     Entry::Vacant(..) =>
@@ -347,11 +343,6 @@ where J: edeltraud::Job + From<job::Job>,
 
             TaskOutput::WriteBlock { block_ref, async_ref, } =>
                 incoming.commit_block_tasks.push(CommitBlockTask { block_ref, async_ref, }),
-
-            TaskOutput::AcquireWheelRef { wheel_ref, prepare_block_task: PrepareBlockTask { node_type, async_ref, block_entries, }, } =>
-                incoming.serialize_block_tasks.push(
-                    SerializeBlockTask { wheel_ref, node_type, async_ref, block_entries, }
-                ),
 
         }
     }

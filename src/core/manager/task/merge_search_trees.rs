@@ -73,9 +73,15 @@ pub enum Error {
     SearchRangesMerge(search_ranges_merge::Error),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),
-    ReadBlock(blockwheel_fs::ReadBlockError),
+    ReadBlock {
+        block_ref: BlockRef,
+        error: blockwheel_fs::ReadBlockError,
+    },
     WriteBlock(blockwheel_fs::WriteBlockError),
-    DeleteBlock(blockwheel_fs::DeleteBlockError),
+    DeleteBlock {
+        block_ref: BlockRef,
+        error: blockwheel_fs::DeleteBlockError,
+    },
 }
 
 pub async fn run<J>(
@@ -158,7 +164,10 @@ where J: edeltraud::Job + From<job::Job>,
                 },
                 Task::ReadBlock { read_block_task: ReadBlockTask { mut wheel_ref, async_token, block_ref, }, } => {
                     let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await
-                        .map_err(Error::ReadBlock)?;
+                        .map_err(|error| Error::ReadBlock {
+                            block_ref,
+                            error,
+                        })?;
                     Ok(TaskOutput::BlockRead { async_token, block_bytes, })
                 },
                 Task::WriteBlock { write_block_task: WriteBlockTask { mut wheel_ref, async_ref, block_bytes, }, } => {
@@ -173,12 +182,12 @@ where J: edeltraud::Job + From<job::Job>,
                     })
                 },
                 Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } => {
-                     match wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await {
+                    match wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await {
                         Ok(blockwheel_fs::Deleted) =>
-                             Ok(TaskOutput::BlockDeleted),
+                            Ok(TaskOutput::BlockDeleted),
                         Err(error) =>
-                            return Err(Error::DeleteBlock(error)),
-                     }
+                            return Err(Error::DeleteBlock { block_ref, error, }),
+                    }
                 },
             }
         }
