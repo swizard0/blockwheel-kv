@@ -322,15 +322,24 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn butcher_flushed(&mut self, search_tree_id: u64, root_block: BlockRef) {
-        let items_count = match self.forest.remove(search_tree_id) {
-            Some(SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, })) =>
-                frozen_memcache.len(),
-            _ =>
-                unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
-        };
-        self.forest.add_constructed(root_block, items_count);
-        self.forest.search_trees_pile
-            .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
+        match self.forest.search_trees.entry(search_tree_id) {
+            hash_map::Entry::Vacant(..) =>
+                unreachable!(),
+            hash_map::Entry::Occupied(mut oe) =>
+                match oe.get_mut() {
+                    SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) => {
+                        let items_count = frozen_memcache.len();
+                        *oe.get_mut() = SearchTree::Constructed(SearchTreeConstructed {
+                            root_block,
+                            accesses_count: 0,
+                        });
+                        self.forest.search_trees_pile
+                            .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
+                    },
+                    SearchTree::Constructed(..) =>
+                        unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
+                },
+        }
         assert!(self.forest.butcher_flushes_count > 0);
         self.forest.butcher_flushes_count -= 1;
     }
