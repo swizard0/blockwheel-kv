@@ -18,9 +18,6 @@ use std::{
 };
 
 use futures::{
-    future::{
-        try_join_all,
-    },
     stream::{
         FuturesUnordered,
     },
@@ -184,7 +181,15 @@ pub enum IterBlocksItemError {
         blockwheel_filename: WheelFilename,
         error: blockwheel_fs::IterBlocksError,
     },
-    WheelIterBlocksRxDropped,
+    WheelIterBlocksRxDropped {
+        blockwheel_filename: WheelFilename,
+    },
+    DuplicateNoMoreBlocks {
+        blockwheel_filename: WheelFilename,
+    },
+    UnexpectedBlockAfterShutdown {
+        blockwheel_filename: WheelFilename,
+    },
 }
 
 impl Wheels {
@@ -220,102 +225,135 @@ impl Wheels {
         Ok(Flushed)
     }
 
-    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<Vec<Rx>, IterBlocksItemError>> + '_> {
+    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>> + '_> {
         make_iter_blocks(self.inner.wheels.iter().cloned())
     }
-}
-
-pub struct IterBlocks<F> {
-    state: IterBlocksState<F>,
-    rxs_ready: Vec<Rx>,
-    committed: bool,
-}
-
-enum IterBlocksState<F> {
-    AwaitRxs { rxs_future: F, },
-    RxsReady,
-}
-
-pub struct Rx {
-    rx: mpsc::Receiver<blockwheel_fs::IterBlocksItem>,
-    blockwheel_filename: WheelFilename,
 }
 
 fn make_iter_blocks<I>(
     wheels_refs: I
 )
-    -> IterBlocks<impl Future<Output = Result<Vec<Rx>, IterBlocksItemError>>>
+    -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>>>
 where I: IntoIterator<Item = WheelRef>
 {
-    let rxs_future = try_join_all(
-        wheels_refs
+    IterBlocks {
+        rxs: wheels_refs
             .into_iter()
             .map(|WheelRef { mut blockwheel_pid, blockwheel_filename, }| {
-                async move {
-                    let iter_blocks = blockwheel_pid.iter_blocks().await
-                        .map_err(|error| IterBlocksItemError::WheelIterBlocks {
-                            blockwheel_filename: blockwheel_filename.clone(),
-                            error,
-                        })?;
-                    Ok(Rx { rx: iter_blocks.blocks_rx, blockwheel_filename, })
+                let blockwheel_filename_clone = blockwheel_filename.clone();
+                Rx {
+                    state: RxState::AwaitRx {
+                        rx_future: Box::pin(async move {
+                            let iter_blocks = blockwheel_pid.iter_blocks().await
+                                .map_err(|error| IterBlocksItemError::WheelIterBlocks {
+                                    blockwheel_filename: blockwheel_filename_clone,
+                                    error,
+                                })?;
+                            Ok(iter_blocks.blocks_rx)
+                        }),
+                    },
+                    blockwheel_filename,
                 }
             })
-    );
-
-    IterBlocks {
-        state: IterBlocksState::AwaitRxs { rxs_future, },
-        rxs_ready: Vec::new(),
+            .collect::<Box<[_]>>()
+            .into(),
         committed: false,
     }
 }
 
+pub struct IterBlocks<F> {
+    rxs: Vec<Rx<F>>,
+    committed: bool,
+}
+
+pub struct Rx<F> {
+    state: RxState<F>,
+    blockwheel_filename: WheelFilename,
+}
+
+enum RxState<F> {
+    AwaitRx { rx_future: Pin<Box<F>>, },
+    Stream {
+        rx: mpsc::Receiver<blockwheel_fs::IterBlocksItem>,
+        conn: RxConn,
+    },
+}
+
+enum RxConn {
+    Online,
+    Shutdown,
+}
+
 impl<F> Stream for IterBlocks<F>
-where F: Future<Output = Result<Vec<Rx>, IterBlocksItemError>> + Unpin
+where F: Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>>
 {
     type Item = Result<IterBlocksItem, IterBlocksItemError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        match &mut this.state {
-            IterBlocksState::AwaitRxs { rxs_future, } => {
-                let rxs_future_pin = Pin::new(rxs_future);
-                match rxs_future_pin.poll(cx) {
-                    Poll::Ready(Ok(rxs)) => {
-                        this.rxs_ready.extend(rxs);
-                        this.state = IterBlocksState::RxsReady;
-                    },
-                    Poll::Ready(Err(error)) =>
-                        return Poll::Ready(Some(Err(error))),
-                    Poll::Pending =>
-                        (),
-                }
-            },
-            IterBlocksState::RxsReady =>
-                (),
-        }
 
         let mut i = 0;
-        while i < this.rxs_ready.len() {
-            let rx_pin = Pin::new(&mut this.rxs_ready[i].rx);
-            match rx_pin.poll_next(cx) {
-                Poll::Ready(None) =>
-                    return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped))),
-                Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) => {
-                    this.rxs_ready.swap_remove(i);
+        while i < this.rxs.len() {
+            match &mut this.rxs[i].state {
+                RxState::AwaitRx { rx_future, } => {
+                    let rx_future_pin = rx_future.as_mut();
+                    match rx_future_pin.poll(cx) {
+                        Poll::Ready(Ok(rx)) => {
+                            this.rxs[i].state = RxState::Stream { rx, conn: RxConn::Online, };
+                            continue;
+                        },
+                        Poll::Ready(Err(error)) =>
+                            return Poll::Ready(Some(Err(error))),
+                        Poll::Pending =>
+                            (),
+                    }
                 },
-                Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, })) => {
-                    let block_ref = BlockRef {
-                        blockwheel_filename: this.rxs_ready[i].blockwheel_filename.clone(),
-                        block_id,
-                    };
-                    return Poll::Ready(Some(Ok(IterBlocksItem::Block { block_ref, block_bytes, })));
+                RxState::Stream { rx, conn: conn @ RxConn::Online, } => {
+                    let rx_pin = Pin::new(rx);
+                    match rx_pin.poll_next(cx) {
+                        Poll::Ready(None) =>
+                            return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped {
+                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+                            }))),
+                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) => {
+                            *conn = RxConn::Shutdown;
+                            continue;
+                        },
+                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, })) => {
+                            let block_ref = BlockRef {
+                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+                                block_id,
+                            };
+                            return Poll::Ready(Some(Ok(IterBlocksItem::Block { block_ref, block_bytes, })));
+                        },
+                        Poll::Pending =>
+                            (),
+                    }
                 },
-                Poll::Pending =>
-                    i += 1,
+                RxState::Stream { rx, conn: RxConn::Shutdown, } => {
+                    let rx_pin = Pin::new(rx);
+                    match rx_pin.poll_next(cx) {
+                        Poll::Ready(None) => {
+                            this.rxs.swap_remove(i);
+                            continue;
+                        },
+                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) =>
+                            return Poll::Ready(Some(Err(IterBlocksItemError::DuplicateNoMoreBlocks {
+                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+                            }))),
+                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { .. })) =>
+                            return Poll::Ready(Some(Err(IterBlocksItemError::UnexpectedBlockAfterShutdown {
+                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+                            }))),
+                        Poll::Pending =>
+                            (),
+                    }
+                },
             }
+            i += 1;
         }
 
-        if this.rxs_ready.is_empty() {
+        if this.rxs.is_empty() {
             if this.committed {
                 Poll::Ready(None)
             } else {

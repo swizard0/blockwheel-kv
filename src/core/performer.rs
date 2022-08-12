@@ -507,6 +507,10 @@ impl<C> Inner<C> where C: Context {
         if let Some(event) = self.maybe_flush(false) {
             self.pending_events.push(PendingEvent::FlushButcher(event));
         }
+        // search trees merge
+        while let Some(event) = self.maybe_merge_search_trees() {
+            self.pending_events.push(PendingEvent::MergeSearchTrees(event));
+        }
         // flush done
         if !self.pending_flushes.is_empty() && self.forest.flush_friendly() {
             if let Some(event) = self.maybe_flush(true) {
@@ -517,10 +521,6 @@ impl<C> Inner<C> where C: Context {
                     .map(|flush_context| PendingEvent::Flushed { flush_context, });
                 self.pending_events.extend(events);
             }
-        }
-        // search trees merge
-        while let Some(event) = self.maybe_merge_search_trees() {
-            self.pending_events.push(PendingEvent::MergeSearchTrees(event));
         }
 
         match self.pending_events.pop() {
@@ -726,6 +726,7 @@ impl SearchForest {
             },
             items_count,
         );
+
         search_tree_id
     }
 
@@ -739,6 +740,7 @@ impl SearchForest {
                 frozen_memcache,
             }),
         );
+
         search_tree_id
     }
 }
