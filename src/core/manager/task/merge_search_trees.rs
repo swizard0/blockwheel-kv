@@ -451,7 +451,6 @@ pub enum JobDone {
 pub type Output = Result<JobDone, Error>;
 
 pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Output {
-
     loop {
         enum MergeKontState<K, A, I> {
             Ready(K),
@@ -571,7 +570,6 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 build_kont = BuildKont::CountItems { items_count, merger_source_build, };
             },
             (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont,
@@ -596,7 +594,6 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
             },
             (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont,
@@ -608,7 +605,6 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
             },
             (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont: idle_merge_kont,
@@ -620,7 +616,6 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
             },
             (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont: MergeKont::Finished,
@@ -632,7 +627,6 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                 build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, };
             },
             (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
-                assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont,

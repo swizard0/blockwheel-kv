@@ -59,5 +59,6 @@ where J: edeltraud::Job + From<job::Job>,
       job::JobOutput: From<J::Output>,
 {
 
-    todo!()
+    // todo!()
+    Ok(Done)
 }

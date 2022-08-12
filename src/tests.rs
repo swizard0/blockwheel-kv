@@ -45,29 +45,29 @@ use crate as blockwheel_kv;
 fn stress() {
     env_logger::init();
 
-    // let runtime = tokio::runtime::Builder::new_current_thread()
-    //     .build()
-    //     .unwrap();
-
-    // let limits = Limits {
-    //     active_tasks: 128,
-    //     actions: 512,
-    //     key_size_bytes: 32,
-    //     value_size_bytes: 4096,
-    // };
-    // let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
 
     let limits = Limits {
-        active_tasks: 1024,
-        actions: 32768,
+        active_tasks: 128,
+        actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
     };
-    let init_wheel_size_bytes = 134217728; // (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
+    let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions;
+
+    // let runtime = tokio::runtime::Builder::new_multi_thread()
+    //     .build()
+    //     .unwrap();
+
+    // let limits = Limits {
+    //     active_tasks: 1024,
+    //     actions: 32768,
+    //     key_size_bytes: 32,
+    //     value_size_bytes: 4096,
+    // };
+    // let init_wheel_size_bytes = 134217728; // (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
 
     let kv = blockwheel_kv::Params {
         ..Default::default()

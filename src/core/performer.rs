@@ -470,8 +470,10 @@ impl<C> Inner<C> where C: Context {
     fn search_trees_merged(&mut self, root_block: BlockRef, items_count: usize, access_token: AccessToken) {
         for search_tree_id in access_token.search_trees_ids {
             match self.forest.search_trees.remove(&search_tree_id) {
-                None | Some(SearchTree::Bootstrap(..)) =>
-                    unreachable!(),
+                None =>
+                    unreachable!("should not hit None getting search_tree_id = {search_tree_id}"),
+                Some(SearchTree::Bootstrap(..)) =>
+                    unreachable!("should not hit Some(Bootstrap) getting search_tree_id = {search_tree_id}"),
                 Some(SearchTree::Constructed(mut search_tree)) => {
                     assert!(search_tree.accesses_count > 0);
                     search_tree.accesses_count -= 1;
@@ -487,10 +489,8 @@ impl<C> Inner<C> where C: Context {
                 },
             }
         }
-        let search_tree_id =
-            self.forest.add_constructed(root_block, items_count);
-        self.forest.search_trees_pile
-            .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
+
+        self.forest.add_constructed(root_block, items_count);
     }
 
     fn demand_search_tree_removal(&mut self, search_tree: SearchTreeConstructed) {
@@ -740,10 +740,6 @@ impl SearchForest {
             }),
         );
         search_tree_id
-    }
-
-    fn remove(&mut self, search_tree_id: u64) -> Option<SearchTree> {
-        self.search_trees.remove(&search_tree_id)
     }
 }
 
