@@ -104,8 +104,8 @@ fn stress() {
     let version_provider = version::Provider::from_unix_epoch_seed();
     let mut data = DataIndex {
         index: HashMap::new(),
+        alive: HashMap::new(),
         data: Vec::new(),
-        current_version: 0,
     };
     let mut counter = Counter::default();
 
@@ -159,8 +159,8 @@ impl Counter {
 
 struct DataIndex {
     index: HashMap<kv::Key, usize>,
+    alive: HashMap<kv::Key, usize>,
     data: Vec<kv::KeyValuePair<kv::Value>>,
-    current_version: u64,
 }
 
 #[derive(Debug)]
@@ -305,22 +305,18 @@ async fn stress_loop(
                         cell: kv::Cell::Value(value.clone()),
                     },
                 };
-                let updated = if let Some(&offset) = data.index.get(&key) {
+                if let Some(&offset) = data.index.get(&key) {
                     if data.data[offset].value_cell.version < data_cell.value_cell.version {
                         data.data[offset] = data_cell;
-                        true
-                    } else {
-                        false
+                        data.alive.insert(key.clone(), offset);
                     }
                 } else {
                     let offset = data.data.len();
                     data.data.push(data_cell);
-                    data.index.insert(key, offset);
-                    true
-                };
-                if updated {
-                    data.current_version = version;
+                    data.index.insert(key.clone(), offset);
+                    data.alive.insert(key.clone(), offset);
                 }
+
                 counter.inserts += 1;
                 active_tasks_counter.inserts -= 1;
             },
@@ -390,8 +386,11 @@ async fn stress_loop(
                     },
                 };
                 let &offset = data.index.get(&key).unwrap();
-                data.data[offset] = data_cell;
-                data.current_version = version;
+                if data.data[offset].value_cell.version < data_cell.value_cell.version {
+                    data.data[offset] = data_cell;
+                    data.alive.remove(&key);
+                }
+
                 counter.removes += 1;
                 active_tasks_counter.removes -= 1;
             },
@@ -440,7 +439,7 @@ async fn stress_loop(
             let insert_prob_space = (info_a.bytes_free + info_b.bytes_free) as f64;
             let insert_prob = insert_prob_space / prob_space;
             let dice = rng.gen_range(0.0 .. 1.0);
-            if data.data.is_empty() || dice < insert_prob {
+            if data.alive.is_empty() || dice < insert_prob {
                 // insert task
                 let mut wheel_kv_pid = wheel_kv_pid.clone();
                 let blocks_pool = blocks_pool.clone();
@@ -488,7 +487,11 @@ async fn stress_loop(
             } else {
                 // remove task
                 let (key, value) = loop {
-                    let key_index = rng.gen_range(0 .. data.data.len());
+                    let index = rng.gen_range(0 .. data.alive.len());
+                    let &key_index = data.alive
+                        .values()
+                        .nth(index)
+                        .unwrap();
                     let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
                     match &value_cell.cell {
                         kv::Cell::Value(value) =>
@@ -525,7 +528,6 @@ async fn stress_loop(
             // lookup task
             let key_index = rng.gen_range(0 .. data.data.len());
             let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
-            let version_snapshot = data.current_version;
 
             let lookup_kind = if rng.gen_range(0.0 .. 1.0) < 0.5 {
                 LookupKind::Single
@@ -559,7 +561,12 @@ async fn stress_loop(
                             Ok(None) =>
                                 Err(Error::ExpectedValueNotFound { key, value_cell, }),
                             Ok(Some(found_value_cell)) =>
-                                Ok(TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind: LookupKind::Single, }),
+                                Ok(TaskDone::Lookup {
+                                    key,
+                                    found_value_cell,
+                                    version_snapshot: value_cell.version,
+                                    lookup_kind: LookupKind::Single,
+                                }),
                             Err(error) =>
                                 Err(Error::Lookup(error))
                         }
@@ -577,7 +584,7 @@ async fn stress_loop(
                                 TaskDone::Lookup {
                                     key: key.clone(),
                                     found_value_cell: key_value_pair.value_cell,
-                                    version_snapshot,
+                                    version_snapshot: value_cell.version,
                                     lookup_kind: LookupKind::Range,
                                 },
                             Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
@@ -653,11 +660,17 @@ async fn stress_loop(
         .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
     log::info!("FINISHED: info_b: {info_b:?}");
 
-    log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(std::sync::atomic::Ordering::SeqCst));
-    log::info!("JOB_MANAGER_TASK_PERFORMER: {}", job::JOB_MANAGER_TASK_PERFORMER.load(std::sync::atomic::Ordering::SeqCst));
-    log::info!("JOB_MANAGER_TASK_FLUSH_BUTCHER: {}", job::JOB_MANAGER_TASK_FLUSH_BUTCHER.load(std::sync::atomic::Ordering::SeqCst));
-    log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(std::sync::atomic::Ordering::SeqCst));
-    log::info!("JOB_MANAGER_TASK_MERGE_SEARCH_TREES: {}", job::JOB_MANAGER_TASK_MERGE_SEARCH_TREES.load(std::sync::atomic::Ordering::SeqCst));
+    use std::sync::atomic::Ordering;
+
+    log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(Ordering::SeqCst));
+    log::info!(" | JOB_BLOCK_PREPARE_WRITE: {}", blockwheel::job::JOB_BLOCK_PREPARE_WRITE.load(Ordering::SeqCst));
+    log::info!(" | JOB_BLOCK_PROCESS_READ: {}", blockwheel::job::JOB_BLOCK_PROCESS_READ.load(Ordering::SeqCst));
+    log::info!(" | JOB_BLOCK_PREPARE_DELETE: {}", blockwheel::job::JOB_BLOCK_PREPARE_DELETE.load(Ordering::SeqCst));
+    log::info!(" | JOB_PERFORMER_JOB_RUN: {}", blockwheel::job::JOB_PERFORMER_JOB_RUN.load(Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_PERFORMER: {}", job::JOB_MANAGER_TASK_PERFORMER.load(Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_FLUSH_BUTCHER: {}", job::JOB_MANAGER_TASK_FLUSH_BUTCHER.load(Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_MERGE_SEARCH_TREES: {}", job::JOB_MANAGER_TASK_MERGE_SEARCH_TREES.load(Ordering::SeqCst));
 
     Ok::<_, Error>(())
 }

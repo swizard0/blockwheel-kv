@@ -1,3 +1,12 @@
+use std::{
+    sync::{
+        atomic::{
+            Ordering,
+            AtomicUsize,
+        },
+    },
+};
+
 use ero_blockwheel_fs as blockwheel;
 
 use crate::{
@@ -20,8 +29,6 @@ pub enum JobOutput {
     ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone),
 }
 
-use std::{sync::atomic::{self, AtomicUsize}};
-
 pub static JOB_BLOCKWHEEL_FS: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MANAGER_TASK_PERFORMER: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MANAGER_TASK_FLUSH_BUTCHER: AtomicUsize = AtomicUsize::new(0);
@@ -34,23 +41,23 @@ impl edeltraud::Job for Job {
     fn run(self) -> Self::Output {
         match self {
             Job::BlockwheelFs(job) => {
-                JOB_BLOCKWHEEL_FS.fetch_add(1, atomic::Ordering::Relaxed);
+                JOB_BLOCKWHEEL_FS.fetch_add(1, Ordering::Relaxed);
                 JobOutput::BlockwheelFs(job.run())
             },
             Job::ManagerTaskPerformer(args) => {
-                JOB_MANAGER_TASK_PERFORMER.fetch_add(1, atomic::Ordering::Relaxed);
+                JOB_MANAGER_TASK_PERFORMER.fetch_add(1, Ordering::Relaxed);
                 JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args)))
             },
             Job::ManagerTaskFlushButcher(args) => {
-                JOB_MANAGER_TASK_FLUSH_BUTCHER.fetch_add(1, atomic::Ordering::Relaxed);
+                JOB_MANAGER_TASK_FLUSH_BUTCHER.fetch_add(1, Ordering::Relaxed);
                 JobOutput::ManagerTaskFlushButcher(ManagerTaskFlushButcherDone(core::manager::task::flush_butcher::job(args)))
             },
             Job::ManagerTaskLookupRangeMerge(args) => {
-                JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.fetch_add(1, atomic::Ordering::Relaxed);
+                JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.fetch_add(1, Ordering::Relaxed);
                 JobOutput::ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone(core::manager::task::lookup_range_merge::job(args)))
             },
             Job::ManagerTaskMergeSearchTrees(args) => {
-                JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, atomic::Ordering::Relaxed);
+                JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, Ordering::Relaxed);
                 JobOutput::ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone(core::manager::task::merge_search_trees::job(args)))
             },
         }
