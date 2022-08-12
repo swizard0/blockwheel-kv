@@ -257,13 +257,6 @@ struct Outgoing {
     delete_block_tasks: Vec<DeleteBlockTask>,
 }
 
-impl Outgoing {
-    fn is_empty(&self) -> bool {
-        self.read_block_task.is_none() &&
-            self.delete_block_tasks.is_empty()
-    }
-}
-
 struct ReadBlockTask {
     wheel_ref: WheelRef,
     block_ref: BlockRef,
@@ -334,10 +327,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                     walker_kont = next.proceed()
                         .map_err(Error::SearchTreeWalker)?;
                 },
-                search_tree_walker::Kont::Finished => {
-                    assert!(env.outgoing.is_empty());
-                    return Ok(JobDone::Finished);
-                },
+                search_tree_walker::Kont::Finished =>
+                    return Ok(JobDone::Finished),
             }
         }
     }

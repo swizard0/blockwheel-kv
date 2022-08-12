@@ -109,9 +109,13 @@ fn stress() {
     };
     let mut counter = Counter::default();
 
+    log::info!("stage #0: run over an empty base");
+
     fs::remove_file(&wheel_filename_a).ok();
     fs::remove_file(&wheel_filename_b).ok();
     runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+
+    log::info!("stage #1: run over an existing base");
 
     // next load existing wheel and repeat stress
     counter.clear();

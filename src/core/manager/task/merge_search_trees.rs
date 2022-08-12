@@ -181,14 +181,13 @@ where J: edeltraud::Job + From<job::Job>,
                         async_ref,
                     })
                 },
-                Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } => {
+                Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } =>
                     match wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await {
                         Ok(blockwheel_fs::Deleted) =>
                             Ok(TaskOutput::BlockDeleted),
                         Err(error) =>
                             return Err(Error::DeleteBlock { block_ref, error, }),
-                    }
-                },
+                    },
             }
         }
     }
@@ -385,7 +384,7 @@ impl Incoming {
             self.written_block_tasks.is_empty()
     }
 
-    pub fn transfill_from(&mut self, from: &mut Self) {
+    fn transfill_from(&mut self, from: &mut Self) {
         self.received_block_tasks.extend(from.received_block_tasks.drain(..));
         self.written_block_tasks.extend(from.written_block_tasks.drain(..));
     }
@@ -609,7 +608,7 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
 
         match (merge_kont_state, build_kont_state) {
             (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                merge_kont = job_step_merger(&mut env, merger_kont)?;
+                merge_kont = job_step_merger_emit_deprecated(&mut env, merger_kont)?;
                 build_kont = BuildKont::CountItems { items_count, merger_source_build, };
             },
             (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
@@ -687,7 +686,15 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
     }
 }
 
-pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) -> Result<MergeKont, Error> {
+fn job_step_merger_emit_deprecated(env: &mut Env, merger_kont: SearchRangesMergeKont) -> Result<MergeKont, Error> {
+    job_step_merger_actual(env, merger_kont, true)
+}
+
+fn job_step_merger(env: &mut Env, merger_kont: SearchRangesMergeKont) -> Result<MergeKont, Error> {
+    job_step_merger_actual(env, merger_kont, false)
+}
+
+fn job_step_merger_actual(env: &mut Env, mut merger_kont: SearchRangesMergeKont, emit_deprecated: bool) -> Result<MergeKont, Error> {
     loop {
         match merger_kont {
             search_ranges_merge::Kont::RequireBlockAsync(
@@ -707,7 +714,7 @@ pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) ->
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },
-            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) => {
+            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) if emit_deprecated => {
                 match item {
                     kv::KeyValuePair {
                         value_cell: kv::ValueCell {
@@ -728,6 +735,10 @@ pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) ->
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },
+            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+                merger_kont = next.proceed()
+                    .map_err(Error::SearchRangesMerge)?;
+            },
             search_ranges_merge::Kont::EmitItem(
                 search_ranges_merge::KontEmitItem { item, next, },
             ) =>
@@ -738,7 +749,7 @@ pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) ->
     }
 }
 
-pub fn job_step_builder(
+fn job_step_builder(
     env: &mut Env,
     item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
     mut builder_kont: SearchTreeBuilderKont,
