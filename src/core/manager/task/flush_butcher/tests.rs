@@ -147,12 +147,14 @@ fn basic_make_wheels_pid() -> Wheels {
     };
 
     let read_fn = |_block_id| panic!("unimplemented on purpose");
+    let delete_fn = |_block_id| panic!("unimplemented on purpose");
 
     let blockwheel_filename: wheels::WheelFilename =
         to_bytes(BLOCKWHEEL_FILENAME).into();
     let blockwheel_pid = BlockwheelPid::Custom {
         write_block: Arc::new(Mutex::new(write_fn)),
         read_block: Arc::new(Mutex::new(read_fn)),
+        delete_block: Arc::new(Mutex::new(delete_fn)),
     };
 
     let acquire_fn = move || {
@@ -200,12 +202,14 @@ fn external_value_make_wheels_pid() -> Wheels {
     };
 
     let read_fn = |_block_id| panic!("unimplemented on purpose");
+    let delete_fn = |_block_id| panic!("unimplemented on purpose");
 
     let blockwheel_filename: wheels::WheelFilename =
         to_bytes(BLOCKWHEEL_FILENAME).into();
     let blockwheel_pid = BlockwheelPid::Custom {
         write_block: Arc::new(Mutex::new(write_fn)),
         read_block: Arc::new(Mutex::new(read_fn)),
+        delete_block: Arc::new(Mutex::new(delete_fn)),
     };
 
     let acquire_fn = move || {

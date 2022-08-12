@@ -110,12 +110,8 @@ where J: edeltraud::Job + From<job::Job>,
                     Ok(TaskOutput::Job(job_done?))
                 },
                 Task::ReadBlock { read_block_task: ReadBlockTask { mut wheel_ref, block_ref, }, } => {
-                    let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
-                        Ok(block_bytes) =>
-                            block_bytes,
-                        Err(error) =>
-                            return Err(Error::ReadBlock(error)),
-                    };
+                    let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await
+                        .map_err(Error::ReadBlock)?;
                     Ok(TaskOutput::BlockRead { block_bytes, })
                 },
                 Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } => {
@@ -152,16 +148,9 @@ where J: edeltraud::Job + From<job::Job>,
     };
 
     let mut incoming = Incoming::default();
-
     let mut pending_delete_tasks = 0;
 
     loop {
-        if let JobState::Finished = job_state {
-            if pending_delete_tasks == 0 {
-                return Ok(Done { search_tree_id: order.search_tree_id, });
-            }
-        }
-
         enum JobAction<A, S> {
             Run(A),
             KeepState(S),
@@ -172,6 +161,8 @@ where J: edeltraud::Job + From<job::Job>,
                 JobAction::Run(job_args),
             JobState::Ready { job_args: job_args @ JobArgs { kont: Kont::ProceedAwaitBlocks { .. }, .. }, } if !incoming.is_empty() =>
                 JobAction::Run(job_args),
+            JobState::Finished if pending_delete_tasks == 0 =>
+                return Ok(Done { search_tree_id: order.search_tree_id, }),
             other =>
                 JobAction::KeepState(other),
         };

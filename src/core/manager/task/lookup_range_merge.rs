@@ -24,6 +24,7 @@ use crate::{
         manager::{
             task::{
                 Wheels,
+                WheelRef,
             },
         },
         performer,
@@ -111,9 +112,7 @@ where J: edeltraud::Job + From<job::Job>,
             block_ref: BlockRef,
         },
         BlockLoad {
-            async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
-            wheels: Wheels,
-            block_ref: BlockRef,
+            retrieve_block_task: RetrieveBlockTask,
         },
         TxItem {
             item: KeyValueStreamItem,
@@ -175,17 +174,9 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     })
                 },
-                Task::BlockLoad { async_token, mut wheels, block_ref, } => {
-                    let mut wheel_ref = wheels.get(block_ref.blockwheel_filename.clone())
-                        .ok_or_else(|| Error::WheelNotFound {
-                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                        })?;
-                    let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
-                        Ok(block_bytes) =>
-                            block_bytes,
-                        Err(error) =>
-                            return Err(Error::ReadBlock(error)),
-                    };
+                Task::BlockLoad { retrieve_block_task: RetrieveBlockTask { mut wheel_ref, async_token, block_ref, }, } => {
+                    let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await
+                        .map_err(Error::ReadBlock)?;
                     Ok(TaskOutput::BlockLoad { async_token, block_bytes, })
                 },
                 Task::TxItem { item, mut key_values_tx, } =>
@@ -245,6 +236,7 @@ where J: edeltraud::Job + From<job::Job>,
     let mut merger_state = MergerState::Ready {
         job_args: JobArgs {
             env: Env {
+                wheels: wheels.clone(),
                 incoming: Incoming::default(),
                 outgoing: Outgoing::default(),
             },
@@ -335,9 +327,8 @@ where J: edeltraud::Job + From<job::Job>,
         match tasks.next().await.unwrap()? {
 
             TaskOutput::Job(JobDone::AwaitRetrieveBlockTasks { mut env, next, }) => {
-                for RetrieveBlockTask { block_ref, async_token, } in env.outgoing.retrieve_block_tasks.drain(..) {
-                    let wheels = wheels.clone();
-                    tasks.push(Task::BlockLoad { async_token, wheels, block_ref, }.run());
+                for retrieve_block_task in env.outgoing.retrieve_block_tasks.drain(..) {
+                    tasks.push(Task::BlockLoad { retrieve_block_task, }.run());
                 }
                 merger_state = match merger_state {
                     MergerState::InProgress =>
@@ -452,6 +443,7 @@ pub struct JobArgs {
 }
 
 pub struct Env {
+    wheels: Wheels,
     incoming: Incoming,
     outgoing: Outgoing,
 }
@@ -488,6 +480,7 @@ impl Outgoing {
 }
 
 struct RetrieveBlockTask {
+    wheel_ref: WheelRef,
     block_ref: BlockRef,
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
 }
@@ -542,7 +535,11 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 search_ranges_merge::Kont::RequireBlockAsync(
                     search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
                 ) => {
-                    env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { block_ref, async_token, });
+                    let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                        .ok_or_else(|| Error::WheelNotFound {
+                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                        })?;
+                    env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { wheel_ref, block_ref, async_token, });
                     merger_kont = next.scheduled()
                         .map_err(Error::SearchRangesMerge)?;
                 },

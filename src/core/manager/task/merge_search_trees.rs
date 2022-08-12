@@ -19,6 +19,8 @@ use o1::{
     },
 };
 
+use ero_blockwheel_fs as blockwheel_fs;
+
 use crate::{
     kv,
     job,
@@ -71,8 +73,9 @@ pub enum Error {
     SearchRangesMerge(search_ranges_merge::Error),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),
-    ReadBlock(ero_blockwheel_fs::ReadBlockError),
-    WriteBlock(ero_blockwheel_fs::WriteBlockError),
+    ReadBlock(blockwheel_fs::ReadBlockError),
+    WriteBlock(blockwheel_fs::WriteBlockError),
+    DeleteBlock(blockwheel_fs::DeleteBlockError),
 }
 
 pub async fn run<J>(
@@ -115,18 +118,20 @@ where J: edeltraud::Job + From<job::Job>,
 {
     enum Task<J> where J: edeltraud::Job + From<job::Job> {
         Job(edeltraud::Handle<J::Output>),
-        BlockLoad {
-            retrieve_block_task: RetrieveBlockTask,
-            wheels: Wheels,
+        ReadBlock {
+            read_block_task: ReadBlockTask,
         },
         WriteBlock {
             write_block_task: WriteBlockTask,
+        },
+        DeleteBlock {
+            delete_block_task: DeleteBlockTask,
         },
     }
 
     enum TaskOutput {
         Job(JobDone),
-        BlockLoad {
+        BlockRead {
             async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
             block_bytes: Bytes,
         },
@@ -134,6 +139,7 @@ where J: edeltraud::Job + From<job::Job>,
             block_ref: BlockRef,
             async_ref: Ref,
         },
+        BlockDeleted,
     }
 
     impl<J> Task<J>
@@ -150,18 +156,10 @@ where J: edeltraud::Job + From<job::Job>,
                     let job::ManagerTaskMergeSearchTreesDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
-                Task::BlockLoad { retrieve_block_task: RetrieveBlockTask { async_token, block_ref, }, mut wheels, } => {
-                    let mut wheel_ref = wheels.get(block_ref.blockwheel_filename.clone())
-                        .ok_or_else(|| Error::WheelNotFound {
-                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                        })?;
-                    let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
-                        Ok(block_bytes) =>
-                            block_bytes,
-                        Err(error) =>
-                            return Err(Error::ReadBlock(error)),
-                    };
-                    Ok(TaskOutput::BlockLoad { async_token, block_bytes, })
+                Task::ReadBlock { read_block_task: ReadBlockTask { mut wheel_ref, async_token, block_ref, }, } => {
+                    let block_bytes = wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await
+                        .map_err(Error::ReadBlock)?;
+                    Ok(TaskOutput::BlockRead { async_token, block_bytes, })
                 },
                 Task::WriteBlock { write_block_task: WriteBlockTask { mut wheel_ref, async_ref, block_bytes, }, } => {
                     let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
@@ -174,6 +172,14 @@ where J: edeltraud::Job + From<job::Job>,
                         async_ref,
                     })
                 },
+                Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } => {
+                     match wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await {
+                        Ok(blockwheel_fs::Deleted) =>
+                             Ok(TaskOutput::BlockDeleted),
+                        Err(error) =>
+                            return Err(Error::DeleteBlock(error)),
+                     }
+                },
             }
         }
     }
@@ -183,6 +189,10 @@ where J: edeltraud::Job + From<job::Job>,
     enum JobState {
         Ready { job_args: JobArgs, },
         InProgress,
+        Finished {
+            items_count: usize,
+            root_block: BlockRef,
+        },
     }
 
     let mut job_state = JobState::Ready {
@@ -204,6 +214,7 @@ where J: edeltraud::Job + From<job::Job>,
     };
 
     let mut incoming = Incoming::default();
+    let mut pending_delete_tasks = 0;
 
     loop {
         enum JobAction<A, S> {
@@ -238,6 +249,12 @@ where J: edeltraud::Job + From<job::Job>,
                 },
             } if !incoming.is_empty() =>
                 JobAction::Run(job_args),
+            JobState::Finished { items_count, root_block, } if pending_delete_tasks == 0 =>
+                return Ok(Done {
+                    merged_search_tree_ref: root_block,
+                    merged_search_tree_items_count: items_count,
+                    access_token: ranges_merger.token,
+                }),
             other =>
                 JobAction::KeepState(other),
         };
@@ -258,12 +275,15 @@ where J: edeltraud::Job + From<job::Job>,
         match tasks.next().await.unwrap()? {
 
             TaskOutput::Job(JobDone::Await { mut env, await_merge_kont, await_build_kont, }) => {
-                for retrieve_block_task in env.outgoing.retrieve_block_tasks.drain(..) {
-                    let wheels = wheels.clone();
-                    tasks.push(Task::BlockLoad { retrieve_block_task, wheels, }.run());
+                for read_block_task in env.outgoing.read_block_tasks.drain(..) {
+                    tasks.push(Task::ReadBlock { read_block_task, }.run());
                 }
                 for write_block_task in env.outgoing.write_block_tasks.drain(..) {
                     tasks.push(Task::WriteBlock { write_block_task, }.run());
+                }
+                for delete_block_task in env.outgoing.delete_block_tasks.drain(..) {
+                    tasks.push(Task::DeleteBlock { delete_block_task, }.run());
+                    pending_delete_tasks += 1;
                 }
 
                 job_state = match job_state {
@@ -275,7 +295,7 @@ where J: edeltraud::Job + From<job::Job>,
                                 build_kont: await_build_kont,
                             },
                         },
-                    JobState::Ready { .. } =>
+                    JobState::Ready { .. } | JobState::Finished { .. } =>
                         unreachable!(),
                 };
             },
@@ -303,22 +323,28 @@ where J: edeltraud::Job + From<job::Job>,
                                 },
                             },
                         },
-                    JobState::Ready { .. } =>
+                    JobState::Ready { .. } | JobState::Finished { .. } =>
                         unreachable!(),
                 },
 
             TaskOutput::Job(JobDone::Finished { items_count, root_block, }) =>
-                return Ok(Done {
-                    merged_search_tree_ref: root_block,
-                    merged_search_tree_items_count: items_count,
-                    access_token: ranges_merger.token,
-                }),
+                job_state = match job_state {
+                    JobState::InProgress =>
+                        JobState::Finished { items_count, root_block, },
+                    JobState::Ready { .. } | JobState::Finished { .. } =>
+                        unreachable!(),
+                },
 
-            TaskOutput::BlockLoad { async_token, block_bytes, } =>
+            TaskOutput::BlockRead { async_token, block_bytes, } =>
                 incoming.received_block_tasks.push(ReceivedBlockTask { async_token, block_bytes, }),
 
             TaskOutput::WriteBlock { block_ref, async_ref, } =>
                 incoming.written_block_tasks.push(WrittenBlockTask { block_ref, async_ref, }),
+
+            TaskOutput::BlockDeleted => {
+                assert!(pending_delete_tasks > 0);
+                pending_delete_tasks -= 1;
+            },
 
         }
 
@@ -368,18 +394,21 @@ struct WrittenBlockTask {
 
 #[derive(Default)]
 struct Outgoing {
-    retrieve_block_tasks: Vec<RetrieveBlockTask>,
+    read_block_tasks: Vec<ReadBlockTask>,
     write_block_tasks: Vec<WriteBlockTask>,
+    delete_block_tasks: Vec<DeleteBlockTask>,
 }
 
 impl Outgoing {
     fn is_empty(&self) -> bool {
-        self.retrieve_block_tasks.is_empty() &&
-            self.write_block_tasks.is_empty()
+        self.read_block_tasks.is_empty() &&
+            self.write_block_tasks.is_empty() &&
+            self.delete_block_tasks.is_empty()
     }
 }
 
-struct RetrieveBlockTask {
+struct ReadBlockTask {
+    wheel_ref: WheelRef,
     block_ref: BlockRef,
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
 }
@@ -388,6 +417,11 @@ struct WriteBlockTask {
     async_ref: Ref,
     wheel_ref: WheelRef,
     block_bytes: Bytes,
+}
+
+struct DeleteBlockTask {
+    wheel_ref: WheelRef,
+    block_ref: BlockRef,
 }
 
 pub enum MergeKont {
@@ -650,7 +684,11 @@ pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) ->
             search_ranges_merge::Kont::RequireBlockAsync(
                 search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
             ) => {
-                env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { block_ref, async_token, });
+                let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                    .ok_or_else(|| Error::WheelNotFound {
+                        blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                    })?;
+                env.outgoing.read_block_tasks.push(ReadBlockTask { wheel_ref, block_ref, async_token, });
                 merger_kont = next.scheduled()
                     .map_err(Error::SearchRangesMerge)?;
             },
@@ -660,7 +698,24 @@ pub fn job_step_merger(env: &mut Env, mut merger_kont: SearchRangesMergeKont) ->
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },
-            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) => {
+                match item {
+                    kv::KeyValuePair {
+                        value_cell: kv::ValueCell {
+                            cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                            ..
+                        },
+                        ..
+                    } => {
+                        let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                            .ok_or_else(|| Error::WheelNotFound {
+                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                            })?;
+                        env.outgoing.delete_block_tasks.push(DeleteBlockTask { wheel_ref, block_ref, });
+                    },
+                    _ =>
+                        (),
+                }
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },

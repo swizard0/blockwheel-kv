@@ -215,10 +215,12 @@ fn kinda_tree_make_wheels_pid(kinda_tree: HashMap<BlockRef, Bytes>) -> Wheels {
         };
         kinda_tree.get(&block_ref).unwrap().clone()
     };
+    let delete_fn = |_block_id| panic!("unimplemented on purpose");
 
     let blockwheel_pid = BlockwheelPid::Custom {
         write_block: Arc::new(Mutex::new(write_fn)),
         read_block: Arc::new(Mutex::new(read_fn)),
+        delete_block: Arc::new(Mutex::new(delete_fn)),
     };
 
     let acquire_fn = || panic!("unimplemented on purpose");

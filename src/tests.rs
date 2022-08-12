@@ -188,7 +188,6 @@ pub enum Error {
     },
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
-    WheelsGoneDuringFlush,
     WheelsIterBlocks(wheels::IterBlocksItemError),
     WheelsIterBlocksRxDropped,
     WheelsBuilder(wheels::BuilderError),
