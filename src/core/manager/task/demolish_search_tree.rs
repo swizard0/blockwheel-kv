@@ -201,13 +201,20 @@ where J: edeltraud::Job + From<job::Job>,
                 };
             },
 
-            TaskOutput::Job(JobDone::Finished) =>
+            TaskOutput::Job(JobDone::Finished { env, }) => {
+                assert!(env.outgoing.read_block_task.is_none());
+                for delete_block_task in env.outgoing.delete_block_tasks {
+                    tasks.push(Task::DeleteBlock { delete_block_task, }.run());
+                    pending_delete_tasks += 1;
+                }
+
                 job_state = match job_state {
                     JobState::InProgress =>
                         JobState::Finished,
                     JobState::Ready { .. } | JobState::Finished =>
                         unreachable!(),
-                },
+                };
+            },
 
             TaskOutput::BlockRead { block_bytes, } =>
                 incoming.received_block_tasks.push(ReceivedBlockTask { block_bytes, }),
@@ -281,7 +288,9 @@ pub enum JobDone {
         env: Env,
         kont: Kont,
     },
-    Finished,
+    Finished {
+        env: Env,
+    },
 }
 
 pub type Output = Result<JobDone, Error>;
@@ -328,7 +337,7 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                         .map_err(Error::SearchTreeWalker)?;
                 },
                 search_tree_walker::Kont::Finished =>
-                    return Ok(JobDone::Finished),
+                    return Ok(JobDone::Finished { env, }),
             }
         }
     }

@@ -338,6 +338,7 @@ impl<C> Inner<C> where C: Context {
                         });
                         self.forest.search_trees_pile
                             .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
+                        log::debug!("forest upgrade bootstrap -> constructed id = {search_tree_id} of #{items_count}");
                     },
                     SearchTree::Constructed(..) =>
                         unreachable!("expected SearchTreeBootstrap after butcher_flushed"),
@@ -418,8 +419,11 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn maybe_merge_search_trees(&mut self) -> Option<PendingEventMergeSearchTrees> {
-        let (SearchTreeRef { search_tree_id: search_tree_id_a, .. }, SearchTreeRef { search_tree_id: search_tree_id_b, .. }) =
-             self.forest.search_trees_pile.pop()?;
+        let (search_tree_ref_a, search_tree_ref_b) = self.forest.search_trees_pile.pop()?;
+        let SearchTreeRef { search_tree_id: search_tree_id_a, items_count: items_count_a, } = search_tree_ref_a;
+        let SearchTreeRef { search_tree_id: search_tree_id_b, items_count: items_count_b, } = search_tree_ref_b;
+
+        log::debug!("going to merge search tree id {search_tree_id_a} of #{items_count_a} with {search_tree_id_b} of #{items_count_b}");
 
         let search_range = SearchRangeBounds::unbounded();
         let mut search_trees_ids = Vec::new();
@@ -471,6 +475,7 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn search_trees_merged(&mut self, root_block: BlockRef, items_count: usize, access_token: AccessToken) {
+        log::debug!("search trees: {:?} merged", access_token.search_trees_ids);
         for search_tree_id in access_token.search_trees_ids {
             match self.forest.search_trees.remove(&search_tree_id) {
                 None =>
@@ -513,6 +518,7 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn search_tree_demolished(&mut self, search_tree_id: u64) {
+        log::debug!("forest search tree id = {search_tree_id} has been demolished");
         let removed = self.forest.pending_demolish.remove(&search_tree_id);
         assert!(removed);
     }
@@ -749,12 +755,16 @@ impl SearchForest {
             items_count,
         );
 
+        log::debug!("forest add constructed id = {search_tree_id} of #{items_count}");
+
         search_tree_id
     }
 
     fn add_bootstrap(&mut self, frozen_memcache: Arc<MemCache>) -> u64 {
         let search_tree_id = self.next_id;
         self.next_id += 1;
+
+        log::debug!("forest add bootstrap id = {search_tree_id} of #{}", frozen_memcache.len());
 
         self.search_trees.insert(
             search_tree_id,

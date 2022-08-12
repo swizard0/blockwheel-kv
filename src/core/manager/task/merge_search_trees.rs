@@ -308,7 +308,14 @@ where J: edeltraud::Job + From<job::Job>,
                 };
             },
 
-            TaskOutput::Job(JobDone::ItemsCounted { env, items_count, merger_source_build, }) =>
+            TaskOutput::Job(JobDone::ItemsCounted { mut env, items_count, merger_source_build, }) => {
+                assert!(env.outgoing.read_block_tasks.is_empty());
+                assert!(env.outgoing.write_block_tasks.is_empty());
+                for delete_block_task in env.outgoing.delete_block_tasks.drain(..) {
+                    tasks.push(Task::DeleteBlock { delete_block_task, }.run());
+                    pending_delete_tasks += 1;
+                }
+
                 job_state = match job_state {
                     JobState::InProgress =>
                         JobState::Ready {
@@ -333,7 +340,8 @@ where J: edeltraud::Job + From<job::Job>,
                         },
                     JobState::Ready { .. } | JobState::Finished { .. } =>
                         unreachable!(),
-                },
+                };
+            },
 
             TaskOutput::Job(JobDone::Finished { items_count, root_block, }) =>
                 job_state = match job_state {
