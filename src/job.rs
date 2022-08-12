@@ -19,6 +19,7 @@ pub enum Job {
     ManagerTaskFlushButcher(core::manager::task::flush_butcher::JobArgs),
     ManagerTaskLookupRangeMerge(core::manager::task::lookup_range_merge::JobArgs),
     ManagerTaskMergeSearchTrees(core::manager::task::merge_search_trees::JobArgs),
+    ManagerTaskDemolishSearchTree(core::manager::task::demolish_search_tree::JobArgs),
 }
 
 pub enum JobOutput {
@@ -27,6 +28,7 @@ pub enum JobOutput {
     ManagerTaskFlushButcher(ManagerTaskFlushButcherDone),
     ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone),
     ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone),
+    ManagerTaskDemolishSearchTree(ManagerTaskDemolishSearchTreeDone),
 }
 
 pub static JOB_BLOCKWHEEL_FS: AtomicUsize = AtomicUsize::new(0);
@@ -34,6 +36,7 @@ pub static JOB_MANAGER_TASK_PERFORMER: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MANAGER_TASK_FLUSH_BUTCHER: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MANAGER_TASK_MERGE_SEARCH_TREES: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_MANAGER_TASK_DEMOLISH_SEARCH_TREE: AtomicUsize = AtomicUsize::new(0);
 
 impl edeltraud::Job for Job {
     type Output = JobOutput;
@@ -59,6 +62,10 @@ impl edeltraud::Job for Job {
             Job::ManagerTaskMergeSearchTrees(args) => {
                 JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, Ordering::Relaxed);
                 JobOutput::ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone(core::manager::task::merge_search_trees::job(args)))
+            },
+            Job::ManagerTaskDemolishSearchTree(args) => {
+                JOB_MANAGER_TASK_DEMOLISH_SEARCH_TREE.fetch_add(1, Ordering::Relaxed);
+                JobOutput::ManagerTaskDemolishSearchTree(ManagerTaskDemolishSearchTreeDone(core::manager::task::demolish_search_tree::job(args)))
             },
         }
     }
@@ -135,6 +142,19 @@ impl From<JobOutput> for ManagerTaskMergeSearchTreesDone {
                 done,
             _other =>
                 panic!("expected JobOutput::ManagerTaskMergeSearchTrees but got other"),
+        }
+    }
+}
+
+pub struct ManagerTaskDemolishSearchTreeDone(pub core::manager::task::demolish_search_tree::Output);
+
+impl From<JobOutput> for ManagerTaskDemolishSearchTreeDone {
+    fn from(output: JobOutput) -> Self {
+        match output {
+            JobOutput::ManagerTaskDemolishSearchTree(done) =>
+                done,
+            _other =>
+                panic!("expected JobOutput::ManagerTaskDemolishSearchTree but got other"),
         }
     }
 }

@@ -72,6 +72,7 @@ pub struct Incoming {
     pub butcher_flushed: Vec<EventButcherFlushed>,
     pub lookup_range_merge_done: Vec<EventLookupRangeMergeDone>,
     pub merge_search_trees_done: Vec<EventMergeSearchTreesDone>,
+    pub demolish_done: Vec<EventDemolishDone>,
 }
 
 impl Incoming {
@@ -82,7 +83,8 @@ impl Incoming {
             self.request_flush.is_empty() &&
             self.butcher_flushed.is_empty() &&
             self.lookup_range_merge_done.is_empty() &&
-            self.merge_search_trees_done.is_empty()
+            self.merge_search_trees_done.is_empty() &&
+            self.demolish_done.is_empty()
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
@@ -93,6 +95,7 @@ impl Incoming {
         self.butcher_flushed.extend(from.butcher_flushed.drain(..));
         self.lookup_range_merge_done.extend(from.lookup_range_merge_done.drain(..));
         self.merge_search_trees_done.extend(from.merge_search_trees_done.drain(..));
+        self.demolish_done.extend(from.demolish_done.drain(..));
     }
 }
 
@@ -109,6 +112,10 @@ pub struct EventMergeSearchTreesDone {
     pub merged_search_tree_ref: BlockRef,
     pub merged_search_tree_items_count: usize,
     pub access_token: performer::AccessToken,
+}
+
+pub struct EventDemolishDone {
+    pub search_tree_id: u64,
 }
 
 #[derive(Default)]
@@ -198,6 +205,8 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                         merged_search_tree_items_count,
                         access_token,
                     )
+                } else if let Some(EventDemolishDone { search_tree_id, }) = env.incoming.demolish_done.pop() {
+                    next.search_tree_demolished(search_tree_id)
                 } else {
                     return Ok(Done { env, next: Next::Poll { next, }, });
                 },

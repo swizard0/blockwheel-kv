@@ -10,6 +10,7 @@ use std::{
     collections::{
         hash_map,
         HashMap,
+        HashSet,
     },
 };
 
@@ -172,6 +173,7 @@ pub struct LookupRangeSource {
 
 pub struct DemolishOrder {
     pub walker: search_tree_walker::WalkerCps,
+    pub search_tree_id: u64,
 }
 
 struct Inner<C> where C: Context {
@@ -192,6 +194,7 @@ pub struct SearchForest {
     search_trees: HashMap<u64, SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
     search_trees_decay: HashMap<u64, SearchTreeConstructed>,
+    pending_demolish: HashSet<u64>,
     accesses_count: usize,
     butcher_flushes_count: usize,
 }
@@ -405,7 +408,7 @@ impl<C> Inner<C> where C: Context {
 
                             if search_tree.accesses_count == 0 {
                                 let search_tree = oe.remove();
-                                self.demand_search_tree_removal(search_tree);
+                                self.demand_search_tree_removal(search_tree_id, search_tree);
                             }
                         },
                     }
@@ -480,7 +483,7 @@ impl<C> Inner<C> where C: Context {
                     assert!(self.forest.accesses_count > 0);
                     self.forest.accesses_count -= 1;
                     if search_tree.accesses_count == 0 {
-                        self.demand_search_tree_removal(search_tree);
+                        self.demand_search_tree_removal(search_tree_id, search_tree);
                     } else {
                         // schedule for decay
                         self.forest.search_trees_decay
@@ -493,13 +496,25 @@ impl<C> Inner<C> where C: Context {
         self.forest.add_constructed(root_block, items_count);
     }
 
-    fn demand_search_tree_removal(&mut self, search_tree: SearchTreeConstructed) {
+    fn demand_search_tree_removal(&mut self, search_tree_id: u64, search_tree: SearchTreeConstructed) {
         let walker = search_tree_walker::WalkerCps::new(
             search_tree.root_block,
             SearchRangeBounds::unbounded(),
             self.block_entry_steps_pool.clone(),
         );
-        self.pending_events.push(PendingEvent::Demolish { order: DemolishOrder { walker, }, });
+        let inserted = self.forest.pending_demolish.insert(search_tree_id);
+        assert!(inserted);
+        self.pending_events.push(PendingEvent::Demolish {
+            order: DemolishOrder {
+                walker,
+                search_tree_id,
+            },
+        });
+    }
+
+    fn search_tree_demolished(&mut self, search_tree_id: u64) {
+        let removed = self.forest.pending_demolish.remove(&search_tree_id);
+        assert!(removed);
     }
 
     fn poll(mut self) -> Kont<C> {
@@ -623,6 +638,11 @@ impl<C> KontPollNext<C> where C: Context {
         self.inner.search_trees_merged(merged_search_tree_ref, merged_search_tree_items_count, access_token);
         self.inner.poll()
     }
+
+    pub fn search_tree_demolished(mut self, search_tree_id: u64) -> Kont<C> {
+        self.inner.search_tree_demolished(search_tree_id);
+        self.inner.poll()
+    }
 }
 
 impl<C> KontInsertedNext<C> where C: Context {
@@ -694,6 +714,7 @@ impl SearchForest {
             search_trees: HashMap::new(),
             search_trees_pile: BinMerger::new(),
             search_trees_decay: HashMap::new(),
+            pending_demolish: HashSet::new(),
             accesses_count: 0,
             butcher_flushes_count: 0,
         }
@@ -705,7 +726,8 @@ impl SearchForest {
 
     pub fn flush_friendly(&self) -> bool {
         self.butcher_flushes_count == 0 &&
-            self.accesses_count == 0
+            self.accesses_count == 0 &&
+            self.pending_demolish.is_empty()
     }
 
     pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> u64 {

@@ -46,6 +46,7 @@ mod search_ranges_merge;
 #[cfg(test)]
 mod tests;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct RequestInfo {
     reply_tx: oneshot::Sender<Info>,

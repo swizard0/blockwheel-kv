@@ -673,8 +673,8 @@ where J: edeltraud::Job + From<job::Job>,
                     access_token,
                 }),
 
-            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) =>
-                (),
+            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done { search_tree_id, }))) =>
+                incoming.demolish_done.push(task::performer::EventDemolishDone { search_tree_id, }),
 
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),

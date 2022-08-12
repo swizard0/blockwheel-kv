@@ -8,7 +8,7 @@ use alloc_pool::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel;
+use ero_blockwheel_fs as blockwheel_fs;
 
 use crate::{
     wheels,
@@ -89,11 +89,12 @@ use std::{
 
 #[derive(Clone)]
 enum BlockwheelPid {
-    Regular(blockwheel::Pid),
+    Regular(blockwheel_fs::Pid),
     #[cfg(test)]
     Custom {
-        write_block: Arc<Mutex<dyn FnMut(Bytes) -> blockwheel::block::Id + Send + 'static>>,
-        read_block: Arc<Mutex<dyn FnMut(blockwheel::block::Id) -> Bytes + Send + 'static>>,
+        write_block: Arc<Mutex<dyn FnMut(Bytes) -> blockwheel_fs::block::Id + Send + 'static>>,
+        read_block: Arc<Mutex<dyn FnMut(blockwheel_fs::block::Id) -> Bytes + Send + 'static>>,
+        delete_block: Arc<Mutex<dyn FnMut(blockwheel_fs::block::Id) + Send + 'static>>,
     },
 }
 
@@ -113,7 +114,7 @@ struct WheelRef {
 }
 
 impl BlockwheelPid {
-    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel::block::Id, blockwheel::WriteBlockError> {
+    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel_fs::block::Id, blockwheel_fs::WriteBlockError> {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.write_block(block_bytes).await,
@@ -125,7 +126,7 @@ impl BlockwheelPid {
         }
     }
 
-    async fn read_block(&mut self, block_id: blockwheel::block::Id) -> Result<Bytes, blockwheel::ReadBlockError> {
+    async fn read_block(&mut self, block_id: blockwheel_fs::block::Id) -> Result<Bytes, blockwheel_fs::ReadBlockError> {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.read_block(block_id).await,
@@ -133,6 +134,19 @@ impl BlockwheelPid {
             BlockwheelPid::Custom { read_block: custom_write_fn, .. } => {
                 let mut fn_lock = custom_write_fn.lock().unwrap();
                 Ok(fn_lock(block_id))
+            },
+        }
+    }
+
+    async fn delete_block(&mut self, block_id: blockwheel_fs::block::Id) -> Result<blockwheel_fs::Deleted, blockwheel_fs::DeleteBlockError> {
+        match self {
+            BlockwheelPid::Regular(blockwheel_pid) =>
+                blockwheel_pid.delete_block(block_id).await,
+            #[cfg(test)]
+            BlockwheelPid::Custom { delete_block: custom_write_fn, .. } => {
+                let mut fn_lock = custom_write_fn.lock().unwrap();
+                fn_lock(block_id);
+                Ok(blockwheel_fs::Deleted)
             },
         }
     }
