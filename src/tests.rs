@@ -30,7 +30,7 @@ use alloc_pool::bytes::{
     BytesPool,
 };
 
-use super::{
+use crate::{
     kv,
     job,
     wheels,
@@ -351,7 +351,24 @@ async fn stress_loop(
                         });
                     }
                 } else {
-                    unreachable!("key = {:?}, version_current = {}, version_found = {}", key, version_current, version_found);
+                    panic!(
+                        "version_found = {} > version_current = {} for key = {:?}, data found = {}, data current = {}, wtf?",
+                        version_found,
+                        version_current,
+                        key,
+                        match cell_found {
+                            kv::Cell::Value(v) =>
+                                format!("{} bytes", v.value_bytes.len()),
+                            kv::Cell::Tombstone =>
+                                "TOMBSTONE".to_string(),
+                        },
+                        match cell_current {
+                            kv::Cell::Value(v) =>
+                                format!("{} bytes", v.value_bytes.len()),
+                            kv::Cell::Tombstone =>
+                                "TOMBSTONE".to_string(),
+                        },
+                    );
                 }
                 match lookup_kind {
                     LookupKind::Single => {
@@ -635,6 +652,12 @@ async fn stress_loop(
     let info_b = wheel_b_pid.info().await
         .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
     log::info!("FINISHED: info_b: {info_b:?}");
+
+    log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(std::sync::atomic::Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_PERFORMER: {}", job::JOB_MANAGER_TASK_PERFORMER.load(std::sync::atomic::Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_FLUSH_BUTCHER: {}", job::JOB_MANAGER_TASK_FLUSH_BUTCHER.load(std::sync::atomic::Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(std::sync::atomic::Ordering::SeqCst));
+    log::info!("JOB_MANAGER_TASK_MERGE_SEARCH_TREES: {}", job::JOB_MANAGER_TASK_MERGE_SEARCH_TREES.load(std::sync::atomic::Ordering::SeqCst));
 
     Ok::<_, Error>(())
 }

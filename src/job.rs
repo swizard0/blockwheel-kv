@@ -20,21 +20,39 @@ pub enum JobOutput {
     ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone),
 }
 
+use std::{sync::atomic::{self, AtomicUsize}};
+
+pub static JOB_BLOCKWHEEL_FS: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_MANAGER_TASK_PERFORMER: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_MANAGER_TASK_FLUSH_BUTCHER: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_MANAGER_TASK_MERGE_SEARCH_TREES: AtomicUsize = AtomicUsize::new(0);
+
 impl edeltraud::Job for Job {
     type Output = JobOutput;
 
     fn run(self) -> Self::Output {
         match self {
-            Job::BlockwheelFs(job) =>
-                JobOutput::BlockwheelFs(job.run()),
-            Job::ManagerTaskPerformer(args) =>
-                JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args))),
-            Job::ManagerTaskFlushButcher(args) =>
-                JobOutput::ManagerTaskFlushButcher(ManagerTaskFlushButcherDone(core::manager::task::flush_butcher::job(args))),
-            Job::ManagerTaskLookupRangeMerge(args) =>
-                JobOutput::ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone(core::manager::task::lookup_range_merge::job(args))),
-            Job::ManagerTaskMergeSearchTrees(args) =>
-                JobOutput::ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone(core::manager::task::merge_search_trees::job(args))),
+            Job::BlockwheelFs(job) => {
+                JOB_BLOCKWHEEL_FS.fetch_add(1, atomic::Ordering::Relaxed);
+                JobOutput::BlockwheelFs(job.run())
+            },
+            Job::ManagerTaskPerformer(args) => {
+                JOB_MANAGER_TASK_PERFORMER.fetch_add(1, atomic::Ordering::Relaxed);
+                JobOutput::ManagerTaskPerformer(ManagerTaskPerformerDone(core::manager::task::performer::job(args)))
+            },
+            Job::ManagerTaskFlushButcher(args) => {
+                JOB_MANAGER_TASK_FLUSH_BUTCHER.fetch_add(1, atomic::Ordering::Relaxed);
+                JobOutput::ManagerTaskFlushButcher(ManagerTaskFlushButcherDone(core::manager::task::flush_butcher::job(args)))
+            },
+            Job::ManagerTaskLookupRangeMerge(args) => {
+                JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.fetch_add(1, atomic::Ordering::Relaxed);
+                JobOutput::ManagerTaskLookupRangeMerge(ManagerTaskLookupRangeMergeDone(core::manager::task::lookup_range_merge::job(args)))
+            },
+            Job::ManagerTaskMergeSearchTrees(args) => {
+                JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, atomic::Ordering::Relaxed);
+                JobOutput::ManagerTaskMergeSearchTrees(ManagerTaskMergeSearchTreesDone(core::manager::task::merge_search_trees::job(args)))
+            },
         }
     }
 }
