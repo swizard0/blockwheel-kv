@@ -115,7 +115,7 @@ fn basic_full_async() {
             panic!("expected proper Kont::PollProcessedBlock but got other"),
     };
     match kont {
-        Kont::Finished { root_block_ref: 16777218, } =>
+        Kont::Finished { items_count: 5, root_block_ref: 16777218, } =>
             (),
         _ =>
             panic!("expected proper Kont::Finished but got other"),
@@ -251,7 +251,7 @@ fn basic_full_seq() {
             panic!("expected proper Kont::PollProcessedBlock but got other"),
     };
     match kont {
-        Kont::Finished { root_block_ref: 16777219, } =>
+        Kont::Finished { items_count: 7, root_block_ref: 16777219, } =>
             (),
         _ =>
             panic!("expected proper Kont::Finished but got other"),

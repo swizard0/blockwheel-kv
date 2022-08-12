@@ -33,8 +33,8 @@ use crate::{
                 lookup_range_merge::{
                     inner_run,
                 },
+                Wheels,
                 WheelRef,
-                WheelsPid,
                 BlockwheelPid,
             },
         },
@@ -45,7 +45,7 @@ use crate::{
             RangesMergeCps,
         },
         performer::{
-            LookupRangeToken,
+            AccessToken,
             LookupRangeSource,
             LookupRangesMerger,
         },
@@ -140,7 +140,7 @@ async fn emulate_lookup(lookup: Lookup) -> Vec<(String, Option<String>, u64)> {
 
     let lookup_ranges_merger = LookupRangesMerger {
         source: ranges_merge,
-        token: LookupRangeToken::default(),
+        token: AccessToken::default(),
     };
 
     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
@@ -206,7 +206,7 @@ async fn emulate_lookup(lookup: Lookup) -> Vec<(String, Option<String>, u64)> {
     result_rx.await.unwrap()
 }
 
-fn kinda_tree_make_wheels_pid(kinda_tree: HashMap<BlockRef, Bytes>) -> WheelsPid {
+fn kinda_tree_make_wheels_pid(kinda_tree: HashMap<BlockRef, Bytes>) -> Wheels {
     let write_fn = |_block_bytes| panic!("unimplemented on purpose");
     let read_fn = move |block_id| {
         let block_ref = BlockRef {
@@ -229,7 +229,7 @@ fn kinda_tree_make_wheels_pid(kinda_tree: HashMap<BlockRef, Bytes>) -> WheelsPid
         }
     };
 
-    WheelsPid::Custom {
+    Wheels::Custom {
         acquire: Arc::new(Mutex::new(acquire_fn)),
         get: Arc::new(Mutex::new(get_fn)),
     }

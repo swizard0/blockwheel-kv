@@ -26,8 +26,8 @@ use crate::{
                 flush_butcher::{
                     inner_run,
                 },
+                Wheels,
                 WheelRef,
-                WheelsPid,
                 BlockwheelPid,
             },
         },
@@ -118,7 +118,7 @@ async fn external_value() {
     assert_eq!(&*done.root_block.blockwheel_filename, BLOCKWHEEL_FILENAME.as_bytes());
 }
 
-fn basic_make_wheels_pid() -> WheelsPid {
+fn basic_make_wheels_pid() -> Wheels {
     let mut samples = HashSet::from([
         vec![
             ("key 1".to_string(), Some("value 1".to_string()), 1u64),
@@ -164,13 +164,13 @@ fn basic_make_wheels_pid() -> WheelsPid {
 
     let get_fn = |_filename| panic!("unimplemented on purpose");
 
-    WheelsPid::Custom {
+    Wheels::Custom {
         acquire: Arc::new(Mutex::new(acquire_fn)),
         get: Arc::new(Mutex::new(get_fn)),
     }
 }
 
-fn external_value_make_wheels_pid() -> WheelsPid {
+fn external_value_make_wheels_pid() -> Wheels {
     let mut sample_value = Some("0123456789ABCDEF".to_string());
     let mut sample_block = Some(
         ("key 1".to_string(), 1u64),
@@ -217,7 +217,7 @@ fn external_value_make_wheels_pid() -> WheelsPid {
 
     let get_fn = |_filename| panic!("unimplemented on purpose");
 
-    WheelsPid::Custom {
+    Wheels::Custom {
         acquire: Arc::new(Mutex::new(acquire_fn)),
         get: Arc::new(Mutex::new(get_fn)),
     }

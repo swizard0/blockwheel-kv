@@ -189,8 +189,10 @@ pub enum Error {
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
     WheelsGoneDuringFlush,
-    WheelsIterBlocks(wheels::IterBlocksError),
+    WheelsIterBlocks(wheels::IterBlocksItemError),
     WheelsIterBlocksRxDropped,
+    WheelsBuilder(wheels::BuilderError),
+    WheelsFlush(wheels::FlushError),
     Storage(storage::Error),
     BackwardIterKeyNotFound,
 }
@@ -246,11 +248,11 @@ async fn stress_loop(
     let mut wheel_a_pid = wheel_ref_a.blockwheel_pid.clone();
     let mut wheel_b_pid = wheel_ref_b.blockwheel_pid.clone();
 
-    let wheels_gen_server = wheels::GenServer::new();
-    let mut wheels_pid = wheels_gen_server.pid();
-    supervisor_pid.spawn_link_permanent(
-        wheels_gen_server.run(vec![wheel_ref_a, wheel_ref_b], wheels::Params::default()),
-    );
+    let wheels = wheels::WheelsBuilder::new()
+        .add_wheel_ref(wheel_ref_a)
+        .add_wheel_ref(wheel_ref_b)
+        .build()
+        .map_err(Error::WheelsBuilder)?;
 
     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
     let mut wheel_kv_pid = wheel_kv_gen_server.pid();
@@ -260,7 +262,7 @@ async fn stress_loop(
             thread_pool.clone(),
             blocks_pool.clone(),
             version_provider.clone(),
-            wheels_pid.clone(),
+            wheels.clone(),
             params.kv,
         ),
     );
@@ -586,19 +588,18 @@ async fn stress_loop(
 
     let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
         .map_err(Error::Flush)?;
-    let wheels::Flushed = wheels_pid.flush().await
-        .map_err(|ero::NoProcError| Error::WheelsGoneDuringFlush)?;
+    let wheels::Flushed = wheels.flush().await
+        .map_err(Error::WheelsFlush)?;
 
     // backwards check with iterator
     let mut checked_blocks = 0;
     let mut checked_entries = 0;
-    let mut iter_blocks = wheels_pid.iter_blocks().await
-        .map_err(Error::WheelsIterBlocks)?;
+    let mut iter_blocks = wheels.iter_blocks();
     loop {
-        match iter_blocks.block_refs_rx.next().await {
+        match iter_blocks.next().await {
             None =>
                 return Err(Error::WheelsIterBlocksRxDropped),
-            Some(wheels::IterBlocksItem::Block { block_bytes, .. }) => {
+            Some(Ok(wheels::IterBlocksItem::Block { block_bytes, .. })) => {
                 checked_blocks += 1;
                 match storage::block_deserialize_iter(&block_bytes) {
                     Ok(deserializer) =>
@@ -619,8 +620,10 @@ async fn stress_loop(
                         return Err(Error::Storage(error)),
                 }
             },
-            Some(wheels::IterBlocksItem::NoMoreBlocks) =>
+            Some(Ok(wheels::IterBlocksItem::NoMoreBlocks)) =>
                 break,
+            Some(Err(error)) =>
+                return Err(Error::WheelsIterBlocks(error)),
         }
     }
 

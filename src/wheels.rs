@@ -137,7 +137,7 @@ impl WheelsBuilder {
         }
     }
 
-    pub fn add_wheel_ref(&mut self, wheel_ref: WheelRef) -> &mut Self {
+    pub fn add_wheel_ref(mut self, wheel_ref: WheelRef) -> Self {
         let offset = self.inner.wheels.len();
         let filename = wheel_ref.blockwheel_filename.clone();
         match self.inner.index.entry(filename.clone()) {
