@@ -629,6 +629,18 @@ where J: edeltraud::Job + From<job::Job>,
                     )));
                     tasks_count += 1;
                 }
+                // demolish search tree
+                for demolish_search_tree_query in job_args.env.outgoing.demolish_search_tree.drain(..) {
+                    let task::performer::DemolishSearchTreeQuery { order, } = demolish_search_tree_query;
+                    tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
+                        task::demolish_search_tree::Args {
+                            order,
+                            wheels: state.wheels.clone(),
+                            thread_pool: state.thread_pool.clone(),
+                        },
+                    )));
+                    tasks_count += 1;
+                }
 
                 performer_state = match performer_state {
                     PerformerState::InProgress =>
@@ -661,161 +673,12 @@ where J: edeltraud::Job + From<job::Job>,
                     access_token,
                 }),
 
+            Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) =>
+                (),
+
             Event::Task(Err(error)) =>
                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
 
         }
     }
-
-//         match event {
-//             Event::FlushCache(None) => {
-//                 log::info!("butcher channel depleted: terminating");
-//                 return Ok(());
-//             },
-
-//             Event::FlushCache(Some(ButcherFlush { cache, })) => {
-//                 let items_count = cache.len();
-//                 let search_tree_gen_server = search_tree::GenServer::new();
-//                 let search_tree_pid = search_tree_gen_server.pid();
-//                 child_supervisor_pid.spawn_link_temporary(
-//                     search_tree_gen_server.run(
-//                         child_supervisor_pid.clone(),
-//                         state.thread_pool.clone(),
-//                         search_tree_pools.clone(),
-//                         state.wheels_pid.clone(),
-//                         state.params.search_tree_params.clone(),
-//                         search_tree::Mode::CacheBootstrap { cache: cache.clone(), },
-//                     ),
-//                 );
-//                 let search_tree_ref = search_trees.insert(search_tree_pid.clone());
-//                 search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count, }, items_count);
-//                 let maybe_task_args = maybe_merge_search_trees(
-//                     &mut search_tree_refs,
-//                     &search_trees,
-//                     &state.thread_pool,
-//                     &state.blocks_pool,
-//                     &merge_blocks_pool,
-//                     &merger_iters_pool,
-//                     &state.wheels_pid,
-//                     state.params.search_tree_params.tree_block_size,
-//                     state.params.search_tree_params.merge_tasks_count_limit,
-//                 );
-//                 if let Some(task_args) = maybe_task_args {
-//                     bg_tasks_push(task_args);
-//                     bg_tasks_count += 1;
-//                     merge_search_trees_tasks_count += 1;
-//                 }
-
-//                 let mut invalidated_count = 0;
-
-//                 // maybe invalidate on-fly butcher requests
-//                 for (request_ref, LookupRequest { key, butcher_status, pending_count, .. }) in lookup_requests.iter_mut() {
-//                     if let LookupRequestButcherStatus::NotReady = butcher_status {
-//                         log::debug!("lookup request for {:?} invalidated due to cache flush", key);
-//                         *butcher_status = LookupRequestButcherStatus::Invalidated;
-//                         tasks.push(task::run_args::<J>(task::TaskArgs::LookupSearchTree(
-//                             task::lookup_search_tree::Args {
-//                                 key: key.clone(),
-//                                 request_ref: request_ref.clone(),
-//                                 search_tree_pid: search_tree_pid.clone(),
-//                             },
-//                         )));
-//                         tasks_count += 1;
-//                         *pending_count += 1;
-//                         invalidated_count += 1;
-//                     }
-//                 }
-
-//                 log::info!(
-//                     "cache flushed: {} invalidated, currently {} in action, {} merging",
-//                     invalidated_count,
-//                     search_trees.len(),
-//                     merge_search_trees_tasks_count,
-//                 );
-//             },
-
-//             Event::Task(Ok(task::TaskDone::MergeSearchTrees(done))) => {
-//                 let search_tree_a_pid = search_trees.remove(done.search_tree_a_ref).unwrap();
-//                 tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
-//                     task::demolish_search_tree::Args {
-//                         search_tree_pid: search_tree_a_pid,
-//                     },
-//                 )));
-//                 tasks_count += 1;
-
-//                 let search_tree_b_pid = search_trees.remove(done.search_tree_b_ref).unwrap();
-//                 tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
-//                     task::demolish_search_tree::Args {
-//                         search_tree_pid: search_tree_b_pid,
-//                     },
-//                 )));
-//                 tasks_count += 1;
-
-//                 let search_tree_gen_server = search_tree::GenServer::new();
-//                 let search_tree_pid = search_tree_gen_server.pid();
-//                 child_supervisor_pid.spawn_link_temporary(
-//                     search_tree_gen_server.run(
-//                         child_supervisor_pid.clone(),
-//                         state.thread_pool.clone(),
-//                         search_tree_pools.clone(),
-//                         state.wheels_pid.clone(),
-//                         state.params.search_tree_params.clone(),
-//                         search_tree::Mode::Regular { root_block: done.root_block, },
-//                     ),
-//                 );
-//                 let search_tree_ref = search_trees.insert(search_tree_pid);
-//                 search_tree_refs.push(SearchTreeRef { search_tree_ref, items_count: done.items_count, }, done.items_count);
-//                 let maybe_task_args = maybe_merge_search_trees(
-//                     &mut search_tree_refs,
-//                     &search_trees,
-//                     &state.thread_pool,
-//                     &state.blocks_pool,
-//                     &merge_blocks_pool,
-//                     &merger_iters_pool,
-//                     &state.wheels_pid,
-//                     state.params.search_tree_params.tree_block_size,
-//                     state.params.search_tree_params.merge_tasks_count_limit,
-//                 );
-//                 if let Some(task_args) = maybe_task_args {
-//                     bg_tasks_push(task_args);
-//                     bg_tasks_count += 1;
-//                     merge_search_trees_tasks_count += 1;
-//                 }
-
-//                 merge_search_trees_tasks_count -= 1;
-//                 log::info!(
-//                     "two search_tree of {} merged in {:?}: currently {} in action, {} merging",
-//                     done.items_count,
-//                     done.timings,
-//                     search_trees.len(),
-//                     merge_search_trees_tasks_count,
-//                 );
-//             },
-
-//             Event::Task(Ok(task::TaskDone::DemolishSearchTree(task::demolish_search_tree::Done))) => {
-//                 log::debug!("search tree DEMOLISHED");
-//             },
-
-//             Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done::RetrieveSuccess))) =>
-//                 (),
-
-//             Event::Task(Ok(task::TaskDone::RetrieveValue(task::retrieve_value::Done::DeprecatedResults { key, reply_tx, }))) => {
-//                 log::debug!("task::TaskDone::RetrieveValue deprecated results: retrying LOOKUP request");
-//                 launch_lookup_request(
-//                     key,
-//                     reply_tx,
-//                     &mut lookup_requests,
-//                     &search_trees,
-//                     &state.butcher_pid,
-//                     |args| {
-//                         tasks.push(task::run_args(args));
-//                         tasks_count += 1;
-//                     },
-//                 );
-//             },
-
-//             Event::Task(Err(error)) =>
-//                 return Err(ErrorSeverity::Fatal(Error::Task(error))),
-//         }
-//     }
 }

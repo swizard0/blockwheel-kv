@@ -72,6 +72,7 @@ pub enum Kont<C> where C: Context {
     FlushButcher(KontFlushButcher<C>),
     LookupRangeMergerReady(KontLookupRangeMergerReady<C>),
     MergeSearchTrees(KontMergeSearchTrees<C>),
+    DemolishSearchTree(KontDemolishSearchTree<C>),
 }
 
 pub struct KontPoll<C> where C: Context {
@@ -140,6 +141,15 @@ pub struct KontMergeSearchTreesNext<C> where C: Context {
     inner: Inner<C>,
 }
 
+pub struct KontDemolishSearchTree<C> where C: Context {
+    pub order: DemolishOrder,
+    pub next: KontDemolishSearchTreeNext<C>,
+}
+
+pub struct KontDemolishSearchTreeNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
 pub struct LookupRangesMerger {
     pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
     pub token: AccessToken,
@@ -158,6 +168,10 @@ pub struct AccessToken {
 
 pub struct LookupRangeSource {
     pub source: search_ranges_merge::Source,
+}
+
+pub struct DemolishOrder {
+    pub walker: search_tree_walker::WalkerCps,
 }
 
 struct Inner<C> where C: Context {
@@ -200,6 +214,9 @@ enum PendingEvent<C> where C: Context {
         flush_context: C::Flush,
     },
     MergeSearchTrees(PendingEventMergeSearchTrees),
+    Demolish {
+        order: DemolishOrder,
+    },
 }
 
 struct PendingEventFlushButcher {
@@ -378,8 +395,8 @@ impl<C> Inner<C> where C: Context {
                             self.forest.accesses_count -= 1;
 
                             if search_tree.accesses_count == 0 {
-
-                                todo!(); // TODO: demand search tree removal
+                                let search_tree = oe.remove();
+                                self.demand_search_tree_removal(search_tree);
                             }
                         },
                     }
@@ -452,8 +469,7 @@ impl<C> Inner<C> where C: Context {
                     assert!(self.forest.accesses_count > 0);
                     self.forest.accesses_count -= 1;
                     if search_tree.accesses_count == 0 {
-
-                        todo!(); // TODO: demand search tree removal
+                        self.demand_search_tree_removal(search_tree);
                     } else {
                         // schedule for decay
                         self.forest.search_trees_decay
@@ -466,6 +482,15 @@ impl<C> Inner<C> where C: Context {
             self.forest.add_constructed(root_block, items_count);
         self.forest.search_trees_pile
             .push(SearchTreeRef { search_tree_id, items_count, }, items_count);
+    }
+
+    fn demand_search_tree_removal(&mut self, search_tree: SearchTreeConstructed) {
+        let walker = search_tree_walker::WalkerCps::new(
+            search_tree.root_block,
+            SearchRangeBounds::unbounded(),
+            self.block_entry_steps_pool.clone(),
+        );
+        self.pending_events.push(PendingEvent::Demolish { order: DemolishOrder { walker, }, });
     }
 
     fn poll(mut self) -> Kont<C> {
@@ -525,6 +550,11 @@ impl<C> Inner<C> where C: Context {
                 Kont::MergeSearchTrees(KontMergeSearchTrees {
                     ranges_merger,
                     next: KontMergeSearchTreesNext { inner: self, },
+                }),
+            Some(PendingEvent::Demolish { order, }) =>
+                Kont::DemolishSearchTree(KontDemolishSearchTree {
+                    order,
+                    next: KontDemolishSearchTreeNext { inner: self, },
                 }),
         }
     }
@@ -618,6 +648,12 @@ impl<C> KontLookupRangeMergerReadyNext<C> where C: Context {
 
 impl<C> KontMergeSearchTreesNext<C> where C: Context {
     pub fn scheduled(self) -> Kont<C> {
+        self.inner.poll()
+    }
+}
+
+impl<C> KontDemolishSearchTreeNext<C> where C: Context {
+    pub fn roger_that(self) -> Kont<C> {
         self.inner.poll()
     }
 }

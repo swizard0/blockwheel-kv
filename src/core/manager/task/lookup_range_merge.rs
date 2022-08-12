@@ -57,7 +57,6 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    WheelsGone,
     ThreadPoolGone,
     SearchRangesMerge(search_ranges_merge::Error),
     WheelNotFound {

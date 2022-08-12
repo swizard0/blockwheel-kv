@@ -42,7 +42,10 @@ pub enum Kont<T, R> {
     PollNextItemOrProcessedBlock(KontPollNextItemOrProcessedBlock<T, R>),
     PollProcessedBlock(KontPollProcessedBlock<T, R>),
     ProcessBlockAsync(KontProcessBlockAsync<T, R>),
-    Finished { root_block_ref: R, },
+    Finished {
+        items_count: usize,
+        root_block_ref: R,
+    },
 }
 
 #[derive(Debug)]
@@ -412,7 +415,10 @@ impl<T, R> KontPollProcessedBlockNext<T, R> {
                     },
                     None if matches!(self.inner.state, State::Finished { .. }) => {
                         assert_eq!(self.inner.done_blocks.len(), 1);
-                        Ok(Kont::Finished { root_block_ref: block_ref, })
+                        Ok(Kont::Finished {
+                            items_count: self.inner.params.tree_items_count,
+                            root_block_ref: block_ref,
+                        })
                     },
                     None => {
                         *kind = DoneBlockKind::RefReady(block_ref);

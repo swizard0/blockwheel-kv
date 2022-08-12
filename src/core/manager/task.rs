@@ -18,12 +18,14 @@ pub mod performer;
 pub mod flush_butcher;
 pub mod lookup_range_merge;
 pub mod merge_search_trees;
+pub mod demolish_search_tree;
 
 pub enum TaskArgs<J> where J: edeltraud::Job {
     Performer(performer::Args<J>),
     FlushButcher(flush_butcher::Args<J>),
     LookupRangeMerge(lookup_range_merge::Args<J>),
     MergeSearchTrees(merge_search_trees::Args<J>),
+    DemolishSearchTree(demolish_search_tree::Args<J>),
 }
 
 pub enum TaskDone {
@@ -31,6 +33,7 @@ pub enum TaskDone {
     FlushButcher(flush_butcher::Done),
     LookupRangeMerge(lookup_range_merge::Done),
     MergeSearchTrees(merge_search_trees::Done),
+    DemolishSearchTree(demolish_search_tree::Done),
 }
 
 #[derive(Debug)]
@@ -39,6 +42,7 @@ pub enum Error {
     FlushButcher(flush_butcher::Error),
     LookupRangeMerge(lookup_range_merge::Error),
     MergeSearchTrees(merge_search_trees::Error),
+    DemolishSearchTree(demolish_search_tree::Error),
 }
 
 pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
@@ -66,6 +70,11 @@ where J: edeltraud::Job + From<job::Job>,
             TaskDone::MergeSearchTrees(
                 merge_search_trees::run(args).await
                     .map_err(Error::MergeSearchTrees)?,
+            ),
+        TaskArgs::DemolishSearchTree(args) =>
+            TaskDone::DemolishSearchTree(
+                demolish_search_tree::run(args).await
+                    .map_err(Error::DemolishSearchTree)?,
             ),
     })
 }

@@ -74,7 +74,6 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    WheelsGone,
     WheelsEmpty,
     ThreadPoolGone,
     WriteBlock(ero_blockwheel_fs::WriteBlockError),
@@ -570,7 +569,7 @@ fn job_continue(mut env: Env, mut builder_next: SearchTreeBuilderBlockNext) -> O
                     builder_kont = next.process_scheduled()
                         .map_err(Error::SearchTreeBuilder)?;
                 },
-                search_tree_builder::Kont::Finished { root_block_ref: root_block, } => {
+                search_tree_builder::Kont::Finished { root_block_ref: root_block, .. } => {
                     assert!(env.outgoing.is_empty());
                     assert!(env.incoming.is_empty());
                     return Ok(JobDone::Finished { root_block, });

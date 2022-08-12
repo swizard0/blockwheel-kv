@@ -117,6 +117,7 @@ pub struct Outgoing {
     pub lookup_range_merger_ready: Vec<LookupRangeMergerReadyQuery>,
     pub flushed: Vec<FlushedQuery>,
     pub merge_search_trees: Vec<MergeSearchTreesQuery>,
+    pub demolish_search_tree: Vec<DemolishSearchTreeQuery>,
 }
 
 impl Outgoing {
@@ -124,7 +125,8 @@ impl Outgoing {
         self.flush_butcher.is_empty() &&
             self.lookup_range_merger_ready.is_empty() &&
             self.flushed.is_empty() &&
-            self.merge_search_trees.is_empty()
+            self.merge_search_trees.is_empty() &&
+            self.demolish_search_tree.is_empty()
     }
 }
 
@@ -144,6 +146,10 @@ pub struct FlushedQuery {
 
 pub struct MergeSearchTreesQuery {
     pub ranges_merger: performer::SearchTreesMerger,
+}
+
+pub struct DemolishSearchTreeQuery {
+    pub order: performer::DemolishOrder,
 }
 
 pub enum Kont {
@@ -236,6 +242,10 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees { ranges_merger, next, }) => {
                     env.outgoing.merge_search_trees.push(MergeSearchTreesQuery { ranges_merger, });
                     next.scheduled()
+                },
+                performer::Kont::DemolishSearchTree(performer::KontDemolishSearchTree { order, next, }) => {
+                    env.outgoing.demolish_search_tree.push(DemolishSearchTreeQuery { order, });
+                    next.roger_that()
                 },
             };
         }

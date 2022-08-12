@@ -64,11 +64,15 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    WheelsGone,
     ThreadPoolGone,
+    WheelNotFound {
+        blockwheel_filename: wheels::WheelFilename,
+    },
     SearchRangesMerge(search_ranges_merge::Error),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),
+    ReadBlock(ero_blockwheel_fs::ReadBlockError),
+    WriteBlock(ero_blockwheel_fs::WriteBlockError),
 }
 
 pub async fn run<J>(
@@ -111,10 +115,25 @@ where J: edeltraud::Job + From<job::Job>,
 {
     enum Task<J> where J: edeltraud::Job + From<job::Job> {
         Job(edeltraud::Handle<J::Output>),
+        BlockLoad {
+            retrieve_block_task: RetrieveBlockTask,
+            wheels: Wheels,
+        },
+        WriteBlock {
+            write_block_task: WriteBlockTask,
+        },
     }
 
     enum TaskOutput {
         Job(JobDone),
+        BlockLoad {
+            async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+            block_bytes: Bytes,
+        },
+        WriteBlock {
+            block_ref: BlockRef,
+            async_ref: Ref,
+        },
     }
 
     impl<J> Task<J>
@@ -131,6 +150,30 @@ where J: edeltraud::Job + From<job::Job>,
                     let job::ManagerTaskMergeSearchTreesDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
+                Task::BlockLoad { retrieve_block_task: RetrieveBlockTask { async_token, block_ref, }, mut wheels, } => {
+                    let mut wheel_ref = wheels.get(block_ref.blockwheel_filename.clone())
+                        .ok_or_else(|| Error::WheelNotFound {
+                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                        })?;
+                    let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
+                        Ok(block_bytes) =>
+                            block_bytes,
+                        Err(error) =>
+                            return Err(Error::ReadBlock(error)),
+                    };
+                    Ok(TaskOutput::BlockLoad { async_token, block_bytes, })
+                },
+                Task::WriteBlock { write_block_task: WriteBlockTask { mut wheel_ref, async_ref, block_bytes, }, } => {
+                    let block_id = wheel_ref.blockwheel_pid.write_block(block_bytes).await
+                        .map_err(Error::WriteBlock)?;
+                    Ok(TaskOutput::WriteBlock {
+                        block_ref: BlockRef {
+                            blockwheel_filename: wheel_ref.blockwheel_filename,
+                            block_id,
+                        },
+                        async_ref,
+                    })
+                },
             }
         }
     }
@@ -140,7 +183,6 @@ where J: edeltraud::Job + From<job::Job>,
     enum JobState {
         Ready { job_args: JobArgs, },
         InProgress,
-        Finished,
     }
 
     let mut job_state = JobState::Ready {
@@ -216,8 +258,26 @@ where J: edeltraud::Job + From<job::Job>,
         match tasks.next().await.unwrap()? {
 
             TaskOutput::Job(JobDone::Await { mut env, await_merge_kont, await_build_kont, }) => {
+                for retrieve_block_task in env.outgoing.retrieve_block_tasks.drain(..) {
+                    let wheels = wheels.clone();
+                    tasks.push(Task::BlockLoad { retrieve_block_task, wheels, }.run());
+                }
+                for write_block_task in env.outgoing.write_block_tasks.drain(..) {
+                    tasks.push(Task::WriteBlock { write_block_task, }.run());
+                }
 
-                todo!();
+                job_state = match job_state {
+                    JobState::InProgress =>
+                        JobState::Ready {
+                            job_args: JobArgs {
+                                env,
+                                merge_kont: await_merge_kont,
+                                build_kont: await_build_kont,
+                            },
+                        },
+                    JobState::Ready { .. } =>
+                        unreachable!(),
+                };
             },
 
             TaskOutput::Job(JobDone::ItemsCounted { env, items_count, merger_source_build, }) =>
@@ -243,14 +303,22 @@ where J: edeltraud::Job + From<job::Job>,
                                 },
                             },
                         },
-                    JobState::Ready { .. } | JobState::Finished { .. } =>
+                    JobState::Ready { .. } =>
                         unreachable!(),
                 },
 
-            TaskOutput::Job(JobDone::Finished { root_block, }) => {
+            TaskOutput::Job(JobDone::Finished { items_count, root_block, }) =>
+                return Ok(Done {
+                    merged_search_tree_ref: root_block,
+                    merged_search_tree_items_count: items_count,
+                    access_token: ranges_merger.token,
+                }),
 
-                todo!();
-            },
+            TaskOutput::BlockLoad { async_token, block_bytes, } =>
+                incoming.received_block_tasks.push(ReceivedBlockTask { async_token, block_bytes, }),
+
+            TaskOutput::WriteBlock { block_ref, async_ref, } =>
+                incoming.written_block_tasks.push(WrittenBlockTask { block_ref, async_ref, }),
 
         }
 
@@ -358,6 +426,7 @@ pub enum BuildKontActive {
         next: SearchTreeBuilderBlockNext,
     },
     Finished {
+        items_count: usize,
         root_block: BlockRef,
     },
 }
@@ -374,6 +443,7 @@ pub enum JobDone {
         env: Env,
     },
     Finished {
+        items_count: usize,
         root_block: BlockRef,
     },
 }
@@ -436,7 +506,10 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
         enum Active<K, A> {
             Ready(K),
             Await(A),
-            Finished { root_block: BlockRef, },
+            Finished {
+                items_count: usize,
+                root_block: BlockRef,
+            },
         }
 
         let build_kont_state = match build_kont {
@@ -488,8 +561,8 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                         kont: Active::Await(BuildKontActive::ProceedItemOrWrittenBlock { next, }),
                     }
                 },
-            BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, .. } =>
-                BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, },
+            BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, .. } =>
+                BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, },
         };
 
         match (merge_kont_state, build_kont_state) {
@@ -554,24 +627,24 @@ pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Out
                     await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
                 });
             },
-            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
                 merge_kont = job_step_merger(&mut env, merger_kont)?;
-                build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, };
+                build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, };
             },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { root_block, }, }) => {
+            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
                 assert!(!env.outgoing.is_empty());
                 return Ok(JobDone::Await {
                     env,
                     await_merge_kont,
-                    await_build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, },
+                    await_build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, },
                 });
             },
             (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
                 unreachable!(),
-            (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { root_block, }, .. }) => {
+            (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { items_count, root_block, }, .. }) => {
                 assert!(env.outgoing.is_empty());
                 assert!(env.incoming.is_empty());
-                return Ok(JobDone::Finished { root_block, });
+                return Ok(JobDone::Finished { items_count, root_block, });
             },
         }
     }
@@ -665,8 +738,8 @@ pub fn job_step_builder(
                 builder_kont = next.process_scheduled()
                     .map_err(Error::SearchTreeBuilder)?;
             },
-            search_tree_builder::Kont::Finished { root_block_ref: root_block, } =>
-                return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { root_block, }, }),
+            search_tree_builder::Kont::Finished { items_count, root_block_ref: root_block, } =>
+                return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, }),
         }
     }
 }
