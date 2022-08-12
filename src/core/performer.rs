@@ -67,6 +67,7 @@ pub struct Performer<C> where C: Context {
 
 pub enum Kont<C> where C: Context {
     Poll(KontPoll<C>),
+    InfoReady(KontInfoReady<C>),
     Inserted(KontInserted<C>),
     Removed(KontRemoved<C>),
     Flushed(KontFlushed<C>),
@@ -81,6 +82,16 @@ pub struct KontPoll<C> where C: Context {
 }
 
 pub struct KontPollNext<C> where C: Context {
+    inner: Inner<C>,
+}
+
+pub struct KontInfoReady<C> where C: Context {
+    pub info: Info,
+    pub info_context: C::Info,
+    pub next: KontInfoReadyNext<C>,
+}
+
+pub struct KontInfoReadyNext<C> where C: Context {
     inner: Inner<C>,
 }
 
@@ -200,6 +211,10 @@ pub struct SearchForest {
 }
 
 enum PendingEvent<C> where C: Context {
+    InfoReady {
+        info: Info,
+        info_context: C::Info,
+    },
     FlushButcher(PendingEventFlushButcher),
     Inserted {
         version: u64,
@@ -547,6 +562,12 @@ impl<C> Inner<C> where C: Context {
         match self.pending_events.pop() {
             None =>
                 Kont::Poll(KontPoll { next: KontPollNext { inner: self, }, }),
+            Some(PendingEvent::InfoReady { info, info_context, }) =>
+                Kont::InfoReady(KontInfoReady {
+                    info,
+                    info_context,
+                    next: KontInfoReadyNext { inner: self, },
+                }),
             Some(PendingEvent::FlushButcher(PendingEventFlushButcher { search_tree_id, frozen_memcache, })) =>
                 Kont::FlushButcher(KontFlushButcher {
                     search_tree_id,
@@ -591,6 +612,14 @@ impl<C> Inner<C> where C: Context {
 }
 
 impl<C> KontPollNext<C> where C: Context {
+    pub fn incoming_info(mut self, info_context: C::Info) -> Kont<C> {
+        self.inner.pending_events.push(PendingEvent::InfoReady {
+            info: self.inner.info.clone(),
+            info_context,
+        });
+        self.inner.poll()
+    }
+
     pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value, insert_context: C::Insert) -> Kont<C> {
         let version = self.inner.insert(key, value);
         self.inner.pending_events.push(PendingEvent::Inserted {
@@ -647,6 +676,12 @@ impl<C> KontPollNext<C> where C: Context {
 
     pub fn search_tree_demolished(mut self, search_tree_id: u64) -> Kont<C> {
         self.inner.search_tree_demolished(search_tree_id);
+        self.inner.poll()
+    }
+}
+
+impl<C> KontInfoReadyNext<C> where C: Context {
+    pub fn got_it(self) -> Kont<C> {
         self.inner.poll()
     }
 }

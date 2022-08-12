@@ -34,6 +34,7 @@ fn value(v: isize) -> kv::Value {
 struct Context;
 
 impl context::Context for Context {
+    type Info = isize;
     type Insert = isize;
     type Lookup = isize;
     type Remove = isize;

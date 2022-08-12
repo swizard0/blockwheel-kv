@@ -528,30 +528,8 @@ where J: edeltraud::Job + From<job::Job>,
                 return Ok(());
             },
 
-            Event::Request(Some(Request::Info(RequestInfo { reply_tx: _, }))) => {
-                todo!();
-//                 let request_ref = info_requests.insert(InfoRequest {
-//                     reply_tx,
-//                     pending_count: 1 + search_trees.len(),
-//                     info_fold: Info::default(),
-//                 });
-//                 tasks.push(task::run_args(task::TaskArgs::InfoButcher(
-//                     task::info_butcher::Args {
-//                         request_ref: request_ref.clone(),
-//                         butcher_pid: state.butcher_pid.clone(),
-//                     },
-//                 )));
-//                 tasks_count += 1;
-//                 for (_search_tree_ref, search_tree_pid) in search_trees.iter() {
-//                     tasks.push(task::run_args(task::TaskArgs::InfoSearchTree(
-//                         task::info_search_tree::Args {
-//                             request_ref: request_ref.clone(),
-//                             search_tree_pid: search_tree_pid.clone(),
-//                         },
-//                     )));
-//                     tasks_count += 1;
-//                 }
-            },
+            Event::Request(Some(Request::Info(request))) =>
+                incoming.request_info.push(request),
 
             Event::Request(Some(Request::Insert(request))) =>
                 incoming.request_insert.push(request),

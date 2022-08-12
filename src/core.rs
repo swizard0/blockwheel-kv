@@ -46,12 +46,7 @@ mod search_ranges_merge;
 #[cfg(test)]
 mod tests;
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct RequestInfo {
-    reply_tx: oneshot::Sender<Info>,
-}
-
+pub type RequestInfoReplyTx = oneshot::Sender<Info>;
 pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
 pub type RequestRemoveReplyTx = oneshot::Sender<Removed>;
 pub type RequestFlushReplyTx = oneshot::Sender<Flushed>;
@@ -82,6 +77,11 @@ pub type SearchRangesMergeBlockNext = search_ranges_merge::KontAwaitBlocksNext<U
 pub type SearchRangesMergeItemNext = search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 
 #[derive(Debug)]
+pub struct RequestInfo {
+    reply_tx: RequestInfoReplyTx,
+}
+
+#[derive(Debug)]
 pub struct RequestInsert {
     key: kv::Key,
     value: kv::Value,
@@ -107,6 +107,7 @@ pub struct RequestFlush {
 pub struct Context;
 
 impl context::Context for Context {
+    type Info = RequestInfoReplyTx;
     type Insert = RequestInsertReplyTx;
     type Remove = RequestRemoveReplyTx;
     type Lookup = RequestLookupKind;

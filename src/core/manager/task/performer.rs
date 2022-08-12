@@ -11,6 +11,7 @@ use crate::{
         MemCache,
         BlockRef,
         Context as C,
+        RequestInfo,
         RequestInsert,
         RequestRemove,
         RequestLookupKind,
@@ -65,6 +66,7 @@ pub struct Env {
 
 #[derive(Default)]
 pub struct Incoming {
+    pub request_info: Vec<RequestInfo>,
     pub request_insert: Vec<RequestInsert>,
     pub request_remove: Vec<RequestRemove>,
     pub request_lookup_range: Vec<RequestLookupRange>,
@@ -77,7 +79,8 @@ pub struct Incoming {
 
 impl Incoming {
     pub fn is_empty(&self) -> bool {
-        self.request_insert.is_empty() &&
+        self.request_info.is_empty() &&
+            self.request_insert.is_empty() &&
             self.request_remove.is_empty() &&
             self.request_lookup_range.is_empty() &&
             self.request_flush.is_empty() &&
@@ -88,6 +91,7 @@ impl Incoming {
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
+        self.request_info.extend(from.request_info.drain(..));
         self.request_insert.extend(from.request_insert.drain(..));
         self.request_remove.extend(from.request_remove.drain(..));
         self.request_lookup_range.extend(from.request_lookup_range.drain(..));
@@ -182,7 +186,9 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
             Kont::Start { performer, } =>
                 performer.step(),
             Kont::StepPoll { next, } =>
-                if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
+                if let Some(RequestInfo { reply_tx, }) = env.incoming.request_info.pop() {
+                    next.incoming_info(reply_tx)
+                } else if let Some(RequestInsert { key, value, reply_tx, }) = env.incoming.request_insert.pop() {
                     next.incoming_insert(key, value, reply_tx)
                 } else if let Some(RequestRemove { key, reply_tx, }) = env.incoming.request_remove.pop() {
                     next.incoming_remove(key, reply_tx)
@@ -217,6 +223,12 @@ pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
                 performer::Kont::Poll(performer::KontPoll { next, }) => {
                     kont = Kont::StepPoll { next, };
                     break;
+                },
+                performer::Kont::InfoReady(performer::KontInfoReady { info, info_context: reply_tx, next, }) => {
+                    if let Err(_send_error) = reply_tx.send(info) {
+                        log::warn!("client canceled info request");
+                    }
+                    next.got_it()
                 },
                 performer::Kont::Inserted(performer::KontInserted { version, insert_context: reply_tx, next, }) => {
                     if let Err(_send_error) = reply_tx.send(Inserted { version, }) {

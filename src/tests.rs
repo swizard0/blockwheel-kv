@@ -190,6 +190,7 @@ pub enum Error {
         key: kv::Key,
         key_value_pair: kv::KeyValuePair<kv::Value>,
     },
+    WheelKvGoneDuringInfo,
     WheelAGoneDuringInfo,
     WheelBGoneDuringInfo,
     WheelsIterBlocks(wheels::IterBlocksItemError),
@@ -617,6 +618,10 @@ async fn stress_loop(
         .map_err(Error::Flush)?;
     let wheels::Flushed = wheels.flush().await
         .map_err(Error::WheelsFlush)?;
+
+    let info = wheel_kv_pid.info().await
+        .map_err(|ero::NoProcError| Error::WheelKvGoneDuringInfo)?;
+    log::info!("FINAL INFO: {info:?}");
 
     // backwards check with iterator
     let mut checked_blocks = 0;
