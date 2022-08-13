@@ -36,7 +36,6 @@ pub struct Params {
     pub tree_block_size: usize,
     pub iter_send_buffer: usize,
     pub manager_task_restart_sec: usize,
-    pub search_tree_task_restart_sec: usize,
     pub search_tree_remove_tasks_limit: usize,
     pub search_tree_values_inline_size_limit: usize,
 }
@@ -48,7 +47,6 @@ impl Default for Params {
             tree_block_size: 32,
             iter_send_buffer: 4,
             manager_task_restart_sec: 1,
-            search_tree_task_restart_sec: 1,
             search_tree_remove_tasks_limit: 64,
             search_tree_values_inline_size_limit: 128,
         }
