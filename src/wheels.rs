@@ -58,12 +58,16 @@ impl From<Bytes> for WheelFilename {
 }
 
 impl WheelFilename {
-    pub fn from_str(filename: &str, blocks_pool: &BytesPool) -> WheelFilename {
+    pub fn from_bytes(bytes: &[u8], blocks_pool: &BytesPool) -> WheelFilename {
         let mut block_bytes = blocks_pool.lend();
-        block_bytes.extend_from_slice(filename.as_bytes());
+        block_bytes.extend_from_slice(bytes);
         WheelFilename {
             filename_bytes: block_bytes.freeze(),
         }
+    }
+
+    pub fn from_str(filename: &str, blocks_pool: &BytesPool) -> WheelFilename {
+        WheelFilename::from_bytes(filename.as_bytes(), blocks_pool)
     }
 
     pub fn from_path<P>(filename: P, blocks_pool: &BytesPool) -> WheelFilename where P: AsRef<path::Path> {
