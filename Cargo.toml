@@ -1,15 +1,15 @@
 [package]
 name = "ero-blockwheel-kv"
-version = "0.22.5"
+version = "0.22.6"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 description = "Key/value persistent store based on `ero-blockwheel` framework."
 edition = "2021"
 
 [dependencies]
 ero = { git = "https://github.com/swizard0/ero.git" }
-ero-blockwheel-fs = { git = "https://github.com/swizard0/ero-blockwheel-fs.git", branch = "opt_20220816" }
+ero-blockwheel-fs = { git = "https://github.com/swizard0/ero-blockwheel-fs.git" }
 alloc-pool = { git = "https://github.com/swizard0/alloc-pool.git" }
-edeltraud = { git = "https://github.com/swizard0/edeltraud.git", branch = "opt_20220816" }
+edeltraud = { git = "https://github.com/swizard0/edeltraud.git" }
 bntree = { git = "https://github.com/swizard0/bntree" }
 o1 = { git = "https://github.com/swizard0/o1.git" }
 
