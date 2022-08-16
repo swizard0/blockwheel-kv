@@ -36,8 +36,8 @@ pub struct Params {
     pub tree_block_size: usize,
     pub iter_send_buffer: usize,
     pub manager_task_restart_sec: usize,
-    pub search_tree_remove_tasks_limit: usize,
     pub search_tree_values_inline_size_limit: usize,
+    pub search_tree_bootstrap_search_trees_limit: usize,
 }
 
 impl Default for Params {
@@ -47,8 +47,8 @@ impl Default for Params {
             tree_block_size: 32,
             iter_send_buffer: 4,
             manager_task_restart_sec: 1,
-            search_tree_remove_tasks_limit: 64,
             search_tree_values_inline_size_limit: 128,
+            search_tree_bootstrap_search_trees_limit: 16,
         }
     }
 }
@@ -97,7 +97,7 @@ impl GenServer {
             performer_params: core::performer::Params {
                 butcher_block_size: params.butcher_block_size,
                 tree_block_size: params.tree_block_size,
-                remove_tasks_limit: params.search_tree_remove_tasks_limit,
+                bootstrap_search_trees_limit: params.search_tree_bootstrap_search_trees_limit,
                 values_inline_size_limit: params.search_tree_values_inline_size_limit,
             },
             iter_send_buffer: params.iter_send_buffer,

@@ -46,8 +46,8 @@ mod tests;
 pub struct Params {
     pub butcher_block_size: usize,
     pub tree_block_size: usize,
-    pub remove_tasks_limit: usize,
     pub values_inline_size_limit: usize,
+    pub bootstrap_search_trees_limit: usize,
 }
 
 impl Default for Params {
@@ -55,8 +55,8 @@ impl Default for Params {
         Params {
             butcher_block_size: 128,
             tree_block_size: 32,
-            remove_tasks_limit: 64,
             values_inline_size_limit: 128,
+            bootstrap_search_trees_limit: 16,
         }
     }
 }
@@ -198,6 +198,7 @@ struct Inner<C> where C: Context {
     info: Info,
     pending_events: Vec<PendingEvent<C>>,
     pending_flushes: Vec<C::Flush>,
+    delayed_replies: Vec<PendingEvent<C>>,
 }
 
 pub struct SearchForest {
@@ -216,14 +217,8 @@ enum PendingEvent<C> where C: Context {
         info_context: C::Info,
     },
     FlushButcher(PendingEventFlushButcher),
-    Inserted {
-        version: u64,
-        insert_context: C::Insert,
-    },
-    Removed {
-        version: u64,
-        remove_context: C::Remove,
-    },
+    Inserted(PendingEventInserted<C>),
+    Removed(PendingEventRemoved<C>),
     LookupRangeMergerReady {
         ranges_merger: LookupRangesMerger,
         lookup_context: C::Lookup,
@@ -235,6 +230,16 @@ enum PendingEvent<C> where C: Context {
     Demolish {
         order: DemolishOrder,
     },
+}
+
+struct PendingEventInserted<C> where C: Context {
+    version: u64,
+    insert_context: C::Insert,
+}
+
+struct PendingEventRemoved<C> where C: Context {
+    version: u64,
+    remove_context: C::Remove,
 }
 
 struct PendingEventFlushButcher {
@@ -269,6 +274,7 @@ impl<C> Performer<C> where C: Context {
                 info: Info::default(),
                 pending_events: Vec::new(),
                 pending_flushes: Vec::new(),
+                delayed_replies: Vec::new(),
             },
         }
     }
@@ -539,6 +545,10 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn poll(mut self) -> Kont<C> {
+        // force delayed replies if possible
+        if !self.delayed_replies.is_empty() && self.forest.butcher_flushes_count < self.params.bootstrap_search_trees_limit {
+            self.pending_events.extend(self.delayed_replies.drain(..));
+        }
         // time to flush butcher
         if let Some(event) = self.maybe_flush(false) {
             self.pending_events.push(PendingEvent::FlushButcher(event));
@@ -574,7 +584,7 @@ impl<C> Inner<C> where C: Context {
                     frozen_memcache,
                     next: KontFlushButcherNext { inner: self, },
                 }),
-            Some(PendingEvent::Inserted { version, insert_context, }) =>
+            Some(PendingEvent::Inserted(PendingEventInserted { version, insert_context, })) =>
                 Kont::Inserted(KontInserted {
                     version,
                     insert_context,
@@ -586,7 +596,7 @@ impl<C> Inner<C> where C: Context {
                     lookup_context,
                     next: KontLookupRangeMergerReadyNext { inner: self },
                 }),
-            Some(PendingEvent::Removed { version, remove_context, }) =>
+            Some(PendingEvent::Removed(PendingEventRemoved { version, remove_context, })) =>
                 Kont::Removed(KontRemoved {
                     version,
                     remove_context,
@@ -622,10 +632,10 @@ impl<C> KontPollNext<C> where C: Context {
 
     pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value, insert_context: C::Insert) -> Kont<C> {
         let version = self.inner.insert(key, value);
-        self.inner.pending_events.push(PendingEvent::Inserted {
+        self.inner.delayed_replies.push(PendingEvent::Inserted(PendingEventInserted {
             version,
             insert_context,
-        });
+        }));
         self.inner.poll()
     }
 
@@ -645,10 +655,10 @@ impl<C> KontPollNext<C> where C: Context {
 
     pub fn incoming_remove(mut self, key: kv::Key, remove_context: C::Remove) -> Kont<C> {
         let version = self.inner.remove(key);
-        self.inner.pending_events.push(PendingEvent::Removed {
+        self.inner.delayed_replies.push(PendingEvent::Removed(PendingEventRemoved {
             version,
             remove_context,
-        });
+        }));
         self.inner.poll()
     }
 
