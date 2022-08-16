@@ -41,7 +41,7 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    ThreadPoolGone,
+    Edeltraud(edeltraud::SpawnError),
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
     },
@@ -104,7 +104,7 @@ where J: edeltraud::Job + From<job::Job>,
             match self {
                 Task::Job(job_handle) => {
                     let job_output = job_handle.await
-                        .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                        .map_err(Error::Edeltraud)?;
                     let job_output: job::JobOutput = job_output.into();
                     let job::ManagerTaskDemolishSearchTreeDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
@@ -172,7 +172,7 @@ where J: edeltraud::Job + From<job::Job>,
                 job_args.env.incoming.transfill_from(&mut incoming);
                 let job = job::Job::ManagerTaskDemolishSearchTree(job_args);
                 let job_handle = thread_pool.spawn_handle(job)
-                    .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+                    .map_err(Error::Edeltraud)?;
                 tasks.push(Task::<J>::Job(job_handle).run());
                 JobState::InProgress
             },

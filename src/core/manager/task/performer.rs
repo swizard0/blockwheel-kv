@@ -35,7 +35,7 @@ pub struct Done {
 
 #[derive(Debug)]
 pub enum Error {
-    ThreadPoolGone,
+    Edeltraud(edeltraud::SpawnError),
 }
 
 pub type Output = Result<Done, Error>;
@@ -47,7 +47,7 @@ where J: edeltraud::Job + From<job::Job>,
 {
     let job = job::Job::ManagerTaskPerformer(args.job_args);
     let job_output = args.thread_pool.spawn(job).await
-        .map_err(|edeltraud::SpawnError::ThreadPoolGone| Error::ThreadPoolGone)?;
+        .map_err(Error::Edeltraud)?;
     let job_output: job::JobOutput = job_output.into();
     let job::ManagerTaskPerformerDone(job_done) = job_output.into();
     job_done

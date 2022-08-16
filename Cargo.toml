@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 ero = { git = "https://github.com/swizard0/ero.git" }
-ero-blockwheel-fs = { git = "https://github.com/swizard0/ero-blockwheel-fs.git" }
+ero-blockwheel-fs = { git = "https://github.com/swizard0/ero-blockwheel-fs.git", branch = "opt_20220816" }
 alloc-pool = { git = "https://github.com/swizard0/alloc-pool.git" }
-edeltraud = { git = "https://github.com/swizard0/edeltraud.git" }
+edeltraud = { git = "https://github.com/swizard0/edeltraud.git", branch = "opt_20220816" }
 bntree = { git = "https://github.com/swizard0/bntree" }
 o1 = { git = "https://github.com/swizard0/o1.git" }
 
