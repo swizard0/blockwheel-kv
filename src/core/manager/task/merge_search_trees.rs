@@ -393,8 +393,8 @@ impl Incoming {
     }
 
     fn transfill_from(&mut self, from: &mut Self) {
-        self.received_block_tasks.extend(from.received_block_tasks.drain(..));
-        self.written_block_tasks.extend(from.written_block_tasks.drain(..));
+        assert!(self.is_empty());
+        std::mem::swap(self, from);
     }
 }
 

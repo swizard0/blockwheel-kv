@@ -372,8 +372,8 @@ impl Incoming {
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
-        self.serialize_block_tasks.extend(from.serialize_block_tasks.drain(..));
-        self.commit_block_tasks.extend(from.commit_block_tasks.drain(..));
+        assert!(self.is_empty());
+        std::mem::swap(self, from);
     }
 }
 

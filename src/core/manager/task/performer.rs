@@ -91,15 +91,8 @@ impl Incoming {
     }
 
     pub fn transfill_from(&mut self, from: &mut Self) {
-        self.request_info.extend(from.request_info.drain(..));
-        self.request_insert.extend(from.request_insert.drain(..));
-        self.request_remove.extend(from.request_remove.drain(..));
-        self.request_lookup_range.extend(from.request_lookup_range.drain(..));
-        self.request_flush.extend(from.request_flush.drain(..));
-        self.butcher_flushed.extend(from.butcher_flushed.drain(..));
-        self.lookup_range_merge_done.extend(from.lookup_range_merge_done.drain(..));
-        self.merge_search_trees_done.extend(from.merge_search_trees_done.drain(..));
-        self.demolish_done.extend(from.demolish_done.drain(..));
+        assert!(self.is_empty());
+        std::mem::swap(self, from);
     }
 }
 
