@@ -117,9 +117,7 @@ impl GenServer {
         wheels: wheels::Wheels,
         params: Params,
     )
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
+    where J: edeltraud::Job<Output = ()> + From<job::Job>,
     {
         let terminate_result = restart::restartable(
             ero::Params {
@@ -331,9 +329,7 @@ async fn load<J>(
     state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     let mut forest = performer::SearchForest::new();
     let mut blocks_total = 0;
@@ -424,19 +420,17 @@ async fn busyloop<J>(
     mut state: State<J>,
 )
     -> Result<(), ErrorSeverity<State<J>, Error>>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     enum PerformerState {
         Ready {
-            job_args: task::performer::JobArgs,
+            job: task::performer::Job,
         },
         InProgress,
     }
 
     let mut performer_state = PerformerState::Ready {
-        job_args: task::performer::JobArgs {
+        job: task::performer::Job {
             env: task::performer::Env::default(),
             kont: task::performer::Kont::Start { performer, },
         },
@@ -462,23 +456,23 @@ where J: edeltraud::Job + From<job::Job>,
 
         let performer_action = match performer_state {
             PerformerState::Ready {
-                job_args: job_args @ task::performer::JobArgs { kont: task::performer::Kont::Start { .. }, .. },
+                job: job @ task::performer::Job { kont: task::performer::Kont::Start { .. }, .. },
             } =>
-                PerformerAction::Run(job_args),
+                PerformerAction::Run(job),
             PerformerState::Ready {
-                job_args: job_args @ task::performer::JobArgs { kont: task::performer::Kont::StepPoll { .. }, .. },
+                job: job @ task::performer::Job { kont: task::performer::Kont::StepPoll { .. }, .. },
             } if !incoming.is_empty() =>
-                PerformerAction::Run(job_args),
+                PerformerAction::Run(job),
             other =>
                 PerformerAction::KeepState(other),
         };
 
         match performer_action {
-            PerformerAction::Run(mut job_args) => {
-                job_args.env.incoming.transfill_from(&mut incoming);
+            PerformerAction::Run(mut job) => {
+                job.env.incoming.transfill_from(&mut incoming);
                 tasks.push(task::run_args(task::TaskArgs::Performer(
                     task::performer::Args {
-                        job_args,
+                        job,
                         thread_pool: state.thread_pool.clone(),
                     },
                 )));
@@ -542,12 +536,12 @@ where J: edeltraud::Job + From<job::Job>,
             },
 
             Event::Task(Ok(task::TaskDone::Performer(task::performer::Done { env, next: task::performer::Next::Poll { next, }, }))) => {
-                let mut job_args = task::performer::JobArgs {
+                let mut job = task::performer::Job {
                     env,
                     kont: task::performer::Kont::StepPoll { next, },
                 };
                 // flush butcher
-                for flush_butcher_query in job_args.env.outgoing.flush_butcher.drain(..) {
+                for flush_butcher_query in job.env.outgoing.flush_butcher.drain(..) {
                     let task::performer::FlushButcherQuery { search_tree_id, frozen_memcache, } = flush_butcher_query;
                     tasks.push(task::run_args(task::TaskArgs::FlushButcher(
                         task::flush_butcher::Args {
@@ -567,7 +561,7 @@ where J: edeltraud::Job + From<job::Job>,
                     tasks_count += 1;
                 }
                 // lookup range merger ready
-                for lookup_range_merger_ready_query in job_args.env.outgoing.lookup_range_merger_ready.drain(..) {
+                for lookup_range_merger_ready_query in job.env.outgoing.lookup_range_merger_ready.drain(..) {
                     let task::performer::LookupRangeMergerReadyQuery { ranges_merger, lookup_context, } = lookup_range_merger_ready_query;
                     tasks.push(task::run_args(task::TaskArgs::LookupRangeMerge(
                         task::lookup_range_merge::Args {
@@ -581,7 +575,7 @@ where J: edeltraud::Job + From<job::Job>,
                     tasks_count += 1;
                 }
                 // flushed
-                for flushed_query in job_args.env.outgoing.flushed.drain(..) {
+                for flushed_query in job.env.outgoing.flushed.drain(..) {
                     let task::performer::FlushedQuery { flush_context: reply_tx, } = flushed_query;
                     if let Err(_send_error) = reply_tx.send(Flushed) {
                         log::warn!("client canceled flush request");
@@ -589,7 +583,7 @@ where J: edeltraud::Job + From<job::Job>,
                     mode = Mode::Regular;
                 }
                 // merge search trees
-                for merge_search_trees_query in job_args.env.outgoing.merge_search_trees.drain(..) {
+                for merge_search_trees_query in job.env.outgoing.merge_search_trees.drain(..) {
                     let task::performer::MergeSearchTreesQuery { ranges_merger, } = merge_search_trees_query;
                     tasks.push(task::run_args(task::TaskArgs::MergeSearchTrees(
                         task::merge_search_trees::Args {
@@ -604,7 +598,7 @@ where J: edeltraud::Job + From<job::Job>,
                     tasks_count += 1;
                 }
                 // demolish search tree
-                for demolish_search_tree_query in job_args.env.outgoing.demolish_search_tree.drain(..) {
+                for demolish_search_tree_query in job.env.outgoing.demolish_search_tree.drain(..) {
                     let task::performer::DemolishSearchTreeQuery { order, } = demolish_search_tree_query;
                     tasks.push(task::run_args(task::TaskArgs::DemolishSearchTree(
                         task::demolish_search_tree::Args {
@@ -618,7 +612,7 @@ where J: edeltraud::Job + From<job::Job>,
 
                 performer_state = match performer_state {
                     PerformerState::InProgress =>
-                        PerformerState::Ready { job_args, },
+                        PerformerState::Ready { job, },
                     PerformerState::Ready { .. } =>
                         unreachable!(),
                 };

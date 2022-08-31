@@ -46,9 +46,7 @@ pub enum Error {
 }
 
 pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     Ok(match args {
         TaskArgs::Performer(args) =>

@@ -78,9 +78,7 @@ pub async fn run<J>(
     }: Args<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     inner_run(
         ranges_merger,
@@ -99,12 +97,10 @@ async fn inner_run<J>(
     iter_send_buffer: usize,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
-    enum Task<J> where J: edeltraud::Job + From<job::Job> {
-        Job(edeltraud::Handle<J::Output>),
+    enum Task {
+        Job(edeltraud::AsyncResult<Output>),
         ValueLoad {
             key: kv::Key,
             version: u64,
@@ -135,18 +131,12 @@ where J: edeltraud::Job + From<job::Job>,
         TxDropped,
     }
 
-    impl<J> Task<J>
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
-    {
+    impl Task {
         async fn run(self) -> Result<TaskOutput, Error> {
             match self {
-                Task::Job(job_handle) => {
-                    let job_output = job_handle.await
+                Task::Job(job_async_result) => {
+                    let job_done = job_async_result.await
                         .map_err(Error::Edeltraud)?;
-                    let job_output: job::JobOutput = job_output.into();
-                    let job::ManagerTaskLookupRangeMergeDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
                 Task::ValueLoad { key, version, mut wheels, block_ref, } => {
@@ -314,10 +304,9 @@ where J: edeltraud::Job + From<job::Job>,
         merger_state = match merger_action {
             MergerAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job = job::Job::ManagerTaskLookupRangeMerge(job_args);
-                let job_handle = thread_pool.spawn_handle(job)
+                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
                     .map_err(Error::Edeltraud)?;
-                tasks.push(Task::<J>::Job(job_handle).run());
+                tasks.push(Task::Job(job_async_result).run());
                 MergerState::InProgress
             },
             MergerAction::KeepState(state) =>
@@ -513,59 +502,65 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
-    loop {
-        let mut merger_kont = match kont {
-            Kont::Start { merger, } => {
-                merger.step()
-                    .map_err(Error::SearchRangesMerge)?
-            },
-            Kont::ProceedAwaitBlocks { next, } =>
-                if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
-                    next.block_arrived(async_token, block_bytes)
-                        .map_err(Error::SearchRangesMerge)?
-                } else {
-                    return Ok(JobDone::AwaitRetrieveBlockTasks { env, next, });
-                },
-            Kont::ProceedItem { next, } =>
-                next.proceed().map_err(Error::SearchRangesMerge)?,
-        };
+impl edeltraud::Job for JobArgs {
+    type Output = Output;
+
+    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+        let JobArgs { mut env, mut kont, } = self;
 
         loop {
-            match merger_kont {
-                search_ranges_merge::Kont::RequireBlockAsync(
-                    search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
-                ) => {
-                    let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
-                        .ok_or_else(|| Error::WheelNotFound {
-                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                        })?;
-                    env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { wheel_ref, block_ref, async_token, });
-                    merger_kont = next.scheduled()
-                        .map_err(Error::SearchRangesMerge)?;
+            let mut merger_kont = match kont {
+                Kont::Start { merger, } => {
+                    merger.step()
+                        .map_err(Error::SearchRangesMerge)?
                 },
-                search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
-                    kont = Kont::ProceedAwaitBlocks { next, };
-                    break;
-                },
-                search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
-                    merger_kont = next.proceed()
-                        .map_err(Error::SearchRangesMerge)?;
-                },
-                search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
-                    merger_kont = next.proceed()
-                        .map_err(Error::SearchRangesMerge)?;
-                },
-                search_ranges_merge::Kont::EmitItem(
-                    search_ranges_merge::KontEmitItem { item, next, },
-                ) => {
-                    return Ok(JobDone::ItemArrived { item, env, next, });
-                },
-                search_ranges_merge::Kont::Finished => {
-                    assert!(env.outgoing.is_empty());
-                    assert!(env.incoming.is_empty());
-                    return Ok(JobDone::Finished);
-                },
+                Kont::ProceedAwaitBlocks { next, } =>
+                    if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
+                        next.block_arrived(async_token, block_bytes)
+                            .map_err(Error::SearchRangesMerge)?
+                    } else {
+                        return Ok(JobDone::AwaitRetrieveBlockTasks { env, next, });
+                    },
+                Kont::ProceedItem { next, } =>
+                    next.proceed().map_err(Error::SearchRangesMerge)?,
+            };
+
+            loop {
+                match merger_kont {
+                    search_ranges_merge::Kont::RequireBlockAsync(
+                        search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                    ) => {
+                        let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                            .ok_or_else(|| Error::WheelNotFound {
+                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                            })?;
+                        env.outgoing.retrieve_block_tasks.push(RetrieveBlockTask { wheel_ref, block_ref, async_token, });
+                        merger_kont = next.scheduled()
+                            .map_err(Error::SearchRangesMerge)?;
+                    },
+                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
+                        kont = Kont::ProceedAwaitBlocks { next, };
+                        break;
+                    },
+                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
+                        merger_kont = next.proceed()
+                            .map_err(Error::SearchRangesMerge)?;
+                    },
+                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+                        merger_kont = next.proceed()
+                            .map_err(Error::SearchRangesMerge)?;
+                    },
+                    search_ranges_merge::Kont::EmitItem(
+                        search_ranges_merge::KontEmitItem { item, next, },
+                    ) => {
+                        return Ok(JobDone::ItemArrived { item, env, next, });
+                    },
+                    search_ranges_merge::Kont::Finished => {
+                        assert!(env.outgoing.is_empty());
+                        assert!(env.incoming.is_empty());
+                        return Ok(JobDone::Finished);
+                    },
+                }
             }
         }
     }

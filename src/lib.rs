@@ -88,9 +88,7 @@ impl GenServer {
         wheels: wheels::Wheels,
         params: Params,
     )
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
+    where J: edeltraud::Job<Output = ()> + From<job::Job>,
     {
         let manager_params = core::manager::Params {
             task_restart_sec: params.manager_task_restart_sec,

@@ -95,9 +95,7 @@ pub async fn run<J>(
     }: Args<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     inner_run(
         search_tree_id,
@@ -122,12 +120,10 @@ async fn inner_run<J>(
     thread_pool: edeltraud::Edeltraud<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
-    enum Task<J> where J: edeltraud::Job + From<job::Job> {
-        Job(edeltraud::Handle<J::Output>),
+    enum Task {
+        Job(edeltraud::AsyncResult<Output>),
         WriteValue {
             wheel_ref: WheelRef,
             block_bytes: Bytes,
@@ -152,18 +148,12 @@ where J: edeltraud::Job + From<job::Job>,
         },
     }
 
-    impl<J> Task<J>
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
-    {
+    impl Task {
         async fn run(self) -> Result<TaskOutput, Error> {
             match self {
-                Task::Job(job_handle) => {
-                    let job_output = job_handle.await
+                Task::Job(job_async_result) => {
+                    let job_done = job_async_result.await
                         .map_err(Error::Edeltraud)?;
-                    let job_output: job::JobOutput = job_output.into();
-                    let job::ManagerTaskFlushButcherDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
                 Task::WriteValue { mut wheel_ref, block_bytes, async_ref, block_entry_index, } => {
@@ -238,10 +228,9 @@ where J: edeltraud::Job + From<job::Job>,
         builder_state = match builder_action {
             BuilderAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job = job::Job::ManagerTaskFlushButcher(job_args);
-                let job_handle = thread_pool.spawn_handle(job)
+                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
                     .map_err(Error::Edeltraud)?;
-                tasks.push(Task::<J>::Job(job_handle).run());
+                tasks.push(Task::Job(job_async_result).run());
                 BuilderState::InProgress
             },
             BuilderAction::KeepState(state) =>
@@ -436,12 +425,17 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-pub fn job(JobArgs { env, kont, }: JobArgs) -> Output {
-    match kont {
-        Kont::Start { frozen_memcache, builder, } =>
-            job_build(env, frozen_memcache, builder),
-        Kont::Continue { next, } =>
-            job_continue(env, next),
+impl edeltraud::Job for JobArgs {
+    type Output = Output;
+
+    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+        let JobArgs { env, kont, } = self;
+        match kont {
+            Kont::Start { frozen_memcache, builder, } =>
+                job_build(env, frozen_memcache, builder),
+            Kont::Continue { next, } =>
+                job_continue(env, next),
+        }
     }
 }
 

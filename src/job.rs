@@ -16,10 +16,10 @@ use crate::{
 pub enum Job {
     BlockwheelFs(blockwheel::job::Job),
     ManagerTaskPerformer(edeltraud::AsyncJob<core::manager::task::performer::Job>),
-    ManagerTaskFlushButcher(edeltraud::AsyncJob<core::manager::task::flush_butcher::Job>),
-    ManagerTaskLookupRangeMerge(edeltraud::AsyncJob<core::manager::task::lookup_range_merge::Job>),
-    ManagerTaskMergeSearchTrees(edeltraud::AsyncJob<core::manager::task::merge_search_trees::Job>),
-    ManagerTaskDemolishSearchTree(edeltraud::AsyncJob<core::manager::task::demolish_search_tree::Job>),
+    ManagerTaskFlushButcher(edeltraud::AsyncJob<core::manager::task::flush_butcher::JobArgs>),
+    ManagerTaskLookupRangeMerge(edeltraud::AsyncJob<core::manager::task::lookup_range_merge::JobArgs>),
+    ManagerTaskMergeSearchTrees(edeltraud::AsyncJob<core::manager::task::merge_search_trees::JobArgs>),
+    ManagerTaskDemolishSearchTree(edeltraud::AsyncJob<core::manager::task::demolish_search_tree::JobArgs>),
 }
 
 impl From<blockwheel::job::Job> for Job {
@@ -34,27 +34,27 @@ impl From<edeltraud::AsyncJob<core::manager::task::performer::Job>> for Job {
     }
 }
 
-impl From<edeltraud::AsyncJob<core::manager::task::flush_butcher::Job>> for Job {
-    fn from(job: edeltraud::AsyncJob<core::manager::task::flush_butcher::Job>) -> Job {
-        Job::ManagerTaskFlushButcher(job)
+impl From<edeltraud::AsyncJob<core::manager::task::flush_butcher::JobArgs>> for Job {
+    fn from(job_args: edeltraud::AsyncJob<core::manager::task::flush_butcher::JobArgs>) -> Job {
+        Job::ManagerTaskFlushButcher(job_args)
     }
 }
 
-impl From<edeltraud::AsyncJob<core::manager::task::lookup_range_merge::Job>> for Job {
-    fn from(job: edeltraud::AsyncJob<core::manager::task::lookup_range_merge::Job>) -> Job {
-        Job::ManagerTaskLookupRangeMerge(job)
+impl From<edeltraud::AsyncJob<core::manager::task::lookup_range_merge::JobArgs>> for Job {
+    fn from(job_args: edeltraud::AsyncJob<core::manager::task::lookup_range_merge::JobArgs>) -> Job {
+        Job::ManagerTaskLookupRangeMerge(job_args)
     }
 }
 
-impl From<edeltraud::AsyncJob<core::manager::task::merge_search_trees::Job>> for Job {
-    fn from(job: edeltraud::AsyncJob<core::manager::task::merge_search_trees::Job>) -> Job {
-        Job::ManagerTaskMergeSearchTrees(job)
+impl From<edeltraud::AsyncJob<core::manager::task::merge_search_trees::JobArgs>> for Job {
+    fn from(job_args: edeltraud::AsyncJob<core::manager::task::merge_search_trees::JobArgs>) -> Job {
+        Job::ManagerTaskMergeSearchTrees(job_args)
     }
 }
 
-impl From<edeltraud::AsyncJob<core::manager::task::demolish_search_tree::Job>> for Job {
-    fn from(job: edeltraud::AsyncJob<core::manager::task::demolish_search_tree::Job>) -> Job {
-        Job::ManagerTaskDemolishSearchTree(job)
+impl From<edeltraud::AsyncJob<core::manager::task::demolish_search_tree::JobArgs>> for Job {
+    fn from(job_args: edeltraud::AsyncJob<core::manager::task::demolish_search_tree::JobArgs>) -> Job {
+        Job::ManagerTaskDemolishSearchTree(job_args)
     }
 }
 

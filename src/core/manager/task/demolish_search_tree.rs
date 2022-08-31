@@ -58,9 +58,7 @@ pub async fn run<J>(
     }: Args<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     inner_run(
         order,
@@ -75,12 +73,10 @@ async fn inner_run<J>(
     thread_pool: edeltraud::Edeltraud<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
-    enum Task<J> where J: edeltraud::Job + From<job::Job> {
-        Job(edeltraud::Handle<J::Output>),
+    enum Task {
+        Job(edeltraud::AsyncResult<Output>),
         ReadBlock {
             read_block_task: ReadBlockTask,
         },
@@ -95,18 +91,12 @@ where J: edeltraud::Job + From<job::Job>,
         BlockDeleted,
     }
 
-    impl<J> Task<J>
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
-    {
+    impl Task {
         async fn run(self) -> Result<TaskOutput, Error> {
             match self {
-                Task::Job(job_handle) => {
-                    let job_output = job_handle.await
+                Task::Job(job_async_result) => {
+                    let job_done = job_async_result.await
                         .map_err(Error::Edeltraud)?;
-                    let job_output: job::JobOutput = job_output.into();
-                    let job::ManagerTaskDemolishSearchTreeDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
                 Task::ReadBlock { read_block_task: ReadBlockTask { mut wheel_ref, block_ref, }, } => {
@@ -170,10 +160,9 @@ where J: edeltraud::Job + From<job::Job>,
         job_state = match job_action {
             JobAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job = job::Job::ManagerTaskDemolishSearchTree(job_args);
-                let job_handle = thread_pool.spawn_handle(job)
+                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
                     .map_err(Error::Edeltraud)?;
-                tasks.push(Task::<J>::Job(job_handle).run());
+                tasks.push(Task::Job(job_async_result).run());
                 JobState::InProgress
             },
             JobAction::KeepState(state) =>
@@ -296,49 +285,55 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-pub fn job(JobArgs { mut env, mut kont, }: JobArgs) -> Output {
-    loop {
-        let mut walker_kont = match kont {
-            Kont::Start { walker } => {
-                walker.step()
-                    .map_err(Error::SearchTreeWalker)?
-            },
-            Kont::ProceedAwaitBlocks { next, } =>
-                if let Some(ReceivedBlockTask { block_bytes, }) = env.incoming.received_block_tasks.pop() {
-                    next.block_arrived(block_bytes)
-                        .map_err(Error::SearchTreeWalker)?
-                } else {
-                    return Ok(JobDone::Await { env, kont: Kont::ProceedAwaitBlocks { next, }, });
-                },
-        };
+impl edeltraud::Job for JobArgs {
+    type Output = Output;
+
+    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+        let JobArgs { mut env, mut kont, } = self;
 
         loop {
-            match walker_kont {
-                search_tree_walker::Kont::RequireBlock(search_tree_walker::KontRequireBlock { block_ref, next, }) => {
-                    let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
-                        .ok_or_else(|| Error::WheelNotFound {
-                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                        })?;
-                    assert!(env.outgoing.read_block_task.is_none());
-                    env.outgoing.read_block_task = Some(ReadBlockTask { wheel_ref, block_ref, });
-                    kont = Kont::ProceedAwaitBlocks { next, };
-                    break;
+            let mut walker_kont = match kont {
+                Kont::Start { walker } => {
+                    walker.step()
+                        .map_err(Error::SearchTreeWalker)?
                 },
-                search_tree_walker::Kont::ItemFound(search_tree_walker::KontItemFound { next, .. }) => {
-                    walker_kont = next.item_received()
-                        .map_err(Error::SearchTreeWalker)?;
-                },
-                search_tree_walker::Kont::BlockFinished(search_tree_walker::KontBlockFinished { block_ref, next, }) => {
-                    let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
-                        .ok_or_else(|| Error::WheelNotFound {
-                            blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                        })?;
-                    env.outgoing.delete_block_tasks.push(DeleteBlockTask { wheel_ref, block_ref, });
-                    walker_kont = next.proceed()
-                        .map_err(Error::SearchTreeWalker)?;
-                },
-                search_tree_walker::Kont::Finished =>
-                    return Ok(JobDone::Finished { env, }),
+                Kont::ProceedAwaitBlocks { next, } =>
+                    if let Some(ReceivedBlockTask { block_bytes, }) = env.incoming.received_block_tasks.pop() {
+                        next.block_arrived(block_bytes)
+                            .map_err(Error::SearchTreeWalker)?
+                    } else {
+                        return Ok(JobDone::Await { env, kont: Kont::ProceedAwaitBlocks { next, }, });
+                    },
+            };
+
+            loop {
+                match walker_kont {
+                    search_tree_walker::Kont::RequireBlock(search_tree_walker::KontRequireBlock { block_ref, next, }) => {
+                        let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                            .ok_or_else(|| Error::WheelNotFound {
+                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                            })?;
+                        assert!(env.outgoing.read_block_task.is_none());
+                        env.outgoing.read_block_task = Some(ReadBlockTask { wheel_ref, block_ref, });
+                        kont = Kont::ProceedAwaitBlocks { next, };
+                        break;
+                    },
+                    search_tree_walker::Kont::ItemFound(search_tree_walker::KontItemFound { next, .. }) => {
+                        walker_kont = next.item_received()
+                            .map_err(Error::SearchTreeWalker)?;
+                    },
+                    search_tree_walker::Kont::BlockFinished(search_tree_walker::KontBlockFinished { block_ref, next, }) => {
+                        let wheel_ref = env.wheels.get(block_ref.blockwheel_filename.clone())
+                            .ok_or_else(|| Error::WheelNotFound {
+                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                            })?;
+                        env.outgoing.delete_block_tasks.push(DeleteBlockTask { wheel_ref, block_ref, });
+                        walker_kont = next.proceed()
+                            .map_err(Error::SearchTreeWalker)?;
+                    },
+                    search_tree_walker::Kont::Finished =>
+                        return Ok(JobDone::Finished { env, }),
+                }
             }
         }
     }

@@ -95,9 +95,7 @@ pub async fn run<J>(
     }: Args<J>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
     inner_run(
         ranges_merger,
@@ -118,12 +116,10 @@ async fn inner_run<J>(
     tree_block_size: usize,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job + From<job::Job>,
-      J::Output: From<job::JobOutput>,
-      job::JobOutput: From<J::Output>,
+where J: edeltraud::Job<Output = ()> + From<job::Job>,
 {
-    enum Task<J> where J: edeltraud::Job + From<job::Job> {
-        Job(edeltraud::Handle<J::Output>),
+    enum Task {
+        Job(edeltraud::AsyncResult<Output>),
         ReadBlock {
             read_block_task: ReadBlockTask,
         },
@@ -148,18 +144,12 @@ where J: edeltraud::Job + From<job::Job>,
         BlockDeleted,
     }
 
-    impl<J> Task<J>
-    where J: edeltraud::Job + From<job::Job>,
-          J::Output: From<job::JobOutput>,
-          job::JobOutput: From<J::Output>,
-    {
+    impl Task {
         async fn run(self) -> Result<TaskOutput, Error> {
             match self {
-                Task::Job(job_handle) => {
-                    let job_output = job_handle.await
+                Task::Job(job_async_result) => {
+                    let job_done = job_async_result.await
                         .map_err(Error::Edeltraud)?;
-                    let job_output: job::JobOutput = job_output.into();
-                    let job::ManagerTaskMergeSearchTreesDone(job_done) = job_output.into();
                     Ok(TaskOutput::Job(job_done?))
                 },
                 Task::ReadBlock { read_block_task: ReadBlockTask { mut wheel_ref, async_token, block_ref, }, } => {
@@ -270,10 +260,9 @@ where J: edeltraud::Job + From<job::Job>,
         job_state = match job_action {
             JobAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job = job::Job::ManagerTaskMergeSearchTrees(job_args);
-                let job_handle = thread_pool.spawn_handle(job)
+                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
                     .map_err(Error::Edeltraud)?;
-                tasks.push(Task::<J>::Job(job_handle).run());
+                tasks.push(Task::Job(job_async_result).run());
                 JobState::InProgress
             },
             JobAction::KeepState(state) =>
@@ -500,196 +489,206 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-pub fn job(JobArgs { mut env, mut merge_kont, mut build_kont, }: JobArgs) -> Output {
-    loop {
-        enum MergeKontState<K, A, I> {
-            Ready(K),
-            Await(A),
-            Idle(I),
-            Finished,
-        }
 
-        let merge_kont_state = match merge_kont {
-            MergeKont::Start { merger, } =>
-                MergeKontState::Ready(
-                    merger.step()
-                        .map_err(Error::SearchRangesMerge)?,
-                ),
-            MergeKont::ProceedAwaitBlocks { next, } =>
-                if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
+impl edeltraud::Job for JobArgs {
+    type Output = Output;
+
+    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+        let JobArgs { mut env, mut merge_kont, mut build_kont, } = self;
+
+        loop {
+            enum MergeKontState<K, A, I> {
+                Ready(K),
+                Await(A),
+                Idle(I),
+                Finished,
+            }
+
+            let merge_kont_state = match merge_kont {
+                MergeKont::Start { merger, } =>
                     MergeKontState::Ready(
-                        next.block_arrived(async_token, block_bytes)
+                        merger.step()
                             .map_err(Error::SearchRangesMerge)?,
-                    )
-                } else {
-                    MergeKontState::Await(MergeKont::ProceedAwaitBlocks { next, })
-                },
-            MergeKont::ProceedItem { item, next, } =>
-                match &mut build_kont {
-                    BuildKont::CountItems { items_count, .. } => {
-                        *items_count += 1;
-                        MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
-                    },
-                    BuildKont::Active { item_arrived: item_arrived @ None, .. } => {
-                        *item_arrived = Some(item);
-                        MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
-                    },
-                    BuildKont::Active { item_arrived: Some(..), .. } =>
-                        MergeKontState::Idle(MergeKont::ProceedItem { item, next, }),
-                },
-            MergeKont::Finished =>
-                MergeKontState::Finished,
-        };
-
-        enum BuildKontState<K, A, I> {
-            CountItems {
-                items_count: usize,
-                merger_source_build: SearchRangesMergeCps,
-            },
-            Active {
-                item_arrived: I,
-                kont: Active<K, A>,
-            },
-        }
-
-        enum Active<K, A> {
-            Ready(K),
-            Await(A),
-            Finished {
-                items_count: usize,
-                root_block: BlockRef,
-            },
-        }
-
-        let build_kont_state = match build_kont {
-            BuildKont::CountItems { items_count, merger_source_build, } =>
-                BuildKontState::CountItems { items_count, merger_source_build, },
-            BuildKont::Active { item_arrived, kont: BuildKontActive::Start { builder, }, } =>
-                BuildKontState::Active {
-                    item_arrived,
-                    kont: Active::Ready(
-                        builder.step()
-                            .map_err(Error::SearchTreeBuilder)?,
                     ),
-                },
-            BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedWrittenBlock { next, }, } =>
-                if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
-                    BuildKontState::Active {
-                        item_arrived,
-                        kont: Active::Ready(
-                            next.block_processed(async_ref, block_ref)
-                                .map_err(Error::SearchTreeBuilder)?,
-                        ),
-                    }
-                } else {
-                    BuildKontState::Active {
-                        item_arrived,
-                        kont: Active::Await(BuildKontActive::ProceedWrittenBlock { next, }),
-                    }
-                },
-            BuildKont::Active { mut item_arrived, kont: BuildKontActive::ProceedItemOrWrittenBlock { next, }, } =>
-                if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
-                    BuildKontState::Active {
-                        item_arrived,
-                        kont: Active::Ready(
-                            next.block_processed(async_ref, block_ref)
-                                .map_err(Error::SearchTreeBuilder)?,
-                        ),
-                    }
-                } else if let Some(item) = item_arrived.take() {
-                    BuildKontState::Active {
-                        item_arrived,
-                        kont: Active::Ready(
-                            next.item_arrived(item)
-                                .map_err(Error::SearchTreeBuilder)?,
-                        ),
-                    }
-                } else {
-                    BuildKontState::Active {
-                        item_arrived,
-                        kont: Active::Await(BuildKontActive::ProceedItemOrWrittenBlock { next, }),
-                    }
-                },
-            BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, .. } =>
-                BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, },
-        };
+                MergeKont::ProceedAwaitBlocks { next, } =>
+                    if let Some(ReceivedBlockTask { async_token, block_bytes, }) = env.incoming.received_block_tasks.pop() {
+                        MergeKontState::Ready(
+                            next.block_arrived(async_token, block_bytes)
+                                .map_err(Error::SearchRangesMerge)?,
+                        )
+                    } else {
+                        MergeKontState::Await(MergeKont::ProceedAwaitBlocks { next, })
+                    },
+                MergeKont::ProceedItem { item, next, } =>
+                    match &mut build_kont {
+                        BuildKont::CountItems { items_count, .. } => {
+                            *items_count += 1;
+                            MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
+                        },
+                        BuildKont::Active { item_arrived: item_arrived @ None, .. } => {
+                            *item_arrived = Some(item);
+                            MergeKontState::Ready(next.proceed().map_err(Error::SearchRangesMerge)?)
+                        },
+                        BuildKont::Active { item_arrived: Some(..), .. } =>
+                            MergeKontState::Idle(MergeKont::ProceedItem { item, next, }),
+                    },
+                MergeKont::Finished =>
+                    MergeKontState::Finished,
+            };
 
-        match (merge_kont_state, build_kont_state) {
-            (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                merge_kont = job_step_merger_emit_deprecated(&mut env, merger_kont)?;
-                build_kont = BuildKont::CountItems { items_count, merger_source_build, };
-            },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                return Ok(JobDone::Await {
-                    env,
-                    await_merge_kont,
-                    await_build_kont: BuildKont::CountItems { items_count, merger_source_build, },
-                });
-            },
-            (MergeKontState::Idle(..), BuildKontState::CountItems { .. }) =>
-                unreachable!(),
-            (MergeKontState::Finished, BuildKontState::CountItems { items_count, merger_source_build, }) =>
-                return Ok(JobDone::ItemsCounted { items_count, merger_source_build, env, }),
+            enum BuildKontState<K, A, I> {
+                CountItems {
+                    items_count: usize,
+                    merger_source_build: SearchRangesMergeCps,
+                },
+                Active {
+                    item_arrived: I,
+                    kont: Active<K, A>,
+                },
+            }
 
-            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
-                merge_kont = job_step_merger(&mut env, merger_kont)?;
-                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
-            },
-            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                merge_kont = job_step_merger(&mut env, merger_kont)?;
-                build_kont = BuildKont::Active { item_arrived, kont: await_build_kont, };
-            },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
-                merge_kont = await_merge_kont;
-                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
-            },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                return Ok(JobDone::Await {
-                    env,
-                    await_merge_kont,
-                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
-                });
-            },
-            (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
-                merge_kont = idle_merge_kont;
-                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
-            },
-            (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                return Ok(JobDone::Await {
-                    env,
-                    await_merge_kont: idle_merge_kont,
-                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
-                });
-            },
-            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
-                merge_kont = MergeKont::Finished;
-                build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
-            },
-            (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
-                return Ok(JobDone::Await {
-                    env,
-                    await_merge_kont: MergeKont::Finished,
-                    await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
-                });
-            },
-            (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
-                merge_kont = job_step_merger(&mut env, merger_kont)?;
-                build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, };
-            },
-            (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
-                return Ok(JobDone::Await {
-                    env,
-                    await_merge_kont,
-                    await_build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, },
-                });
-            },
-            (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
-                unreachable!(),
-            (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { items_count, root_block, }, .. }) => {
-                assert!(env.outgoing.is_empty());
-                assert!(env.incoming.is_empty());
-                return Ok(JobDone::Finished { items_count, root_block, });
-            },
+            enum Active<K, A> {
+                Ready(K),
+                Await(A),
+                Finished {
+                    items_count: usize,
+                    root_block: BlockRef,
+                },
+            }
+
+            let build_kont_state = match build_kont {
+                BuildKont::CountItems { items_count, merger_source_build, } =>
+                    BuildKontState::CountItems { items_count, merger_source_build, },
+                BuildKont::Active { item_arrived, kont: BuildKontActive::Start { builder, }, } =>
+                    BuildKontState::Active {
+                        item_arrived,
+                        kont: Active::Ready(
+                            builder.step()
+                                .map_err(Error::SearchTreeBuilder)?,
+                        ),
+                    },
+                BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedWrittenBlock { next, }, } =>
+                    if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
+                        BuildKontState::Active {
+                            item_arrived,
+                            kont: Active::Ready(
+                                next.block_processed(async_ref, block_ref)
+                                    .map_err(Error::SearchTreeBuilder)?,
+                            ),
+                        }
+                    } else {
+                        BuildKontState::Active {
+                            item_arrived,
+                            kont: Active::Await(BuildKontActive::ProceedWrittenBlock { next, }),
+                        }
+                    },
+                BuildKont::Active { mut item_arrived, kont: BuildKontActive::ProceedItemOrWrittenBlock { next, }, } =>
+                    if let Some(WrittenBlockTask { async_ref, block_ref, }) = env.incoming.written_block_tasks.pop() {
+                        BuildKontState::Active {
+                            item_arrived,
+                            kont: Active::Ready(
+                                next.block_processed(async_ref, block_ref)
+                                    .map_err(Error::SearchTreeBuilder)?,
+                            ),
+                        }
+                    } else if let Some(item) = item_arrived.take() {
+                        BuildKontState::Active {
+                            item_arrived,
+                            kont: Active::Ready(
+                                next.item_arrived(item)
+                                    .map_err(Error::SearchTreeBuilder)?,
+                            ),
+                        }
+                    } else {
+                        BuildKontState::Active {
+                            item_arrived,
+                            kont: Active::Await(BuildKontActive::ProceedItemOrWrittenBlock { next, }),
+                        }
+                    },
+                BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, .. } =>
+                    BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, },
+            };
+
+            match (merge_kont_state, build_kont_state) {
+                (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
+                    merge_kont = job_step_merger_emit_deprecated(&mut env, merger_kont)?;
+                    build_kont = BuildKont::CountItems { items_count, merger_source_build, };
+                },
+                (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
+                    return Ok(JobDone::Await {
+                        env,
+                        await_merge_kont,
+                        await_build_kont: BuildKont::CountItems { items_count, merger_source_build, },
+                    });
+                },
+                (MergeKontState::Idle(..), BuildKontState::CountItems { .. }) =>
+                    unreachable!(),
+                (MergeKontState::Finished, BuildKontState::CountItems { items_count, merger_source_build, }) =>
+                    return Ok(JobDone::ItemsCounted { items_count, merger_source_build, env, }),
+
+                (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                    merge_kont = job_step_merger(&mut env, merger_kont)?;
+                    build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+                },
+                (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                    merge_kont = job_step_merger(&mut env, merger_kont)?;
+                    build_kont = BuildKont::Active { item_arrived, kont: await_build_kont, };
+                },
+                (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                    merge_kont = await_merge_kont;
+                    build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+                },
+                (MergeKontState::Await(await_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                    return Ok(JobDone::Await {
+                        env,
+                        await_merge_kont,
+                        await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                    });
+                },
+                (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                    merge_kont = idle_merge_kont;
+                    build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+                },
+                (MergeKontState::Idle(idle_merge_kont), BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                    return Ok(JobDone::Await {
+                        env,
+                        await_merge_kont: idle_merge_kont,
+                        await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                    });
+                },
+                (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Ready(builder_kont), }) => {
+                    merge_kont = MergeKont::Finished;
+                    build_kont = job_step_builder(&mut env, item_arrived, builder_kont)?;
+                },
+                (MergeKontState::Finished, BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), }) => {
+                    return Ok(JobDone::Await {
+                        env,
+                        await_merge_kont: MergeKont::Finished,
+                        await_build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
+                    });
+                },
+                (MergeKontState::Ready(merger_kont), BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, }) => {
+                    merge_kont = job_step_merger(&mut env, merger_kont)?;
+                    build_kont = BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, };
+                },
+                (
+                    MergeKontState::Await(await_merge_kont),
+                    BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, },
+                ) => {
+                    return Ok(JobDone::Await {
+                        env,
+                        await_merge_kont,
+                        await_build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, },
+                    });
+                },
+                (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
+                    unreachable!(),
+                (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { items_count, root_block, }, .. }) => {
+                    assert!(env.outgoing.is_empty());
+                    assert!(env.incoming.is_empty());
+                    return Ok(JobDone::Finished { items_count, root_block, });
+                },
+            }
         }
     }
 }
