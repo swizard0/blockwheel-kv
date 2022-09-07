@@ -8,7 +8,7 @@ use alloc_pool::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel_fs;
+use blockwheel_fs_ero as blockwheel;
 
 use crate::{
     wheels,
@@ -20,12 +20,12 @@ pub mod lookup_range_merge;
 pub mod merge_search_trees;
 pub mod demolish_search_tree;
 
-pub enum TaskArgs<J> where J: edeltraud::Job {
-    Performer(performer::Args<J>),
-    FlushButcher(flush_butcher::Args<J>),
-    LookupRangeMerge(lookup_range_merge::Args<J>),
-    MergeSearchTrees(merge_search_trees::Args<J>),
-    DemolishSearchTree(demolish_search_tree::Args<J>),
+pub enum TaskArgs<P> {
+    Performer(performer::Args<P>),
+    FlushButcher(flush_butcher::Args<P>),
+    LookupRangeMerge(lookup_range_merge::Args<P>),
+    MergeSearchTrees(merge_search_trees::Args<P>),
+    DemolishSearchTree(demolish_search_tree::Args<P>),
 }
 
 pub enum TaskDone {
@@ -45,8 +45,8 @@ pub enum Error {
     DemolishSearchTree(demolish_search_tree::Error),
 }
 
-pub async fn run_args<J>(args: TaskArgs<J>) -> Result<TaskDone, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+pub async fn run_args<P>(args: TaskArgs<P>) -> Result<TaskDone, Error>
+where P: edeltraud::ThreadPool<job::Job>,
 {
     Ok(match args {
         TaskArgs::Performer(args) =>
@@ -87,12 +87,12 @@ use std::{
 
 #[derive(Clone)]
 enum BlockwheelPid {
-    Regular(blockwheel_fs::Pid),
+    Regular(blockwheel::Pid),
     #[cfg(test)]
     Custom {
-        write_block: Arc<Mutex<dyn FnMut(Bytes) -> blockwheel_fs::block::Id + Send + 'static>>,
-        read_block: Arc<Mutex<dyn FnMut(blockwheel_fs::block::Id) -> Bytes + Send + 'static>>,
-        delete_block: Arc<Mutex<dyn FnMut(blockwheel_fs::block::Id) + Send + 'static>>,
+        write_block: Arc<Mutex<dyn FnMut(Bytes) -> blockwheel::block::Id + Send + 'static>>,
+        read_block: Arc<Mutex<dyn FnMut(blockwheel::block::Id) -> Bytes + Send + 'static>>,
+        delete_block: Arc<Mutex<dyn FnMut(blockwheel::block::Id) + Send + 'static>>,
     },
 }
 
@@ -112,7 +112,7 @@ struct WheelRef {
 }
 
 impl BlockwheelPid {
-    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel_fs::block::Id, blockwheel_fs::WriteBlockError> {
+    async fn write_block(&mut self, block_bytes: Bytes) -> Result<blockwheel::block::Id, blockwheel::WriteBlockError> {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.write_block(block_bytes).await,
@@ -124,7 +124,7 @@ impl BlockwheelPid {
         }
     }
 
-    async fn read_block(&mut self, block_id: blockwheel_fs::block::Id) -> Result<Bytes, blockwheel_fs::ReadBlockError> {
+    async fn read_block(&mut self, block_id: blockwheel::block::Id) -> Result<Bytes, blockwheel::ReadBlockError> {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.read_block(block_id).await,
@@ -136,7 +136,7 @@ impl BlockwheelPid {
         }
     }
 
-    async fn delete_block(&mut self, block_id: blockwheel_fs::block::Id) -> Result<blockwheel_fs::Deleted, blockwheel_fs::DeleteBlockError> {
+    async fn delete_block(&mut self, block_id: blockwheel::block::Id) -> Result<blockwheel::Deleted, blockwheel::DeleteBlockError> {
         match self {
             BlockwheelPid::Regular(blockwheel_pid) =>
                 blockwheel_pid.delete_block(block_id).await,
@@ -144,7 +144,7 @@ impl BlockwheelPid {
             BlockwheelPid::Custom { delete_block: custom_write_fn, .. } => {
                 let mut fn_lock = custom_write_fn.lock().unwrap();
                 fn_lock(block_id);
-                Ok(blockwheel_fs::Deleted)
+                Ok(blockwheel::Deleted)
             },
         }
     }

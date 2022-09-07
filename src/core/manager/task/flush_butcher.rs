@@ -56,7 +56,7 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-pub struct Args<J> where J: edeltraud::Job {
+pub struct Args<P> {
     pub search_tree_id: u64,
     pub frozen_memcache: Arc<MemCache>,
     pub wheels: wheels::Wheels,
@@ -64,7 +64,7 @@ pub struct Args<J> where J: edeltraud::Job {
     pub block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     pub search_tree_builder_params: search_tree_builder::Params,
     pub values_inline_size_limit: usize,
-    pub thread_pool: edeltraud::Edeltraud<J>,
+    pub thread_pool: P,
 }
 
 pub struct Done {
@@ -76,13 +76,13 @@ pub struct Done {
 pub enum Error {
     WheelsEmpty,
     Edeltraud(edeltraud::SpawnError),
-    WriteBlock(ero_blockwheel_fs::WriteBlockError),
+    WriteBlock(blockwheel_fs_ero::WriteBlockError),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),
     SerializeValueBlockStorage(storage::Error),
 }
 
-pub async fn run<J>(
+pub async fn run<P>(
     Args {
         search_tree_id,
         frozen_memcache,
@@ -92,10 +92,10 @@ pub async fn run<J>(
         search_tree_builder_params,
         values_inline_size_limit,
         thread_pool,
-    }: Args<J>,
+    }: Args<P>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     inner_run(
         search_tree_id,
@@ -109,7 +109,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
     ).await
 }
 
-async fn inner_run<J>(
+async fn inner_run<P>(
     search_tree_id: u64,
     frozen_memcache: Arc<MemCache>,
     mut wheels: Wheels,
@@ -117,10 +117,10 @@ async fn inner_run<J>(
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     search_tree_builder_params: search_tree_builder::Params,
     values_inline_size_limit: usize,
-    thread_pool: edeltraud::Edeltraud<J>,
+    thread_pool: P,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     enum Task {
         Job(edeltraud::AsyncResult<Output>),
@@ -228,7 +228,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
         builder_state = match builder_action {
             BuilderAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
+                let job_async_result = edeltraud::job_async(&thread_pool, job_args)
                     .map_err(Error::Edeltraud)?;
                 tasks.push(Task::Job(job_async_result).run());
                 BuilderState::InProgress
@@ -425,10 +425,10 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-impl edeltraud::Job for JobArgs {
+impl edeltraud::Computation for JobArgs {
     type Output = Output;
 
-    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+    fn run(self) -> Self::Output {
         let JobArgs { env, kont, } = self;
         match kont {
             Kont::Start { frozen_memcache, builder, } =>

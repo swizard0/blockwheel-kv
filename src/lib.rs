@@ -79,16 +79,16 @@ impl GenServer {
         }
     }
 
-    pub async fn run<J>(
+    pub async fn run<P>(
         self,
         mut parent_supervisor: SupervisorPid,
-        thread_pool: edeltraud::Edeltraud<J>,
+        thread_pool: P,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels: wheels::Wheels,
         params: Params,
     )
-    where J: edeltraud::Job<Output = ()> + From<job::Job>,
+    where P: edeltraud::ThreadPool<job::Job> + Clone,
     {
         let manager_params = core::manager::Params {
             task_restart_sec: params.manager_task_restart_sec,

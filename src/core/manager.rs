@@ -108,16 +108,16 @@ impl GenServer {
         }
     }
 
-    pub async fn run<J>(
+    pub async fn run<P>(
         self,
         parent_supervisor: SupervisorPid,
-        thread_pool: edeltraud::Edeltraud<J>,
+        thread_pool: P,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels: wheels::Wheels,
         params: Params,
     )
-    where J: edeltraud::Job<Output = ()> + From<job::Job>,
+    where P: edeltraud::ThreadPool<job::Job> + Clone,
     {
         let terminate_result = restart::restartable(
             ero::Params {
@@ -151,10 +151,10 @@ impl GenServer {
     }
 }
 
-struct State<J> where J: edeltraud::Job {
+struct State<P> {
     fused_request_rx: stream::Fuse<mpsc::Receiver<Request>>,
     parent_supervisor: SupervisorPid,
-    thread_pool: edeltraud::Edeltraud<J>,
+    thread_pool: P,
     blocks_pool: BytesPool,
     version_provider: version::Provider,
     wheels: wheels::Wheels,
@@ -324,12 +324,12 @@ pub enum Error {
     },
 }
 
-async fn load<J>(
+async fn load<P>(
     child_supervisor_pid: SupervisorPid,
-    state: State<J>,
+    state: State<P>,
 )
-    -> Result<(), ErrorSeverity<State<J>, Error>>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+    -> Result<(), ErrorSeverity<State<P>, Error>>
+where P: edeltraud::ThreadPool<job::Job> + Clone,
 {
     let mut forest = performer::SearchForest::new();
     let mut blocks_total = 0;
@@ -413,14 +413,14 @@ impl Pools {
     }
 }
 
-async fn busyloop<J>(
+async fn busyloop<P>(
     _child_supervisor_pid: SupervisorPid,
     performer: performer::Performer<Context>,
     pools: Pools,
-    mut state: State<J>,
+    mut state: State<P>,
 )
-    -> Result<(), ErrorSeverity<State<J>, Error>>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+    -> Result<(), ErrorSeverity<State<P>, Error>>
+where P: edeltraud::ThreadPool<job::Job> + Clone,
 {
     enum PerformerState {
         Ready {

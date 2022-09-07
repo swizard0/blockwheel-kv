@@ -23,9 +23,9 @@ use crate::{
     Removed,
 };
 
-pub struct Args<J> where J: edeltraud::Job {
+pub struct Args<P> {
     pub job: Job,
-    pub thread_pool: edeltraud::Edeltraud<J>,
+    pub thread_pool: P,
 }
 
 pub struct Done {
@@ -40,8 +40,8 @@ pub enum Error {
 
 pub type Output = Result<Done, Error>;
 
-pub async fn run<J>(args: Args<J>) -> Output where J: edeltraud::Job<Output = ()> + From<job::Job> {
-    let job_done = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&args.thread_pool), args.job)
+pub async fn run<P>(args: Args<P>) -> Output where P: edeltraud::ThreadPool<job::Job> {
+    let job_done = edeltraud::job_async(&args.thread_pool, args.job)
         .map_err(Error::Edeltraud)?
         .await
         .map_err(Error::Edeltraud)?;
@@ -166,10 +166,10 @@ pub enum Next {
     },
 }
 
-impl edeltraud::Job for Job {
+impl edeltraud::Computation for Job {
     type Output = Output;
 
-    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+    fn run(self) -> Self::Output {
         let Job { mut env, mut kont, } = self;
         assert!(env.outgoing.is_empty());
 

@@ -44,7 +44,7 @@ use alloc_pool::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel_fs;
+use blockwheel_fs_ero as blockwheel;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WheelFilename {
@@ -100,13 +100,13 @@ impl AsRef<[u8]> for WheelFilename {
 #[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,
-    pub blockwheel_pid: blockwheel_fs::Pid,
+    pub blockwheel_pid: blockwheel::Pid,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BlockRef {
     pub blockwheel_filename: WheelFilename,
-    pub block_id: blockwheel_fs::block::Id,
+    pub block_id: blockwheel::block::Id,
 }
 
 #[derive(Clone)]
@@ -183,7 +183,7 @@ pub enum IterBlocksItem {
 pub enum IterBlocksItemError {
     WheelIterBlocks {
         blockwheel_filename: WheelFilename,
-        error: blockwheel_fs::IterBlocksError,
+        error: blockwheel::IterBlocksError,
     },
     WheelIterBlocksRxDropped {
         blockwheel_filename: WheelFilename,
@@ -220,7 +220,7 @@ impl Wheels {
         }
         while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
             match flush_status {
-                Ok(blockwheel_fs::Flushed) =>
+                Ok(blockwheel::Flushed) =>
                     (),
                 Err(ero::NoProcError) =>
                     return Err(FlushError::WheelGone { blockwheel_filename: blockwheel_filename.clone(), }),
@@ -229,7 +229,7 @@ impl Wheels {
         Ok(Flushed)
     }
 
-    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>> + '_> {
+    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>> + '_> {
         make_iter_blocks(self.inner.wheels.iter().cloned())
     }
 }
@@ -237,7 +237,7 @@ impl Wheels {
 fn make_iter_blocks<I>(
     wheels_refs: I
 )
-    -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>>>
+    -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>>
 where I: IntoIterator<Item = WheelRef>
 {
     IterBlocks {
@@ -278,7 +278,7 @@ pub struct Rx<F> {
 enum RxState<F> {
     AwaitRx { rx_future: Pin<Box<F>>, },
     Stream {
-        rx: mpsc::Receiver<blockwheel_fs::IterBlocksItem>,
+        rx: mpsc::Receiver<blockwheel::IterBlocksItem>,
         conn: RxConn,
     },
 }
@@ -289,7 +289,7 @@ enum RxConn {
 }
 
 impl<F> Stream for IterBlocks<F>
-where F: Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, IterBlocksItemError>>
+where F: Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>
 {
     type Item = Result<IterBlocksItem, IterBlocksItemError>;
 
@@ -319,11 +319,11 @@ where F: Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, I
                             return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped {
                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
                             }))),
-                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) => {
+                        Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) => {
                             *conn = RxConn::Shutdown;
                             continue;
                         },
-                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, })) => {
+                        Poll::Ready(Some(blockwheel::IterBlocksItem::Block { block_id, block_bytes, })) => {
                             let block_ref = BlockRef {
                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
                                 block_id,
@@ -341,11 +341,11 @@ where F: Future<Output = Result<mpsc::Receiver<blockwheel_fs::IterBlocksItem>, I
                             this.rxs.swap_remove(i);
                             continue;
                         },
-                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::NoMoreBlocks)) =>
+                        Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) =>
                             return Poll::Ready(Some(Err(IterBlocksItemError::DuplicateNoMoreBlocks {
                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
                             }))),
-                        Poll::Ready(Some(blockwheel_fs::IterBlocksItem::Block { .. })) =>
+                        Poll::Ready(Some(blockwheel::IterBlocksItem::Block { .. })) =>
                             return Poll::Ready(Some(Err(IterBlocksItemError::UnexpectedBlockAfterShutdown {
                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
                             }))),

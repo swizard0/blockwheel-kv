@@ -19,7 +19,7 @@ use o1::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel_fs;
+use blockwheel_fs_ero as blockwheel;
 
 use crate::{
     kv,
@@ -49,12 +49,12 @@ use crate::{
     },
 };
 
-pub struct Args<J> where J: edeltraud::Job {
+pub struct Args<P> {
     pub ranges_merger: performer::SearchTreesMerger,
     pub wheels: wheels::Wheels,
     pub blocks_pool: BytesPool,
     pub block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
-    pub thread_pool: edeltraud::Edeltraud<J>,
+    pub thread_pool: P,
     pub tree_block_size: usize,
 }
 
@@ -75,16 +75,16 @@ pub enum Error {
     SerializeBlockStorage(storage::Error),
     ReadBlock {
         block_ref: BlockRef,
-        error: blockwheel_fs::ReadBlockError,
+        error: blockwheel::ReadBlockError,
     },
-    WriteBlock(blockwheel_fs::WriteBlockError),
+    WriteBlock(blockwheel::WriteBlockError),
     DeleteBlock {
         block_ref: BlockRef,
-        error: blockwheel_fs::DeleteBlockError,
+        error: blockwheel::DeleteBlockError,
     },
 }
 
-pub async fn run<J>(
+pub async fn run<P>(
     Args {
         ranges_merger,
         wheels,
@@ -92,10 +92,10 @@ pub async fn run<J>(
         block_entries_pool,
         thread_pool,
         tree_block_size,
-    }: Args<J>,
+    }: Args<P>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     inner_run(
         ranges_merger,
@@ -107,16 +107,16 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
     ).await
 }
 
-async fn inner_run<J>(
+async fn inner_run<P>(
     ranges_merger: performer::SearchTreesMerger,
     wheels: Wheels,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
-    thread_pool: edeltraud::Edeltraud<J>,
+    thread_pool: P,
     tree_block_size: usize,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     enum Task {
         Job(edeltraud::AsyncResult<Output>),
@@ -173,7 +173,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
                 },
                 Task::DeleteBlock { delete_block_task: DeleteBlockTask { mut wheel_ref, block_ref, }, } =>
                     match wheel_ref.blockwheel_pid.delete_block(block_ref.block_id.clone()).await {
-                        Ok(blockwheel_fs::Deleted) =>
+                        Ok(blockwheel::Deleted) =>
                             Ok(TaskOutput::BlockDeleted),
                         Err(error) =>
                             return Err(Error::DeleteBlock { block_ref, error, }),
@@ -260,7 +260,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
         job_state = match job_action {
             JobAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
+                let job_async_result = edeltraud::job_async(&thread_pool, job_args)
                     .map_err(Error::Edeltraud)?;
                 tasks.push(Task::Job(job_async_result).run());
                 JobState::InProgress
@@ -489,11 +489,10 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-
-impl edeltraud::Job for JobArgs {
+impl edeltraud::Computation for JobArgs {
     type Output = Output;
 
-    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+    fn run(self) -> Self::Output {
         let JobArgs { mut env, mut merge_kont, mut build_kont, } = self;
 
         loop {

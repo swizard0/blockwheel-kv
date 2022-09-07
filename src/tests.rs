@@ -38,7 +38,7 @@ use crate::{
     storage,
 };
 
-use ero_blockwheel_fs as blockwheel;
+use blockwheel_fs_ero as blockwheel;
 use crate as blockwheel_kv;
 
 #[test]
@@ -222,7 +222,7 @@ fn make_wheel_ref(
     let wheel_gen_server = blockwheel::GenServer::new();
     let blockwheel_pid = wheel_gen_server.pid();
     supervisor_pid.spawn_link_permanent(
-        wheel_gen_server.run(supervisor_pid.clone(), thread_pool.clone(), blocks_pool.clone(), params),
+        wheel_gen_server.run(supervisor_pid.clone(), params, blocks_pool.clone(), edeltraud::ThreadPoolMap::new(thread_pool.clone())),
     );
 
     wheels::WheelRef { blockwheel_filename, blockwheel_pid, }
@@ -671,10 +671,6 @@ async fn stress_loop(
     use std::sync::atomic::Ordering;
 
     log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(Ordering::SeqCst));
-    log::info!(" | JOB_BLOCK_PREPARE_WRITE: {}", blockwheel::job::JOB_BLOCK_PREPARE_WRITE.load(Ordering::SeqCst));
-    log::info!(" | JOB_BLOCK_PROCESS_READ: {}", blockwheel::job::JOB_BLOCK_PROCESS_READ.load(Ordering::SeqCst));
-    log::info!(" | JOB_BLOCK_PREPARE_DELETE: {}", blockwheel::job::JOB_BLOCK_PREPARE_DELETE.load(Ordering::SeqCst));
-    log::info!(" | JOB_PERFORMER_SKLAVE: {}", blockwheel::job::JOB_PERFORMER_SKLAVE.load(Ordering::SeqCst));
     log::info!("JOB_MANAGER_TASK_PERFORMER: {}", job::JOB_MANAGER_TASK_PERFORMER.load(Ordering::SeqCst));
     log::info!("JOB_MANAGER_TASK_FLUSH_BUTCHER: {}", job::JOB_MANAGER_TASK_FLUSH_BUTCHER.load(Ordering::SeqCst));
     log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(Ordering::SeqCst));

@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use ero_blockwheel_fs as blockwheel;
+use blockwheel_fs_ero as blockwheel;
 
 use crate::{
     core,
@@ -66,33 +66,31 @@ pub static JOB_MANAGER_TASK_MERGE_SEARCH_TREES: AtomicUsize = AtomicUsize::new(0
 pub static JOB_MANAGER_TASK_DEMOLISH_SEARCH_TREE: AtomicUsize = AtomicUsize::new(0);
 
 impl edeltraud::Job for Job {
-    type Output = ();
-
-    fn run<P>(self, thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+    fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
         match self {
             Job::BlockwheelFs(job) => {
                 JOB_BLOCKWHEEL_FS.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
             Job::ManagerTaskPerformer(job) => {
                 JOB_MANAGER_TASK_PERFORMER.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
             Job::ManagerTaskFlushButcher(job) => {
                 JOB_MANAGER_TASK_FLUSH_BUTCHER.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
             Job::ManagerTaskLookupRangeMerge(job) => {
                 JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
             Job::ManagerTaskMergeSearchTrees(job) => {
                 JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
             Job::ManagerTaskDemolishSearchTree(job) => {
                 JOB_MANAGER_TASK_DEMOLISH_SEARCH_TREE.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::EdeltraudJobMap::new(thread_pool));
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
             },
         }
     }

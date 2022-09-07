@@ -50,7 +50,7 @@ pub fn make_memcache<'a, I>(items: I) -> Arc<MemCache> where I: IntoIterator<Ite
 }
 
 pub fn make_kinda_tree() -> (BlockRef, HashMap<BlockRef, Bytes>) {
-    let mut global_block_id = ero_blockwheel_fs::block::Id::init();
+    let mut global_block_id = blockwheel_fs_ero::block::Id::init();
 
     let (block_a_ref, bytes_a) = make_kinda_block(
         storage::NodeType::Leaf,
@@ -87,7 +87,7 @@ pub fn make_kinda_tree() -> (BlockRef, HashMap<BlockRef, Bytes>) {
 
 pub fn make_kinda_block(
     node_type: storage::NodeType,
-    global_block_id: &mut ero_blockwheel_fs::block::Id,
+    global_block_id: &mut blockwheel_fs_ero::block::Id,
     items: Vec<(Option<BlockRef>, &str, &str)>,
 )
     -> (BlockRef, Bytes)

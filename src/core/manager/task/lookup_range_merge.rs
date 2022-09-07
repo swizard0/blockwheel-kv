@@ -44,11 +44,11 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-pub struct Args<J> where J: edeltraud::Job {
+pub struct Args<P> {
     pub ranges_merger: performer::LookupRangesMerger,
     pub lookup_context: RequestLookupKind,
     pub wheels: wheels::Wheels,
-    pub thread_pool: edeltraud::Edeltraud<J>,
+    pub thread_pool: P,
     pub iter_send_buffer: usize,
 }
 
@@ -64,21 +64,21 @@ pub enum Error {
         blockwheel_filename: wheels::WheelFilename,
     },
     ValueNotFoundFor { key: kv::Key, },
-    ReadBlock(ero_blockwheel_fs::ReadBlockError),
+    ReadBlock(blockwheel_fs_ero::ReadBlockError),
     ValueDeserialize(storage::Error),
 }
 
-pub async fn run<J>(
+pub async fn run<P>(
     Args {
         ranges_merger,
         lookup_context,
         wheels,
         thread_pool,
         iter_send_buffer,
-    }: Args<J>,
+    }: Args<P>,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     inner_run(
         ranges_merger,
@@ -89,15 +89,15 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
     ).await
 }
 
-async fn inner_run<J>(
+async fn inner_run<P>(
     ranges_merger: performer::LookupRangesMerger,
     lookup_context: RequestLookupKind,
     wheels: Wheels,
-    thread_pool: edeltraud::Edeltraud<J>,
+    thread_pool: P,
     iter_send_buffer: usize,
 )
     -> Result<Done, Error>
-where J: edeltraud::Job<Output = ()> + From<job::Job>,
+where P: edeltraud::ThreadPool<job::Job>,
 {
     enum Task {
         Job(edeltraud::AsyncResult<Output>),
@@ -147,7 +147,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
                     let block_bytes = match wheel_ref.blockwheel_pid.read_block(block_ref.block_id.clone()).await {
                         Ok(block_bytes) =>
                             block_bytes,
-                        Err(ero_blockwheel_fs::ReadBlockError::NotFound) =>
+                        Err(blockwheel_fs_ero::ReadBlockError::NotFound) =>
                             return Err(Error::ValueNotFoundFor { key, }),
                         Err(error) =>
                             return Err(Error::ReadBlock(error)),
@@ -304,7 +304,7 @@ where J: edeltraud::Job<Output = ()> + From<job::Job>,
         merger_state = match merger_action {
             MergerAction::Run(mut job_args) => {
                 job_args.env.incoming.transfill_from(&mut incoming);
-                let job_async_result = edeltraud::job_async(&edeltraud::EdeltraudJobMap::new(&thread_pool), job_args)
+                let job_async_result = edeltraud::job_async(&thread_pool, job_args)
                     .map_err(Error::Edeltraud)?;
                 tasks.push(Task::Job(job_async_result).run());
                 MergerState::InProgress
@@ -502,10 +502,10 @@ pub enum JobDone {
 
 pub type Output = Result<JobDone, Error>;
 
-impl edeltraud::Job for JobArgs {
+impl edeltraud::Computation for JobArgs {
     type Output = Output;
 
-    fn run<P>(self, _thread_pool: &P) -> Self::Output where P: edeltraud::ThreadPool<Self> {
+    fn run(self) -> Self::Output {
         let JobArgs { mut env, mut kont, } = self;
 
         loop {

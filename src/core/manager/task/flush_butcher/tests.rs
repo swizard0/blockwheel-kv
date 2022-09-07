@@ -135,7 +135,7 @@ fn basic_make_wheels_pid() -> Wheels {
         ],
     ]);
 
-    let mut global_block_id = ero_blockwheel_fs::block::Id::init();
+    let mut global_block_id = blockwheel_fs_ero::block::Id::init();
 
     let write_fn = move |block_bytes| {
         let items = deserialize_block_entries(&block_bytes);
@@ -178,7 +178,7 @@ fn external_value_make_wheels_pid() -> Wheels {
         ("key 1".to_string(), 1u64),
     );
 
-    let mut global_block_id = ero_blockwheel_fs::block::Id::init();
+    let mut global_block_id = blockwheel_fs_ero::block::Id::init();
 
     let write_fn = move |block_bytes| {
         match sample_value.take() {
