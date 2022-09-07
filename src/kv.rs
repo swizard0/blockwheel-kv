@@ -1,8 +1,14 @@
-use std::borrow::Borrow;
+use std::{
+    borrow::{
+        Borrow,
+    },
+};
 
-use alloc_pool::bytes::{
-    Bytes,
-    BytesMut,
+use alloc_pool::{
+    bytes::{
+        Bytes,
+        BytesMut,
+    },
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

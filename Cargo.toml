@@ -1,26 +1,23 @@
 [package]
-name = "ero-blockwheel-kv"
-version = "0.24.0"
+name = "blockwheel-kv"
+version = "0.25.0"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
-description = "Key/value persistent store based on `ero-blockwheel` framework."
+description = "Key/value persistent store based on `blockwheel-fs` framework."
 edition = "2021"
 
 [dependencies]
-ero = { git = "https://github.com/swizard0/ero.git" }
-blockwheel-fs-ero = { git = "https://github.com/swizard0/blockwheel-fs-ero.git" }
+o1 = { git = "https://github.com/swizard0/o1.git" }
+bntree = { git = "https://github.com/swizard0/bntree" }
 alloc-pool = { git = "https://github.com/swizard0/alloc-pool.git" }
 edeltraud = { git = "https://github.com/swizard0/edeltraud.git" }
-bntree = { git = "https://github.com/swizard0/bntree" }
-o1 = { git = "https://github.com/swizard0/o1.git" }
+arbeitssklave = { git = "https://github.com/swizard0/arbeitssklave.git" }
+blockwheel-fs = { git = "https://github.com/swizard0/blockwheel-fs.git" }
 
 log = "^0.4"
 rand = "^0.8"
 serde = "^1.0"
-futures = "^0.3"
 bincode = "^1.3"
 serde_derive = "^1.0"
-
-tokio = { version = "^1", features = ["full"] }
 
 [dev-dependencies]
 env_logger = "^0.9"
