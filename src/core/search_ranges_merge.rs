@@ -20,11 +20,13 @@ use alloc_pool::{
 use crate::{
     kv,
     storage,
+    wheels::{
+        BlockRef,
+    },
     core::{
         merger,
         search_tree_walker,
         MemCache,
-        BlockRef,
         SearchRangeBounds,
     },
 };

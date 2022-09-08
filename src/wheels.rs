@@ -17,22 +17,6 @@ use std::{
     },
 };
 
-use futures::{
-    stream::{
-        FuturesUnordered,
-    },
-    channel::{
-        mpsc,
-    },
-    task::{
-        Context,
-        Poll,
-    },
-    Stream,
-    Future,
-    StreamExt,
-};
-
 use rand::{
     Rng,
 };
@@ -43,8 +27,6 @@ use alloc_pool::{
         BytesPool,
     },
 };
-
-use blockwheel_fs_ero as blockwheel;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WheelFilename {
@@ -100,13 +82,13 @@ impl AsRef<[u8]> for WheelFilename {
 #[derive(Clone)]
 pub struct WheelRef {
     pub blockwheel_filename: WheelFilename,
-    pub blockwheel_pid: blockwheel::Pid,
+    // pub blockwheel_pid: blockwheel::Pid,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BlockRef {
     pub blockwheel_filename: WheelFilename,
-    pub block_id: blockwheel::block::Id,
+    pub block_id: blockwheel_fs::block::Id,
 }
 
 #[derive(Clone)]
@@ -183,7 +165,7 @@ pub enum IterBlocksItem {
 pub enum IterBlocksItemError {
     WheelIterBlocks {
         blockwheel_filename: WheelFilename,
-        error: blockwheel::IterBlocksError,
+        error: arbeitssklave::Error,
     },
     WheelIterBlocksRxDropped {
         blockwheel_filename: WheelFilename,
@@ -209,162 +191,162 @@ impl Wheels {
             .map(Clone::clone)
     }
 
-    pub async fn flush(&self) -> Result<Flushed, FlushError> {
-        let mut flush_tasks = FuturesUnordered::new();
-        for WheelRef { blockwheel_pid, blockwheel_filename, } in &self.inner.wheels {
-            let mut blockwheel_pid = blockwheel_pid.clone();
-            flush_tasks.push(async move {
-                let status = blockwheel_pid.flush().await;
-                (blockwheel_filename, status)
-            });
-        }
-        while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
-            match flush_status {
-                Ok(blockwheel::Flushed) =>
-                    (),
-                Err(ero::NoProcError) =>
-                    return Err(FlushError::WheelGone { blockwheel_filename: blockwheel_filename.clone(), }),
-            }
-        }
-        Ok(Flushed)
-    }
+//     pub async fn flush(&self) -> Result<Flushed, FlushError> {
+//         let mut flush_tasks = FuturesUnordered::new();
+//         for WheelRef { blockwheel_pid, blockwheel_filename, } in &self.inner.wheels {
+//             let mut blockwheel_pid = blockwheel_pid.clone();
+//             flush_tasks.push(async move {
+//                 let status = blockwheel_pid.flush().await;
+//                 (blockwheel_filename, status)
+//             });
+//         }
+//         while let Some((blockwheel_filename, flush_status)) = flush_tasks.next().await {
+//             match flush_status {
+//                 Ok(blockwheel::Flushed) =>
+//                     (),
+//                 Err(ero::NoProcError) =>
+//                     return Err(FlushError::WheelGone { blockwheel_filename: blockwheel_filename.clone(), }),
+//             }
+//         }
+//         Ok(Flushed)
+//     }
 
-    pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>> + '_> {
-        make_iter_blocks(self.inner.wheels.iter().cloned())
-    }
+//     pub fn iter_blocks(&self) -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>> + '_> {
+//         make_iter_blocks(self.inner.wheels.iter().cloned())
+//     }
 }
 
-fn make_iter_blocks<I>(
-    wheels_refs: I
-)
-    -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>>
-where I: IntoIterator<Item = WheelRef>
-{
-    IterBlocks {
-        rxs: wheels_refs
-            .into_iter()
-            .map(|WheelRef { mut blockwheel_pid, blockwheel_filename, }| {
-                let blockwheel_filename_clone = blockwheel_filename.clone();
-                Rx {
-                    state: RxState::AwaitRx {
-                        rx_future: Box::pin(async move {
-                            let iter_blocks = blockwheel_pid.iter_blocks().await
-                                .map_err(|error| IterBlocksItemError::WheelIterBlocks {
-                                    blockwheel_filename: blockwheel_filename_clone,
-                                    error,
-                                })?;
-                            Ok(iter_blocks.blocks_rx)
-                        }),
-                    },
-                    blockwheel_filename,
-                }
-            })
-            .collect::<Box<[_]>>()
-            .into(),
-        committed: false,
-    }
-}
+// fn make_iter_blocks<I>(
+//     wheels_refs: I
+// )
+//     -> IterBlocks<impl Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>>
+// where I: IntoIterator<Item = WheelRef>
+// {
+//     IterBlocks {
+//         rxs: wheels_refs
+//             .into_iter()
+//             .map(|WheelRef { mut blockwheel_pid, blockwheel_filename, }| {
+//                 let blockwheel_filename_clone = blockwheel_filename.clone();
+//                 Rx {
+//                     state: RxState::AwaitRx {
+//                         rx_future: Box::pin(async move {
+//                             let iter_blocks = blockwheel_pid.iter_blocks().await
+//                                 .map_err(|error| IterBlocksItemError::WheelIterBlocks {
+//                                     blockwheel_filename: blockwheel_filename_clone,
+//                                     error,
+//                                 })?;
+//                             Ok(iter_blocks.blocks_rx)
+//                         }),
+//                     },
+//                     blockwheel_filename,
+//                 }
+//             })
+//             .collect::<Box<[_]>>()
+//             .into(),
+//         committed: false,
+//     }
+// }
 
-pub struct IterBlocks<F> {
-    rxs: Vec<Rx<F>>,
-    committed: bool,
-}
+// pub struct IterBlocks<F> {
+//     rxs: Vec<Rx<F>>,
+//     committed: bool,
+// }
 
-pub struct Rx<F> {
-    state: RxState<F>,
-    blockwheel_filename: WheelFilename,
-}
+// pub struct Rx<F> {
+//     state: RxState<F>,
+//     blockwheel_filename: WheelFilename,
+// }
 
-enum RxState<F> {
-    AwaitRx { rx_future: Pin<Box<F>>, },
-    Stream {
-        rx: mpsc::Receiver<blockwheel::IterBlocksItem>,
-        conn: RxConn,
-    },
-}
+// enum RxState<F> {
+//     AwaitRx { rx_future: Pin<Box<F>>, },
+//     Stream {
+//         rx: mpsc::Receiver<blockwheel::IterBlocksItem>,
+//         conn: RxConn,
+//     },
+// }
 
-enum RxConn {
-    Online,
-    Shutdown,
-}
+// enum RxConn {
+//     Online,
+//     Shutdown,
+// }
 
-impl<F> Stream for IterBlocks<F>
-where F: Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>
-{
-    type Item = Result<IterBlocksItem, IterBlocksItemError>;
+// impl<F> Stream for IterBlocks<F>
+// where F: Future<Output = Result<mpsc::Receiver<blockwheel::IterBlocksItem>, IterBlocksItemError>>
+// {
+//     type Item = Result<IterBlocksItem, IterBlocksItemError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+//     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+//         let this = self.get_mut();
 
-        let mut i = 0;
-        while i < this.rxs.len() {
-            match &mut this.rxs[i].state {
-                RxState::AwaitRx { rx_future, } => {
-                    let rx_future_pin = rx_future.as_mut();
-                    match rx_future_pin.poll(cx) {
-                        Poll::Ready(Ok(rx)) => {
-                            this.rxs[i].state = RxState::Stream { rx, conn: RxConn::Online, };
-                            continue;
-                        },
-                        Poll::Ready(Err(error)) =>
-                            return Poll::Ready(Some(Err(error))),
-                        Poll::Pending =>
-                            (),
-                    }
-                },
-                RxState::Stream { rx, conn: conn @ RxConn::Online, } => {
-                    let rx_pin = Pin::new(rx);
-                    match rx_pin.poll_next(cx) {
-                        Poll::Ready(None) =>
-                            return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped {
-                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
-                            }))),
-                        Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) => {
-                            *conn = RxConn::Shutdown;
-                            continue;
-                        },
-                        Poll::Ready(Some(blockwheel::IterBlocksItem::Block { block_id, block_bytes, })) => {
-                            let block_ref = BlockRef {
-                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
-                                block_id,
-                            };
-                            return Poll::Ready(Some(Ok(IterBlocksItem::Block { block_ref, block_bytes, })));
-                        },
-                        Poll::Pending =>
-                            (),
-                    }
-                },
-                RxState::Stream { rx, conn: RxConn::Shutdown, } => {
-                    let rx_pin = Pin::new(rx);
-                    match rx_pin.poll_next(cx) {
-                        Poll::Ready(None) => {
-                            this.rxs.swap_remove(i);
-                            continue;
-                        },
-                        Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) =>
-                            return Poll::Ready(Some(Err(IterBlocksItemError::DuplicateNoMoreBlocks {
-                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
-                            }))),
-                        Poll::Ready(Some(blockwheel::IterBlocksItem::Block { .. })) =>
-                            return Poll::Ready(Some(Err(IterBlocksItemError::UnexpectedBlockAfterShutdown {
-                                blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
-                            }))),
-                        Poll::Pending =>
-                            (),
-                    }
-                },
-            }
-            i += 1;
-        }
+//         let mut i = 0;
+//         while i < this.rxs.len() {
+//             match &mut this.rxs[i].state {
+//                 RxState::AwaitRx { rx_future, } => {
+//                     let rx_future_pin = rx_future.as_mut();
+//                     match rx_future_pin.poll(cx) {
+//                         Poll::Ready(Ok(rx)) => {
+//                             this.rxs[i].state = RxState::Stream { rx, conn: RxConn::Online, };
+//                             continue;
+//                         },
+//                         Poll::Ready(Err(error)) =>
+//                             return Poll::Ready(Some(Err(error))),
+//                         Poll::Pending =>
+//                             (),
+//                     }
+//                 },
+//                 RxState::Stream { rx, conn: conn @ RxConn::Online, } => {
+//                     let rx_pin = Pin::new(rx);
+//                     match rx_pin.poll_next(cx) {
+//                         Poll::Ready(None) =>
+//                             return Poll::Ready(Some(Err(IterBlocksItemError::WheelIterBlocksRxDropped {
+//                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+//                             }))),
+//                         Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) => {
+//                             *conn = RxConn::Shutdown;
+//                             continue;
+//                         },
+//                         Poll::Ready(Some(blockwheel::IterBlocksItem::Block { block_id, block_bytes, })) => {
+//                             let block_ref = BlockRef {
+//                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+//                                 block_id,
+//                             };
+//                             return Poll::Ready(Some(Ok(IterBlocksItem::Block { block_ref, block_bytes, })));
+//                         },
+//                         Poll::Pending =>
+//                             (),
+//                     }
+//                 },
+//                 RxState::Stream { rx, conn: RxConn::Shutdown, } => {
+//                     let rx_pin = Pin::new(rx);
+//                     match rx_pin.poll_next(cx) {
+//                         Poll::Ready(None) => {
+//                             this.rxs.swap_remove(i);
+//                             continue;
+//                         },
+//                         Poll::Ready(Some(blockwheel::IterBlocksItem::NoMoreBlocks)) =>
+//                             return Poll::Ready(Some(Err(IterBlocksItemError::DuplicateNoMoreBlocks {
+//                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+//                             }))),
+//                         Poll::Ready(Some(blockwheel::IterBlocksItem::Block { .. })) =>
+//                             return Poll::Ready(Some(Err(IterBlocksItemError::UnexpectedBlockAfterShutdown {
+//                                 blockwheel_filename: this.rxs[i].blockwheel_filename.clone(),
+//                             }))),
+//                         Poll::Pending =>
+//                             (),
+//                     }
+//                 },
+//             }
+//             i += 1;
+//         }
 
-        if this.rxs.is_empty() {
-            if this.committed {
-                Poll::Ready(None)
-            } else {
-                Poll::Ready(Some(Ok(IterBlocksItem::NoMoreBlocks)))
-            }
-        } else {
-            Poll::Pending
-        }
-    }
-}
+//         if this.rxs.is_empty() {
+//             if this.committed {
+//                 Poll::Ready(None)
+//             } else {
+//                 Poll::Ready(Some(Ok(IterBlocksItem::NoMoreBlocks)))
+//             }
+//         } else {
+//             Poll::Pending
+//         }
+//     }
+// }

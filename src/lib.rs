@@ -13,13 +13,18 @@ use alloc_pool::{
     },
 };
 
+use arbeitssklave::{
+    komm,
+};
+
 pub mod kv;
 // pub mod job;
-// pub mod wheels;
+pub mod wheels;
 pub mod version;
 
-// mod core;
-// mod storage;
+mod core;
+mod storage;
+// mod access_policy;
 
 // #[cfg(test)]
 // mod tests;
@@ -42,6 +47,50 @@ impl Default for Params {
             search_tree_values_inline_size_limit: 128,
             search_tree_bootstrap_search_trees_limit: 16,
         }
+    }
+}
+
+pub trait AccessPolicy: Sized + Send + 'static
+where Self::Order: From<komm::UmschlagAbbrechen<Self::Info>>,
+      Self::Order: From<komm::Umschlag<Info, Self::Info>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::FlushAll>>,
+      Self::Order: From<komm::Umschlag<Flushed, Self::FlushAll>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::Insert>>,
+      Self::Order: From<komm::Umschlag<Inserted, Self::Insert>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::Remove>>,
+      Self::Order: From<komm::Umschlag<Removed, Self::Remove>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::LookupRange>>,
+      Self::Order: From<komm::Umschlag<KeyValueStreamItem<Self>, Self::LookupRange>>,
+      Self::Order: Send + 'static,
+      Self::Info: Send + 'static,
+      Self::FlushAll: Send + 'static,
+      Self::Insert: Send + 'static,
+      Self::Remove: Send + 'static,
+      Self::LookupRange: Send + 'static,
+{
+    type Order;
+    type Info;
+    type FlushAll;
+    type Insert;
+    type Remove;
+    type LookupRange;
+}
+
+pub enum KeyValueStreamItem<A> where A: AccessPolicy {
+    KeyValue {
+        key_value_pair: kv::KeyValuePair<kv::Value>,
+        next: LookupRangeStream<A>,
+    },
+    NoMore,
+}
+
+pub struct LookupRangeStream<A> where A: AccessPolicy {
+    next: komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRef>,
+}
+
+impl<A> LookupRangeStream<A> where A: AccessPolicy {
+    pub fn next(self, rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>) -> Result<(), komm::Error> {
+        self.next.commit(core::performer_sklave::LookupRangeStreamNext { rueckkopplung, })
     }
 }
 
@@ -136,18 +185,18 @@ impl Default for Params {
 //     GenServer(ero::NoProcError),
 // }
 
-// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// pub struct Inserted {
-//     pub version: u64,
-// }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Inserted {
+    pub version: u64,
+}
 
-// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// pub struct Removed {
-//     pub version: u64,
-// }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Removed {
+    pub version: u64,
+}
 
-// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-// pub struct Flushed;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Flushed;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
