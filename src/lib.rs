@@ -18,7 +18,7 @@ use arbeitssklave::{
 };
 
 pub mod kv;
-// pub mod job;
+pub mod job;
 pub mod wheels;
 pub mod version;
 
@@ -33,7 +33,6 @@ mod storage;
 pub struct Params {
     pub butcher_block_size: usize,
     pub tree_block_size: usize,
-    pub iter_send_buffer: usize,
     pub search_tree_values_inline_size_limit: usize,
     pub search_tree_bootstrap_search_trees_limit: usize,
 }
@@ -43,7 +42,6 @@ impl Default for Params {
         Params {
             butcher_block_size: 128,
             tree_block_size: 32,
-            iter_send_buffer: 4,
             search_tree_values_inline_size_limit: 128,
             search_tree_bootstrap_search_trees_limit: 16,
         }
@@ -85,7 +83,7 @@ pub enum KeyValueStreamItem<A> where A: AccessPolicy {
 }
 
 pub struct LookupRangeStream<A> where A: AccessPolicy {
-    next: komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRef>,
+    next: komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRoute>,
 }
 
 impl<A> LookupRangeStream<A> where A: AccessPolicy {
@@ -94,8 +92,69 @@ impl<A> LookupRangeStream<A> where A: AccessPolicy {
     }
 }
 
-// pub struct GenServer {
-//     manager_gen_server: core::manager::GenServer,
+#[derive(Debug)]
+pub enum Error {
+    PerformerVersklaven(arbeitssklave::Error),
+}
+
+pub struct Freie<A> where A: AccessPolicy {
+    performer_sklave_freie: arbeitssklave::Freie<core::performer_sklave::Welt<A>, core::performer_sklave::Order<A>>,
+}
+
+impl<A> Freie<A> where A: AccessPolicy {
+    pub fn new() -> Self {
+        Self {
+            performer_sklave_freie: arbeitssklave::Freie::new(),
+        }
+    }
+
+    pub fn versklaven<P>(
+        self,
+        params: Params,
+        blocks_pool: BytesPool,
+        version_provider: version::Provider,
+        wheels: wheels::Wheels<A>,
+        thread_pool: &P,
+    )
+        -> Result<Meister<A>, Error>
+    where P: edeltraud::ThreadPool<job::Job<A>> + Clone + Send + 'static,
+    {
+        let welt = core::performer_sklave::Welt {
+            env: core::performer_sklave::Env {
+                params,
+                blocks_pool,
+                version_provider,
+                wheels,
+                incoming_orders: Vec::new(),
+                delayed_orders: Vec::new(),
+            },
+            kont: core::performer_sklave::Kont::Initialize,
+        };
+
+        let performer_sklave_meister = self
+            .performer_sklave_freie
+            .versklaven(welt, thread_pool)
+            .map_err(Error::PerformerVersklaven)?;
+
+        Ok(Meister {
+            performer_sklave_meister,
+        })
+    }
+}
+
+pub struct Meister<A> where A: AccessPolicy {
+    performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<A>, core::performer_sklave::Order<A>>,
+}
+
+impl<A> Clone for Meister<A> where A: AccessPolicy {
+    fn clone(&self) -> Self {
+        Meister {
+            performer_sklave_meister: self.performer_sklave_meister.clone(),
+        }
+    }
+}
+
+
 //     manager_pid: core::manager::Pid,
 // }
 
