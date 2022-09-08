@@ -16,6 +16,10 @@ use alloc_pool::{
     },
 };
 
+use arbeitssklave::{
+    komm,
+};
+
 use crate::{
     kv,
     job,
@@ -90,7 +94,8 @@ fn stress() {
 
     fs::remove_file(&wheel_filename_a).ok();
     fs::remove_file(&wheel_filename_b).ok();
-    // @@ runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+    stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)
+        .unwrap();
 
     log::info!("stage #1: run over an existing base");
 
@@ -147,7 +152,8 @@ struct DataIndex {
 #[derive(Debug)]
 pub enum Error {
     ThreadPool(edeltraud::BuildError),
-    UnexpectedLookupRangeRxFinish,
+    WheelRefMeister(blockwheel_fs::Error),
+    BlockwheelKvMeister(blockwheel_kv::Error),
     ExpectedValueNotFound {
         key: kv::Key,
         value_cell: kv::ValueCell<kv::Value>,
@@ -172,62 +178,190 @@ pub enum Error {
     BackwardIterKeyNotFound,
 }
 
-// fn make_wheel_ref(
-//     params: blockwheel::Params,
-//     blocks_pool: &BytesPool,
-//     supervisor_pid: &mut SupervisorPid,
-//     thread_pool: &edeltraud::Edeltraud<job::Job>,
-// )
-//     -> wheels::WheelRef
-// {
-//     let blockwheel_filename = match &params.interpreter {
-//         blockwheel::InterpreterParams::FixedFile(interpreter_params) =>
-//             wheels::WheelFilename::from_path(&interpreter_params.wheel_filename, blocks_pool),
-//         blockwheel::InterpreterParams::Ram(..) => {
-//             let mut rng = rand::thread_rng();
-//             let filename: String = (0 .. 16).map(|_| rng.gen::<char>()).collect();
-//             wheels::WheelFilename::from_path(&filename, blocks_pool)
-//         },
-//     };
+fn make_wheel_ref(
+    params: blockwheel_fs::Params,
+    blocks_pool: &BytesPool,
+    thread_pool: &edeltraud::Edeltraud<Job>,
+)
+    -> Result<wheels::WheelRef<AccessPolicy>, Error>
+{
+    let blockwheel_filename = match &params.interpreter {
+        blockwheel_fs::InterpreterParams::FixedFile(interpreter_params) =>
+            wheels::WheelFilename::from_path(&interpreter_params.wheel_filename, blocks_pool),
+        blockwheel_fs::InterpreterParams::Ram(..) => {
+            let mut rng = rand::thread_rng();
+            let filename: String = (0 .. 16).map(|_| rng.gen::<char>()).collect();
+            wheels::WheelFilename::from_path(&filename, blocks_pool)
+        },
+    };
 
-//     let wheel_gen_server = blockwheel::GenServer::new();
-//     let blockwheel_pid = wheel_gen_server.pid();
-//     supervisor_pid.spawn_link_permanent(
-//         wheel_gen_server.run(supervisor_pid.clone(), params, blocks_pool.clone(), edeltraud::ThreadPoolMap::new(thread_pool.clone())),
-//     );
+    let freie: blockwheel_fs::Freie<wheels::WheelAccessPolicy<AccessPolicy>> =
+        blockwheel_fs::Freie::new();
+    let meister = freie
+        .versklaven(
+            params,
+            blocks_pool.clone(),
+            &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
+        )
+        .map_err(Error::WheelRefMeister)?;
 
-//     wheels::WheelRef { blockwheel_filename, blockwheel_pid, }
-// }
+    Ok(wheels::WheelRef { blockwheel_filename, meister, })
+}
 
-// async fn stress_loop(
-//     params: Params,
-//     version_provider: &version::Provider,
-//     data: &mut DataIndex,
-//     counter: &mut Counter,
-//     limits: &Limits,
-// )
-//     -> Result<(), Error>
-// {
-//     let supervisor_gen_server = SupervisorGenServer::new();
-//     let mut supervisor_pid = supervisor_gen_server.pid();
-//     tokio::spawn(supervisor_gen_server.run());
+struct AccessPolicy;
 
-//     let blocks_pool = BytesPool::new();
-//     let thread_pool: edeltraud::Edeltraud<job::Job> = edeltraud::Builder::new()
-//         .build()
-//         .map_err(Error::ThreadPool)?;
+impl blockwheel_kv::AccessPolicy for AccessPolicy {
+    type Order = ReplyOrder;
+    type Info = ReplyInfo;
+    type Insert = ReplyInsert;
+    type LookupRange = ReplyLookupRange;
+    type Remove = ReplyRemove;
+    type Flush = ReplyFlush;
+}
 
-//     let wheel_ref_a = make_wheel_ref(params.wheel_a, &blocks_pool, &mut supervisor_pid, &thread_pool);
-//     let wheel_ref_b = make_wheel_ref(params.wheel_b, &blocks_pool, &mut supervisor_pid, &thread_pool);
+enum ReplyOrder {
+    InfoCancel(komm::UmschlagAbbrechen<ReplyInfo>),
+    Info(komm::Umschlag<blockwheel_kv::Info, ReplyInfo>),
+    InsertCancel(komm::UmschlagAbbrechen<ReplyInsert>),
+    Insert(komm::Umschlag<blockwheel_kv::Inserted, ReplyInsert>),
+    LookupRangeCancel(komm::UmschlagAbbrechen<ReplyLookupRange>),
+    LookupRange(komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>),
+    RemoveCancel(komm::UmschlagAbbrechen<ReplyRemove>),
+    Remove(komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>),
+    FlushCancel(komm::UmschlagAbbrechen<ReplyFlush>),
+    Flush(komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>),
+}
+
+struct ReplyInfo;
+struct ReplyInsert;
+struct ReplyLookupRange;
+struct ReplyRemove;
+struct ReplyFlush;
+
+impl From<komm::UmschlagAbbrechen<ReplyInfo>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<ReplyInfo>) -> ReplyOrder {
+        ReplyOrder::InfoCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<blockwheel_kv::Info, ReplyInfo>> for ReplyOrder {
+    fn from(v: komm::Umschlag<blockwheel_kv::Info, ReplyInfo>) -> ReplyOrder {
+        ReplyOrder::Info(v)
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<ReplyInsert>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<ReplyInsert>) -> ReplyOrder {
+        ReplyOrder::InsertCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<blockwheel_kv::Inserted, ReplyInsert>> for ReplyOrder {
+    fn from(v: komm::Umschlag<blockwheel_kv::Inserted, ReplyInsert>) -> ReplyOrder {
+        ReplyOrder::Insert(v)
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<ReplyLookupRange>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<ReplyLookupRange>) -> ReplyOrder {
+        ReplyOrder::LookupRangeCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>> for ReplyOrder {
+    fn from(v: komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>) -> ReplyOrder {
+        ReplyOrder::LookupRange(v)
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<ReplyRemove>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<ReplyRemove>) -> ReplyOrder {
+        ReplyOrder::RemoveCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>> for ReplyOrder {
+    fn from(v: komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>) -> ReplyOrder {
+        ReplyOrder::Remove(v)
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<ReplyFlush>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<ReplyFlush>) -> ReplyOrder {
+        ReplyOrder::FlushCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>> for ReplyOrder {
+    fn from(v: komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>) -> ReplyOrder {
+        ReplyOrder::Flush(v)
+    }
+}
+
+enum Job {
+    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>),
+    BlockwheelKv(blockwheel_kv::job::Job<AccessPolicy>),
+}
+
+impl From<blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>) -> Job {
+        Job::BlockwheelFs(job)
+    }
+}
+
+impl From<blockwheel_kv::job::Job<AccessPolicy>> for Job {
+    fn from(job: blockwheel_kv::job::Job<AccessPolicy>) -> Job {
+        Job::BlockwheelKv(job)
+    }
+}
+
+impl edeltraud::Job for Job {
+    fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
+        match self {
+            Job::BlockwheelFs(job) =>
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
+            Job::BlockwheelKv(job) =>
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
+        }
+    }
+}
+
+fn stress_loop(
+    params: Params,
+    version_provider: &version::Provider,
+    data: &mut DataIndex,
+    counter: &mut Counter,
+    limits: &Limits,
+)
+    -> Result<(), Error>
+{
+    let blocks_pool = BytesPool::new();
+    let thread_pool: edeltraud::Edeltraud<Job> = edeltraud::Builder::new()
+        .build()
+        .map_err(Error::ThreadPool)?;
+
+    let wheel_ref_a = make_wheel_ref(params.wheel_a, &blocks_pool, &thread_pool)?;
+    let wheel_ref_b = make_wheel_ref(params.wheel_b, &blocks_pool, &thread_pool)?;
 
 //     let mut wheel_a_pid = wheel_ref_a.blockwheel_pid.clone();
 //     let mut wheel_b_pid = wheel_ref_b.blockwheel_pid.clone();
 
-//     let wheels = wheels::WheelsBuilder::new()
-//         .add_wheel_ref(wheel_ref_a)
-//         .add_wheel_ref(wheel_ref_b)
-//         .build()
-//         .map_err(Error::WheelsBuilder)?;
+    let wheels = wheels::WheelsBuilder::new()
+        .add_wheel_ref(wheel_ref_a)
+        .add_wheel_ref(wheel_ref_b)
+        .build()
+        .map_err(Error::WheelsBuilder)?;
+
+    let freie: blockwheel_kv::Freie<AccessPolicy> = blockwheel_kv::Freie::new();
+    let meister = freie
+        .versklaven(
+            params.kv,
+            blocks_pool.clone(),
+            version_provider.clone(),
+            wheels.clone(),
+            &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
+        )
+        .map_err(Error::BlockwheelKvMeister)?;
 
 //     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
 //     let mut wheel_kv_pid = wheel_kv_gen_server.pid();
@@ -647,5 +781,5 @@ pub enum Error {
 //     log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(Ordering::SeqCst));
 //     log::info!("JOB_MANAGER_TASK_MERGE_SEARCH_TREES: {}", job::JOB_MANAGER_TASK_MERGE_SEARCH_TREES.load(Ordering::SeqCst));
 
-//     Ok::<_, Error>(())
-// }
+    Ok::<_, Error>(())
+}
