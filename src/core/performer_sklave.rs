@@ -1,4 +1,12 @@
+use std::{
+    mem,
+    marker::{
+        PhantomData,
+    },
+};
+
 use alloc_pool::{
+    pool,
     bytes::{
         Bytes,
         BytesPool,
@@ -19,7 +27,11 @@ use crate::{
     wheels,
     version,
     core::{
+        context,
+        performer,
+        search_tree_walker,
         SearchRangeBounds,
+        SearchTreeBuilderBlockEntry,
     },
     Params,
     AccessPolicy,
@@ -58,8 +70,17 @@ pub enum OrderWheel {
 }
 
 pub struct Welt<A> where A: AccessPolicy {
-    pub env: Env<A>,
-    pub kont: Kont,
+    env: Env<A>,
+    state: WeltState<A>,
+}
+
+impl<A> Welt<A> where A: AccessPolicy {
+    pub fn new(env: Env<A>) -> Self {
+        Welt {
+            env,
+            state: WeltState::Init,
+        }
+    }
 }
 
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order<A>>;
@@ -69,12 +90,15 @@ pub struct Env<A> where A: AccessPolicy {
     pub blocks_pool: BytesPool,
     pub version_provider: version::Provider,
     pub wheels: wheels::Wheels<A>,
+    pub sendegeraet: komm::Sendegeraet<Order<A>>,
     pub incoming_orders: Vec<Order<A>>,
     pub delayed_orders: Vec<Order<A>>,
 }
 
-pub enum Kont {
-    Initialize,
+enum WeltState<A> where A: AccessPolicy {
+    Init,
+    Loading(WeltStateLoading),
+    Running(WeltStateRunning<A>),
 }
 
 pub struct LookupRangeRoute {
@@ -117,9 +141,186 @@ pub struct WheelRouteDeleteBlock;
 pub struct WheelRouteIterBlocksInit;
 pub struct WheelRouteIterBlocksNext;
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P) where A: AccessPolicy, P: edeltraud::ThreadPool<job::Job<A>> {
+#[derive(Debug)]
+pub enum Error {
+    WheelIterBlocksInit {
+        wheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
+}
 
-    todo!()
+pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
+where A: AccessPolicy,
+      P: edeltraud::ThreadPool<job::Job<A>>,
+{
+    if let Err(error) = job(sklave_job, thread_pool) {
+        log::error!("terminated with an error: {error:?}");
+    }
+}
+
+fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
+where A: AccessPolicy,
+      P: edeltraud::ThreadPool<job::Job<A>>,
+{
+    loop {
+        let state = mem::replace(&mut sklave_job.sklavenwelt_mut().state, WeltState::Init);
+        match state {
+            WeltState::Init => {
+                sklave_job.sklavenwelt_mut().state =
+                    WeltState::Loading(WeltStateLoading {
+                        mode: WeltStateLoadingMode::NeedIterBlocksRequest,
+                        forest: performer::SearchForest::new(),
+                        blocks_total: 0,
+                    });
+            },
+            WeltState::Loading(loading) =>
+                match job_loading(loading, sklave_job, thread_pool)? {
+                    LoadOutcome::Rasten { loading, } =>
+                        return Ok(()),
+                    LoadOutcome::Done { sklave_job: next_sklave_job, } => {
+                        sklave_job = next_sklave_job;
+                    },
+                },
+            WeltState::Running(running) =>
+                match job_running(running, sklave_job, thread_pool)? {
+                    RunOutcome::Rasten { running, } =>
+                        return Ok(()),
+                },
+        }
+    }
+}
+
+enum LoadOutcome<A> where A: AccessPolicy {
+    Rasten {
+        loading: WeltStateLoading,
+    },
+    Done {
+        sklave_job: SklaveJob<A>,
+    },
+}
+
+struct WeltStateLoading {
+    mode: WeltStateLoadingMode,
+    forest: performer::SearchForest,
+    blocks_total: usize,
+}
+
+enum WeltStateLoadingMode {
+    NeedIterBlocksRequest,
+    Loading { wheels_left: usize, },
+}
+
+fn job_loading<A, P>(
+    mut welt_state_loading: WeltStateLoading,
+    mut sklave_job: SklaveJob<A>,
+    thread_pool: &P,
+)
+    -> Result<LoadOutcome<A>, Error>
+where A: AccessPolicy,
+      P: edeltraud::ThreadPool<job::Job<A>>,
+{
+    loop {
+        match mem::replace(&mut welt_state_loading.mode, WeltStateLoadingMode::NeedIterBlocksRequest) {
+
+            WeltStateLoadingMode::NeedIterBlocksRequest => {
+                let env = &sklave_job.sklavenwelt().env;
+                let wheels_iter = env.wheels.iter();
+                let mut wheels_left = 0;
+                for wheel_ref in wheels_iter {
+                    wheel_ref.meister
+                        .iter_blocks_init(
+                            env.sendegeraet.rueckkopplung(WheelRouteIterBlocksInit),
+                            &edeltraud::ThreadPoolMap::new(thread_pool),
+                        )
+                        .map_err(|error| Error::WheelIterBlocksInit {
+                            wheel_filename: wheel_ref.blockwheel_filename.clone(),
+                            error,
+                        })?;
+                    wheels_left += 1;
+                }
+                welt_state_loading.mode =
+                    WeltStateLoadingMode::Loading { wheels_left, };
+            },
+
+            WeltStateLoadingMode::Loading { wheels_left, } if wheels_left == 0 => {
+                log::info!(
+                    "loading done, {} search_trees restored within {} blocks",
+                    welt_state_loading.forest.len(),
+                    welt_state_loading.blocks_total,
+                );
+
+                let env = &sklave_job.sklavenwelt().env;
+                let pools = Pools::new();
+                let performer = performer::Performer::new(
+                    env.params.clone(),
+                    env.version_provider.clone(),
+                    pools.kv_pool.clone(),
+                    pools.sources_pool.clone(),
+                    pools.block_entry_steps_pool.clone(),
+                    welt_state_loading.forest,
+                );
+
+                sklave_job.sklavenwelt_mut().state =
+                    WeltState::Running(WeltStateRunning {
+                        kont: Kont::Initialize { performer, },
+                    });
+                return Ok(LoadOutcome::Done { sklave_job, });
+            },
+
+            WeltStateLoadingMode::Loading { mut wheels_left, } => {
+
+                // sklave_job.sklavenwelt_mut().state = WeltState::Loading(loading);
+
+                todo!();
+            },
+
+        }
+    }
+}
+
+struct Pools {
+    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
+    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
+    sources_pool: pool::Pool<Vec<performer::LookupRangeSource>>,
+    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
+}
+
+impl Pools {
+    fn new() -> Self {
+        Self {
+            kv_pool: pool::Pool::new(),
+            block_entries_pool: pool::Pool::new(),
+            sources_pool: pool::Pool::new(),
+            block_entry_steps_pool: pool::Pool::new(),
+        }
+    }
+}
+
+enum RunOutcome<A> where A: AccessPolicy {
+    Rasten { running: WeltStateRunning<A>, },
+}
+
+struct WeltStateRunning<A> where A: AccessPolicy {
+    kont: Kont<A>,
+}
+
+enum Kont<A> where A: AccessPolicy {
+    Initialize { performer: performer::Performer<Context<A>>, },
+}
+
+fn job_running<A, P>(
+    mut welt_state_running: WeltStateRunning<A>,
+    mut sklave_job: SklaveJob<A>,
+    thread_pool: &P,
+)
+    -> Result<RunOutcome<A>, Error>
+where A: AccessPolicy,
+      P: edeltraud::ThreadPool<job::Job<A>>,
+{
+
+    // sklave_job.sklavenwelt_mut().state = WeltState::Running(running);
+
+    todo!();
 }
 
 impl<A> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<A> where A: AccessPolicy {
@@ -218,4 +419,14 @@ impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksN
     fn from(v: komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>) -> Order<A> {
         Order::Wheel(OrderWheel::IterBlocksNext(v))
     }
+}
+
+struct Context<A>(PhantomData<A>);
+
+impl<A> context::Context for Context<A> where A: AccessPolicy {
+    type Info = A::Info;
+    type Insert = A::Insert;
+    type Lookup = A::LookupRange;
+    type Remove = A::Remove;
+    type Flush = A::Flush;
 }

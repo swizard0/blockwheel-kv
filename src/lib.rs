@@ -25,8 +25,8 @@ pub mod version;
 mod core;
 mod storage;
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Debug)]
 pub struct Params {
@@ -94,6 +94,7 @@ impl<A> LookupRangeStream<A> where A: AccessPolicy {
 #[derive(Debug)]
 pub enum Error {
     PerformerVersklaven(arbeitssklave::Error),
+    PerformerSendegeraet(komm::Error),
 }
 
 pub struct Freie<A> where A: AccessPolicy {
@@ -118,17 +119,24 @@ impl<A> Freie<A> where A: AccessPolicy {
         -> Result<Meister<A>, Error>
     where P: edeltraud::ThreadPool<job::Job<A>> + Clone + Send + 'static,
     {
-        let welt = core::performer_sklave::Welt {
-            env: core::performer_sklave::Env {
+        let performer_sklave_sendegeraet =
+            komm::Sendegeraet::starten(
+                &self.performer_sklave_freie,
+                thread_pool.clone(),
+            )
+            .map_err(Error::PerformerSendegeraet)?;
+
+        let welt = core::performer_sklave::Welt::new(
+            core::performer_sklave::Env {
                 params,
                 blocks_pool,
                 version_provider,
                 wheels,
+                sendegeraet: performer_sklave_sendegeraet,
                 incoming_orders: Vec::new(),
                 delayed_orders: Vec::new(),
-            },
-            kont: core::performer_sklave::Kont::Initialize,
-        };
+            }
+        );
 
         let performer_sklave_meister = self
             .performer_sklave_freie

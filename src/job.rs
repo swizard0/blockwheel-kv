@@ -9,16 +9,24 @@ use std::{
 
 use crate::{
     core,
+    wheels,
     AccessPolicy,
 };
 
 pub enum Job<A> where A: AccessPolicy {
+    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>),
     PerformerSklave(core::performer_sklave::SklaveJob<A>),
     // ManagerTaskPerformer(edeltraud::AsyncJob<core::manager::task::performer::Job>),
     // ManagerTaskFlushButcher(edeltraud::AsyncJob<core::manager::task::flush_butcher::JobArgs>),
     // ManagerTaskLookupRangeMerge(edeltraud::AsyncJob<core::manager::task::lookup_range_merge::JobArgs>),
     // ManagerTaskMergeSearchTrees(edeltraud::AsyncJob<core::manager::task::merge_search_trees::JobArgs>),
     // ManagerTaskDemolishSearchTree(edeltraud::AsyncJob<core::manager::task::demolish_search_tree::JobArgs>),
+}
+
+impl<A> From<blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>> for Job<A> where A: AccessPolicy {
+    fn from(job: blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>) -> Job<A> {
+        Job::BlockwheelFs(job)
+    }
 }
 
 impl<A> From<core::performer_sklave::SklaveJob<A>> for Job<A> where A: AccessPolicy {
@@ -63,6 +71,7 @@ impl<A> From<core::performer_sklave::SklaveJob<A>> for Job<A> where A: AccessPol
 //     }
 // }
 
+pub static JOB_BLOCKWHEEL_FS: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_PERFORMER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 // pub static JOB_MANAGER_TASK_PERFORMER: AtomicUsize = AtomicUsize::new(0);
 // pub static JOB_MANAGER_TASK_FLUSH_BUTCHER: AtomicUsize = AtomicUsize::new(0);
@@ -73,6 +82,10 @@ pub static JOB_PERFORMER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 impl<A> edeltraud::Job for Job<A> where A: AccessPolicy {
     fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
         match self {
+            Job::BlockwheelFs(job) => {
+                JOB_BLOCKWHEEL_FS.fetch_add(1, Ordering::Relaxed);
+                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
+            },
             Job::PerformerSklave(sklave_job) => {
                 JOB_PERFORMER_SKLAVE.fetch_add(1, Ordering::Relaxed);
                 core::performer_sklave::run_job(sklave_job, thread_pool);

@@ -37,29 +37,11 @@ use crate::{
         SearchRangeBounds,
     },
     Info,
+    Params,
 };
 
 #[cfg(test)]
 mod tests;
-
-#[derive(Clone, Debug)]
-pub struct Params {
-    pub butcher_block_size: usize,
-    pub tree_block_size: usize,
-    pub values_inline_size_limit: usize,
-    pub bootstrap_search_trees_limit: usize,
-}
-
-impl Default for Params {
-    fn default() -> Params {
-        Params {
-            butcher_block_size: 128,
-            tree_block_size: 32,
-            values_inline_size_limit: 128,
-            bootstrap_search_trees_limit: 16,
-        }
-    }
-}
 
 pub struct Performer<C> where C: Context {
     inner: Inner<C>,
@@ -546,7 +528,7 @@ impl<C> Inner<C> where C: Context {
 
     fn poll(mut self) -> Kont<C> {
         // force delayed replies if possible
-        if !self.delayed_replies.is_empty() && self.forest.butcher_flushes_count < self.params.bootstrap_search_trees_limit {
+        if !self.delayed_replies.is_empty() && self.forest.butcher_flushes_count < self.params.search_tree_bootstrap_search_trees_limit {
             self.pending_events.extend(self.delayed_replies.drain(..));
         }
         // time to flush butcher

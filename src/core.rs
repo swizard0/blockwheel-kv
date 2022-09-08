@@ -28,18 +28,18 @@ use crate::{
 };
 
 // pub mod manager;
-// pub mod performer;
 pub mod performer_sklave;
 
 mod merger;
-// mod context;
+mod context;
+mod performer;
 mod bin_merger;
 mod search_tree_walker;
 mod search_tree_builder;
 mod search_ranges_merge;
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 // pub type RequestInfoReplyTx = oneshot::Sender<Info>;
 // pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
