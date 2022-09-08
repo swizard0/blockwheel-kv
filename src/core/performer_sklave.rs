@@ -14,17 +14,30 @@ use blockwheel_fs::{
 };
 
 use crate::{
+    kv,
     job,
     wheels,
     version,
+    core::{
+        SearchRangeBounds,
+    },
     Params,
     AccessPolicy,
 };
 
 pub enum Order<A> where A: AccessPolicy {
+    Request(OrderRequest<A>),
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
     Wheel(OrderWheel),
+}
+
+pub enum OrderRequest<A> where A: AccessPolicy {
+    Info(OrderRequestInfo<A>),
+    Insert(OrderRequestInsert<A>),
+    LookupRange(OrderRequestLookupRange<A>),
+    Remove(OrderRequestRemove<A>),
+    Flush(OrderRequestFlush<A>),
 }
 
 pub enum OrderWheel {
@@ -70,6 +83,30 @@ pub struct LookupRangeRoute {
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
     pub rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+}
+
+pub struct OrderRequestInfo<A> where A: AccessPolicy {
+    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
+}
+
+pub struct OrderRequestInsert<A> where A: AccessPolicy {
+    pub key: kv::Key,
+    pub value: kv::Value,
+    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Insert>,
+}
+
+pub struct OrderRequestLookupRange<A> where A: AccessPolicy {
+    pub search_range: SearchRangeBounds,
+    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+}
+
+pub struct OrderRequestRemove<A> where A: AccessPolicy {
+    pub key: kv::Key,
+    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Remove>,
+}
+
+pub struct OrderRequestFlush<A> where A: AccessPolicy {
+    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
 }
 
 pub struct WheelRouteInfo;

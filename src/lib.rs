@@ -24,7 +24,6 @@ pub mod version;
 
 mod core;
 mod storage;
-// mod access_policy;
 
 // #[cfg(test)]
 // mod tests;
@@ -51,27 +50,27 @@ impl Default for Params {
 pub trait AccessPolicy: Sized + Send + 'static
 where Self::Order: From<komm::UmschlagAbbrechen<Self::Info>>,
       Self::Order: From<komm::Umschlag<Info, Self::Info>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::FlushAll>>,
-      Self::Order: From<komm::Umschlag<Flushed, Self::FlushAll>>,
       Self::Order: From<komm::UmschlagAbbrechen<Self::Insert>>,
       Self::Order: From<komm::Umschlag<Inserted, Self::Insert>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::Remove>>,
-      Self::Order: From<komm::Umschlag<Removed, Self::Remove>>,
       Self::Order: From<komm::UmschlagAbbrechen<Self::LookupRange>>,
       Self::Order: From<komm::Umschlag<KeyValueStreamItem<Self>, Self::LookupRange>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::Remove>>,
+      Self::Order: From<komm::Umschlag<Removed, Self::Remove>>,
+      Self::Order: From<komm::UmschlagAbbrechen<Self::Flush>>,
+      Self::Order: From<komm::Umschlag<Flushed, Self::Flush>>,
       Self::Order: Send + 'static,
       Self::Info: Send + 'static,
-      Self::FlushAll: Send + 'static,
       Self::Insert: Send + 'static,
-      Self::Remove: Send + 'static,
       Self::LookupRange: Send + 'static,
+      Self::Remove: Send + 'static,
+      Self::Flush: Send + 'static,
 {
     type Order;
     type Info;
-    type FlushAll;
     type Insert;
-    type Remove;
     type LookupRange;
+    type Remove;
+    type Flush;
 }
 
 pub enum KeyValueStreamItem<A> where A: AccessPolicy {
@@ -154,96 +153,6 @@ impl<A> Clone for Meister<A> where A: AccessPolicy {
     }
 }
 
-
-//     manager_pid: core::manager::Pid,
-// }
-
-// #[derive(Clone)]
-// pub struct Pid {
-//     manager_pid: core::manager::Pid,
-// }
-
-// impl GenServer {
-//     pub fn new() -> GenServer {
-//         let manager_gen_server = core::manager::GenServer::new();
-//         let manager_pid = manager_gen_server.pid();
-//         GenServer {
-//             manager_gen_server,
-//             manager_pid,
-//         }
-//     }
-
-//     pub fn pid(&self) -> Pid {
-//         Pid {
-//             manager_pid: self.manager_pid.clone(),
-//         }
-//     }
-
-//     pub async fn run<P>(
-//         self,
-//         mut parent_supervisor: SupervisorPid,
-//         thread_pool: P,
-//         blocks_pool: BytesPool,
-//         version_provider: version::Provider,
-//         wheels: wheels::Wheels,
-//         params: Params,
-//     )
-//     where P: edeltraud::ThreadPool<job::Job> + Clone,
-//     {
-//         let manager_params = core::manager::Params {
-//             task_restart_sec: params.manager_task_restart_sec,
-//             performer_params: core::performer::Params {
-//                 butcher_block_size: params.butcher_block_size,
-//                 tree_block_size: params.tree_block_size,
-//                 bootstrap_search_trees_limit: params.search_tree_bootstrap_search_trees_limit,
-//                 values_inline_size_limit: params.search_tree_values_inline_size_limit,
-//             },
-//             iter_send_buffer: params.iter_send_buffer,
-//         };
-
-//         let child_supervisor_gen_server = parent_supervisor.child_supervisor();
-//         let child_supervisor_pid = child_supervisor_gen_server.pid();
-//         parent_supervisor.spawn_link_permanent(
-//             child_supervisor_gen_server.run(),
-//         );
-
-//         let manager_task = self.manager_gen_server.run(
-//             child_supervisor_pid.clone(),
-//             thread_pool,
-//             blocks_pool,
-//             version_provider,
-//             wheels,
-//             manager_params,
-//         );
-//         manager_task.await
-//     }
-// }
-
-// #[derive(Debug)]
-// pub enum InsertError {
-//     GenServer(ero::NoProcError),
-// }
-
-// #[derive(Debug)]
-// pub enum LookupError {
-//     GenServer(ero::NoProcError),
-// }
-
-// #[derive(Debug)]
-// pub enum LookupRangeError {
-//     GenServer(ero::NoProcError),
-// }
-
-// #[derive(Debug)]
-// pub enum RemoveError {
-//     GenServer(ero::NoProcError),
-// }
-
-// #[derive(Debug)]
-// pub enum FlushError {
-//     GenServer(ero::NoProcError),
-// }
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Inserted {
     pub version: u64,
@@ -263,46 +172,118 @@ pub struct Info {
     pub tombstones_count: usize,
 }
 
-// pub struct LookupRange {
-//     pub key_values_rx: mpsc::Receiver<KeyValueStreamItem>,
-// }
+impl<A> Meister<A> where A: AccessPolicy {
+    pub fn info<P>(
+        &self,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
+        thread_pool: &P,
+    )
+        -> Result<(), arbeitssklave::Error>
+    where P: edeltraud::ThreadPool<job::Job<A>>
+    {
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::Info(
+                        core::performer_sklave::OrderRequestInfo {
+                            rueckkopplung,
+                        },
+                    ),
+                ),
+                thread_pool,
+            )
+    }
 
-// #[derive(Clone)]
-// pub enum KeyValueStreamItem {
-//     KeyValue(kv::KeyValuePair<kv::Value>),
-//     NoMore,
-// }
+    pub fn insert<P>(
+        &self,
+        key: kv::Key,
+        value: kv::Value,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::Insert>,
+        thread_pool: &P,
+    )
+        -> Result<(), arbeitssklave::Error>
+    where P: edeltraud::ThreadPool<job::Job<A>>
+    {
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::Insert(
+                        core::performer_sklave::OrderRequestInsert{
+                            key, value, rueckkopplung,
+                        },
+                    ),
+                ),
+                thread_pool,
+            )
+    }
 
-// impl Pid {
-//     pub async fn info(&mut self) -> Result<Info, ero::NoProcError> {
-//         self.manager_pid.info().await
-//     }
+    pub fn lookup_range<R, P>(
+        &self,
+        range: R,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        thread_pool: &P,
+    )
+        -> Result<(), arbeitssklave::Error>
+    where R: RangeBounds<kv::Key>,
+          P: edeltraud::ThreadPool<job::Job<A>>,
+    {
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::LookupRange(
+                        core::performer_sklave::OrderRequestLookupRange{
+                            search_range: range.into(),
+                            rueckkopplung,
+                        },
+                    ),
+                ),
+                thread_pool,
+            )
+    }
 
-//     pub async fn insert(&mut self, key: kv::Key, value: kv::Value) -> Result<Inserted, InsertError> {
-//         self.manager_pid.insert(key, value).await
-//             .map_err(|core::manager::InsertError::GenServer(ero::NoProcError)| InsertError::GenServer(ero::NoProcError))
-//     }
+    pub fn remove<P>(
+        &self,
+        key: kv::Key,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::Remove>,
+        thread_pool: &P,
+    )
+        -> Result<(), arbeitssklave::Error>
+    where P: edeltraud::ThreadPool<job::Job<A>>
+    {
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::Remove(
+                        core::performer_sklave::OrderRequestRemove{
+                            key, rueckkopplung,
+                        },
+                    ),
+                ),
+                thread_pool,
+            )
+    }
 
-//     pub async fn lookup(&mut self, key: kv::Key) -> Result<Option<kv::ValueCell<kv::Value>>, LookupError> {
-//         self.manager_pid.lookup(key).await
-//             .map_err(|core::manager::LookupError::GenServer(ero::NoProcError)| LookupError::GenServer(ero::NoProcError))
-//     }
-
-//     pub async fn lookup_range<R>(&mut self, range: R) -> Result<LookupRange, LookupRangeError> where R: RangeBounds<kv::Key> {
-//         self.manager_pid.lookup_range(range).await
-//             .map_err(|core::manager::LookupRangeError::GenServer(ero::NoProcError)| LookupRangeError::GenServer(ero::NoProcError))
-//     }
-
-//     pub async fn remove(&mut self, key: kv::Key) -> Result<Removed, RemoveError> {
-//         self.manager_pid.remove(key).await
-//             .map_err(|core::manager::RemoveError::GenServer(ero::NoProcError)| RemoveError::GenServer(ero::NoProcError))
-//     }
-
-//     pub async fn flush(&mut self) -> Result<Flushed, FlushError> {
-//         self.manager_pid.flush_all().await
-//             .map_err(|core::manager::FlushError::GenServer(ero::NoProcError)| FlushError::GenServer(ero::NoProcError))
-//     }
-// }
+    pub fn flush<P>(
+        &self,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
+        thread_pool: &P,
+    )
+        -> Result<(), arbeitssklave::Error>
+    where P: edeltraud::ThreadPool<job::Job<A>>
+    {
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::Flush(
+                        core::performer_sklave::OrderRequestFlush {
+                            rueckkopplung,
+                        },
+                    ),
+                ),
+                thread_pool,
+            )
+    }
+}
 
 impl AddAssign for Info {
     fn add_assign(&mut self, rhs: Info) {
