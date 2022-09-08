@@ -138,8 +138,14 @@ pub struct WheelRouteFlush;
 pub struct WheelRouteWriteBlock;
 pub struct WheelRouteReadBlock;
 pub struct WheelRouteDeleteBlock;
-pub struct WheelRouteIterBlocksInit;
-pub struct WheelRouteIterBlocksNext;
+
+pub struct WheelRouteIterBlocksInit {
+    blockwheel_filename: wheels::WheelFilename,
+}
+
+pub struct WheelRouteIterBlocksNext {
+    blockwheel_filename: wheels::WheelFilename,
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -147,6 +153,16 @@ pub enum Error {
         wheel_filename: wheels::WheelFilename,
         error: arbeitssklave::Error,
     },
+    WheelIterBlocksNext {
+        wheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
+    WheelIterBlocksInitCanceled,
+    WheelIterBlocksNextCanceled,
+    WheelIterBlocksGetFailed {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    SendegeraetGone(arbeitssklave::Error),
 }
 
 pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
@@ -163,29 +179,75 @@ where A: AccessPolicy,
       P: edeltraud::ThreadPool<job::Job<A>>,
 {
     loop {
-        let state = mem::replace(&mut sklave_job.sklavenwelt_mut().state, WeltState::Init);
-        match state {
-            WeltState::Init => {
-                sklave_job.sklavenwelt_mut().state =
-                    WeltState::Loading(WeltStateLoading {
-                        mode: WeltStateLoadingMode::NeedIterBlocksRequest,
-                        forest: performer::SearchForest::new(),
-                        blocks_total: 0,
-                    });
-            },
-            WeltState::Loading(loading) =>
-                match job_loading(loading, sklave_job, thread_pool)? {
-                    LoadOutcome::Rasten { loading, } =>
-                        return Ok(()),
-                    LoadOutcome::Done { sklave_job: next_sklave_job, } => {
-                        sklave_job = next_sklave_job;
+        // first retrieve all orders available
+        loop {
+            if let WeltState::Init = sklave_job.sklavenwelt().state {
+                break;
+            }
+
+            let gehorsam = sklave_job.zu_ihren_diensten()
+                .map_err(Error::SendegeraetGone)?;
+            match gehorsam {
+                arbeitssklave::Gehorsam::Rasten =>
+                    return Ok(()),
+                arbeitssklave::Gehorsam::Machen { mut befehle, } =>
+                    loop {
+                        match befehle.befehl() {
+                            arbeitssklave::SklavenBefehl::Mehr { befehl, mut mehr_befehle, } => {
+                                mehr_befehle
+                                    .sklavenwelt_mut()
+                                    .env
+                                    .incoming_orders.push(befehl);
+                                befehle = mehr_befehle;
+                            },
+                            arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
+                                sklave_job = next_sklave_job;
+                                break;
+                            },
+                        }
                     },
+            }
+        }
+
+        // then process the orders retrieved
+        let sklavenwelt = sklave_job.sklavenwelt_mut();
+        loop {
+            let state = mem::replace(&mut sklavenwelt.state, WeltState::Init);
+            match state {
+                WeltState::Init => {
+                    log::debug!("WeltState::Init: loading forest");
+                    sklavenwelt.state =
+                        WeltState::Loading(WeltStateLoading {
+                            mode: WeltStateLoadingMode::NeedIterBlocksRequest,
+                            forest: performer::SearchForest::new(),
+                            blocks_total: 0,
+                        });
                 },
-            WeltState::Running(running) =>
-                match job_running(running, sklave_job, thread_pool)? {
-                    RunOutcome::Rasten { running, } =>
-                        return Ok(()),
-                },
+                WeltState::Loading(loading) =>
+                    match job_loading(loading, sklavenwelt, thread_pool)? {
+                        LoadOutcome::Rasten { loading, } => {
+                            sklavenwelt.state = WeltState::Loading(loading);
+                            break;
+                        },
+                        LoadOutcome::Done { performer, } => {
+                            sklavenwelt.state =
+                                WeltState::Running(WeltStateRunning {
+                                    kont: Kont::Initialize { performer, },
+                                });
+                            sklavenwelt
+                                .env
+                                .incoming_orders
+                                .extend(sklavenwelt.env.delayed_orders.drain(..));
+                        },
+                    },
+                WeltState::Running(running) =>
+                    match job_running(running, sklavenwelt, thread_pool)? {
+                        RunOutcome::Rasten { running, } => {
+                            sklavenwelt.state = WeltState::Running(running);
+                            break;
+                        },
+                    },
+            }
         }
     }
 }
@@ -195,7 +257,7 @@ enum LoadOutcome<A> where A: AccessPolicy {
         loading: WeltStateLoading,
     },
     Done {
-        sklave_job: SklaveJob<A>,
+        performer: performer::Performer<Context<A>>,
     },
 }
 
@@ -212,7 +274,7 @@ enum WeltStateLoadingMode {
 
 fn job_loading<A, P>(
     mut welt_state_loading: WeltStateLoading,
-    mut sklave_job: SklaveJob<A>,
+    sklavenwelt: &mut Welt<A>,
     thread_pool: &P,
 )
     -> Result<LoadOutcome<A>, Error>
@@ -223,13 +285,16 @@ where A: AccessPolicy,
         match mem::replace(&mut welt_state_loading.mode, WeltStateLoadingMode::NeedIterBlocksRequest) {
 
             WeltStateLoadingMode::NeedIterBlocksRequest => {
-                let env = &sklave_job.sklavenwelt().env;
-                let wheels_iter = env.wheels.iter();
+                let wheels_iter = sklavenwelt.env.wheels.iter();
                 let mut wheels_left = 0;
                 for wheel_ref in wheels_iter {
                     wheel_ref.meister
                         .iter_blocks_init(
-                            env.sendegeraet.rueckkopplung(WheelRouteIterBlocksInit),
+                            sklavenwelt.env
+                                .sendegeraet
+                                .rueckkopplung(WheelRouteIterBlocksInit {
+                                    blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
+                                }),
                             &edeltraud::ThreadPoolMap::new(thread_pool),
                         )
                         .map_err(|error| Error::WheelIterBlocksInit {
@@ -240,6 +305,7 @@ where A: AccessPolicy,
                 }
                 welt_state_loading.mode =
                     WeltStateLoadingMode::Loading { wheels_left, };
+                log::debug!("job_loading: iter blocks requests sent to {wheels_left:?} wheels");
             },
 
             WeltStateLoadingMode::Loading { wheels_left, } if wheels_left == 0 => {
@@ -249,30 +315,83 @@ where A: AccessPolicy,
                     welt_state_loading.blocks_total,
                 );
 
-                let env = &sklave_job.sklavenwelt().env;
                 let pools = Pools::new();
                 let performer = performer::Performer::new(
-                    env.params.clone(),
-                    env.version_provider.clone(),
+                    sklavenwelt.env.params.clone(),
+                    sklavenwelt.env.version_provider.clone(),
                     pools.kv_pool.clone(),
                     pools.sources_pool.clone(),
                     pools.block_entry_steps_pool.clone(),
                     welt_state_loading.forest,
                 );
 
-                sklave_job.sklavenwelt_mut().state =
-                    WeltState::Running(WeltStateRunning {
-                        kont: Kont::Initialize { performer, },
-                    });
-                return Ok(LoadOutcome::Done { sklave_job, });
+                return Ok(LoadOutcome::Done { performer, });
             },
 
-            WeltStateLoadingMode::Loading { mut wheels_left, } => {
+            WeltStateLoadingMode::Loading { mut wheels_left, } =>
+                loop {
+                    match sklavenwelt.env.incoming_orders.pop() {
+                        None => {
+                            welt_state_loading.mode =
+                                WeltStateLoadingMode::Loading { wheels_left, };
+                            return Ok(LoadOutcome::Rasten {
+                                loading: welt_state_loading,
+                            });
+                        },
 
-                // sklave_job.sklavenwelt_mut().state = WeltState::Loading(loading);
-
-                todo!();
-            },
+                        Some(Order::Wheel(OrderWheel::IterBlocksInit(komm::Umschlag {
+                            payload: blockwheel_fs::IterBlocks { iterator_next, blocks_total_count, blocks_total_size, },
+                            stamp: WheelRouteIterBlocksInit { blockwheel_filename, },
+                        }))) => {
+                            log::debug!(
+                                "initial blocks_iter received for {:?}: blocks_total_count = {}, blocks_total_size = {}",
+                                blockwheel_filename,
+                                blocks_total_count,
+                                blocks_total_size,
+                            );
+                            let wheel_ref = sklavenwelt.env
+                                .wheels
+                                .get(&blockwheel_filename)
+                                .ok_or_else(|| Error::WheelIterBlocksGetFailed {
+                                    blockwheel_filename: blockwheel_filename.clone(),
+                                })?;
+                            wheel_ref.meister
+                                .iter_blocks_next(
+                                    iterator_next,
+                                    sklavenwelt.env
+                                        .sendegeraet
+                                        .rueckkopplung(WheelRouteIterBlocksNext {
+                                            blockwheel_filename,
+                                        }),
+                                    &edeltraud::ThreadPoolMap::new(thread_pool),
+                                )
+                                .map_err(|error| Error::WheelIterBlocksNext {
+                                    wheel_filename: wheel_ref.blockwheel_filename.clone(),
+                                    error,
+                                })?;
+                        },
+                        Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
+                            payload: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
+                            stamp: WheelRouteIterBlocksNext,
+                        }))) =>
+                            todo!(),
+                        Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
+                            payload: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
+                            stamp: WheelRouteIterBlocksNext,
+                        }))) =>
+                            wheels_left -= 1,
+                        Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(
+                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksInit, },
+                        ))) =>
+                            return Err(Error::WheelIterBlocksInitCanceled),
+                        Some(Order::Wheel(OrderWheel::IterBlocksNextCancel(
+                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksNext, },
+                        ))) =>
+                            return Err(Error::WheelIterBlocksNextCanceled),
+                        Some(other_order) =>
+                            sklavenwelt.env.delayed_orders.push(other_order),
+                    }
+                },
 
         }
     }
@@ -310,7 +429,7 @@ enum Kont<A> where A: AccessPolicy {
 
 fn job_running<A, P>(
     mut welt_state_running: WeltStateRunning<A>,
-    mut sklave_job: SklaveJob<A>,
+    sklavenwelt: &mut Welt<A>,
     thread_pool: &P,
 )
     -> Result<RunOutcome<A>, Error>

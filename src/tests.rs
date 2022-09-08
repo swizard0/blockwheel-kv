@@ -363,6 +363,8 @@ fn stress_loop(
         )
         .map_err(Error::BlockwheelKvMeister)?;
 
+    std::thread::sleep(std::time::Duration::from_secs(8));
+
 //     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
 //     let mut wheel_kv_pid = wheel_kv_gen_server.pid();
 //     supervisor_pid.spawn_link_permanent(

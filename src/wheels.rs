@@ -2,9 +2,6 @@ use std::{
     str,
     fmt,
     path,
-    pin::{
-        Pin,
-    },
     ops::{
         Deref,
     },
