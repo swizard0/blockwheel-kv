@@ -26,6 +26,7 @@ use crate::{
     job,
     wheels,
     version,
+    storage,
     core::{
         context,
         performer,
@@ -165,6 +166,10 @@ pub enum Error {
     },
     WheelIterBlocksGetFailed {
         blockwheel_filename: wheels::WheelFilename,
+    },
+    DeserializeBlock {
+        block_ref: wheels::BlockRef,
+        error: storage::Error,
     },
     SendegeraetGone(arbeitssklave::Error),
 }
@@ -375,8 +380,32 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
                             payload: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
                             stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
-                        }))) =>
-                            todo!(),
+                        }))) => {
+                            let block_ref = wheels::BlockRef {
+                                blockwheel_filename,
+                                block_id,
+                            };
+
+                            welt_state_loading.blocks_total += 1;
+                            let deserializer = match storage::block_deserialize_iter(&block_bytes) {
+                                Ok(deserializer) =>
+                                    deserializer,
+                                Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
+                                    log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
+                                    continue;
+                                },
+                                Err(error) =>
+                                    return Err(Error::DeserializeBlock { block_ref, error, }),
+                            };
+                            match deserializer.block_header().node_type {
+                                storage::NodeType::Root { tree_entries_count, } => {
+                                    log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
+                                    welt_state_loading.forest.add_constructed(block_ref, tree_entries_count);
+                                },
+                                storage::NodeType::Leaf =>
+                                    (),
+                            }
+                        },
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
                             payload: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
                             stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
