@@ -157,8 +157,12 @@ pub enum Error {
         wheel_filename: wheels::WheelFilename,
         error: arbeitssklave::Error,
     },
-    WheelIterBlocksInitCanceled,
-    WheelIterBlocksNextCanceled,
+    WheelIterBlocksInitCanceled {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    WheelIterBlocksNextCanceled {
+        blockwheel_filename: wheels::WheelFilename,
+    },
     WheelIterBlocksGetFailed {
         blockwheel_filename: wheels::WheelFilename,
     },
@@ -180,11 +184,9 @@ where A: AccessPolicy,
 {
     loop {
         // first retrieve all orders available
-        loop {
-            if let WeltState::Init = sklave_job.sklavenwelt().state {
-                break;
-            }
-
+        if let WeltState::Init = sklave_job.sklavenwelt().state {
+            // skip it on initialize
+        } else {
             let gehorsam = sklave_job.zu_ihren_diensten()
                 .map_err(Error::SendegeraetGone)?;
             match gehorsam {
@@ -372,22 +374,24 @@ where A: AccessPolicy,
                         },
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
                             payload: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
-                            stamp: WheelRouteIterBlocksNext,
+                            stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
                         }))) =>
                             todo!(),
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
                             payload: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
-                            stamp: WheelRouteIterBlocksNext,
-                        }))) =>
-                            wheels_left -= 1,
+                            stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
+                        }))) => {
+                            log::debug!("iter blocks done on {blockwheel_filename:?}");
+                            wheels_left -= 1;
+                        },
                         Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(
-                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksInit, },
+                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksInit { blockwheel_filename, }, },
                         ))) =>
-                            return Err(Error::WheelIterBlocksInitCanceled),
+                            return Err(Error::WheelIterBlocksInitCanceled { blockwheel_filename, }),
                         Some(Order::Wheel(OrderWheel::IterBlocksNextCancel(
-                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksNext, },
+                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksNext { blockwheel_filename, }, },
                         ))) =>
-                            return Err(Error::WheelIterBlocksNextCanceled),
+                            return Err(Error::WheelIterBlocksNextCanceled { blockwheel_filename, }),
                         Some(other_order) =>
                             sklavenwelt.env.delayed_orders.push(other_order),
                     }
