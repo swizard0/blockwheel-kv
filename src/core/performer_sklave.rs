@@ -38,6 +38,9 @@ use crate::{
     AccessPolicy,
 };
 
+mod loading;
+mod running;
+
 pub enum Order<A> where A: AccessPolicy {
     Request(OrderRequest<A>),
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
@@ -98,8 +101,8 @@ pub struct Env<A> where A: AccessPolicy {
 
 enum WeltState<A> where A: AccessPolicy {
     Init,
-    Loading(WeltStateLoading),
-    Running(WeltStateRunning<A>),
+    Loading(loading::WeltState),
+    Running(running::WeltState<A>),
 }
 
 pub struct LookupRangeRoute {
@@ -224,23 +227,17 @@ where A: AccessPolicy,
                 WeltState::Init => {
                     log::debug!("WeltState::Init: loading forest");
                     sklavenwelt.state =
-                        WeltState::Loading(WeltStateLoading {
-                            mode: WeltStateLoadingMode::NeedIterBlocksRequest,
-                            forest: performer::SearchForest::new(),
-                            blocks_total: 0,
-                        });
+                        WeltState::Loading(loading::WeltState::new());
                 },
                 WeltState::Loading(loading) =>
-                    match job_loading(loading, sklavenwelt, thread_pool)? {
-                        LoadOutcome::Rasten { loading, } => {
+                    match loading::job(loading, sklavenwelt, thread_pool)? {
+                        loading::Outcome::Rasten { loading, } => {
                             sklavenwelt.state = WeltState::Loading(loading);
                             break;
                         },
-                        LoadOutcome::Done { performer, } => {
+                        loading::Outcome::Done { performer, } => {
                             sklavenwelt.state =
-                                WeltState::Running(WeltStateRunning {
-                                    kont: Kont::Initialize { performer, },
-                                });
+                                WeltState::Running(running::WeltState::new(performer));
                             sklavenwelt
                                 .env
                                 .incoming_orders
@@ -248,184 +245,13 @@ where A: AccessPolicy,
                         },
                     },
                 WeltState::Running(running) =>
-                    match job_running(running, sklavenwelt, thread_pool)? {
-                        RunOutcome::Rasten { running, } => {
+                    match running::job(running, sklavenwelt, thread_pool)? {
+                        running::Outcome::Rasten { running, } => {
                             sklavenwelt.state = WeltState::Running(running);
                             break;
                         },
                     },
             }
-        }
-    }
-}
-
-enum LoadOutcome<A> where A: AccessPolicy {
-    Rasten {
-        loading: WeltStateLoading,
-    },
-    Done {
-        performer: performer::Performer<Context<A>>,
-    },
-}
-
-struct WeltStateLoading {
-    mode: WeltStateLoadingMode,
-    forest: performer::SearchForest,
-    blocks_total: usize,
-}
-
-enum WeltStateLoadingMode {
-    NeedIterBlocksRequest,
-    Loading { wheels_left: usize, },
-}
-
-fn job_loading<A, P>(
-    mut welt_state_loading: WeltStateLoading,
-    sklavenwelt: &mut Welt<A>,
-    thread_pool: &P,
-)
-    -> Result<LoadOutcome<A>, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
-{
-    loop {
-        match mem::replace(&mut welt_state_loading.mode, WeltStateLoadingMode::NeedIterBlocksRequest) {
-
-            WeltStateLoadingMode::NeedIterBlocksRequest => {
-                let wheels_iter = sklavenwelt.env.wheels.iter();
-                let mut wheels_left = 0;
-                for wheel_ref in wheels_iter {
-                    wheel_ref.meister
-                        .iter_blocks_init(
-                            sklavenwelt.env
-                                .sendegeraet
-                                .rueckkopplung(WheelRouteIterBlocksInit {
-                                    blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
-                                }),
-                            &edeltraud::ThreadPoolMap::new(thread_pool),
-                        )
-                        .map_err(|error| Error::WheelIterBlocksInit {
-                            wheel_filename: wheel_ref.blockwheel_filename.clone(),
-                            error,
-                        })?;
-                    wheels_left += 1;
-                }
-                welt_state_loading.mode =
-                    WeltStateLoadingMode::Loading { wheels_left, };
-                log::debug!("job_loading: iter blocks requests sent to {wheels_left:?} wheels");
-            },
-
-            WeltStateLoadingMode::Loading { wheels_left, } if wheels_left == 0 => {
-                log::info!(
-                    "loading done, {} search_trees restored within {} blocks",
-                    welt_state_loading.forest.len(),
-                    welt_state_loading.blocks_total,
-                );
-
-                let pools = Pools::new();
-                let performer = performer::Performer::new(
-                    sklavenwelt.env.params.clone(),
-                    sklavenwelt.env.version_provider.clone(),
-                    pools.kv_pool.clone(),
-                    pools.sources_pool.clone(),
-                    pools.block_entry_steps_pool.clone(),
-                    welt_state_loading.forest,
-                );
-
-                return Ok(LoadOutcome::Done { performer, });
-            },
-
-            WeltStateLoadingMode::Loading { mut wheels_left, } =>
-                loop {
-                    match sklavenwelt.env.incoming_orders.pop() {
-                        None => {
-                            welt_state_loading.mode =
-                                WeltStateLoadingMode::Loading { wheels_left, };
-                            return Ok(LoadOutcome::Rasten {
-                                loading: welt_state_loading,
-                            });
-                        },
-
-                        Some(Order::Wheel(OrderWheel::IterBlocksInit(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocks { iterator_next, blocks_total_count, blocks_total_size, },
-                            stamp: WheelRouteIterBlocksInit { blockwheel_filename, },
-                        }))) => {
-                            log::debug!(
-                                "initial blocks_iter received for {:?}: blocks_total_count = {}, blocks_total_size = {}",
-                                blockwheel_filename,
-                                blocks_total_count,
-                                blocks_total_size,
-                            );
-                            let wheel_ref = sklavenwelt.env
-                                .wheels
-                                .get(&blockwheel_filename)
-                                .ok_or_else(|| Error::WheelIterBlocksGetFailed {
-                                    blockwheel_filename: blockwheel_filename.clone(),
-                                })?;
-                            wheel_ref.meister
-                                .iter_blocks_next(
-                                    iterator_next,
-                                    sklavenwelt.env
-                                        .sendegeraet
-                                        .rueckkopplung(WheelRouteIterBlocksNext {
-                                            blockwheel_filename,
-                                        }),
-                                    &edeltraud::ThreadPoolMap::new(thread_pool),
-                                )
-                                .map_err(|error| Error::WheelIterBlocksNext {
-                                    wheel_filename: wheel_ref.blockwheel_filename.clone(),
-                                    error,
-                                })?;
-                        },
-                        Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
-                            stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
-                        }))) => {
-                            let block_ref = wheels::BlockRef {
-                                blockwheel_filename,
-                                block_id,
-                            };
-
-                            welt_state_loading.blocks_total += 1;
-                            let deserializer = match storage::block_deserialize_iter(&block_bytes) {
-                                Ok(deserializer) =>
-                                    deserializer,
-                                Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
-                                    log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
-                                    continue;
-                                },
-                                Err(error) =>
-                                    return Err(Error::DeserializeBlock { block_ref, error, }),
-                            };
-                            match deserializer.block_header().node_type {
-                                storage::NodeType::Root { tree_entries_count, } => {
-                                    log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
-                                    welt_state_loading.forest.add_constructed(block_ref, tree_entries_count);
-                                },
-                                storage::NodeType::Leaf =>
-                                    (),
-                            }
-                        },
-                        Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
-                            stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
-                        }))) => {
-                            log::debug!("iter blocks done on {blockwheel_filename:?}");
-                            wheels_left -= 1;
-                        },
-                        Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(
-                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksInit { blockwheel_filename, }, },
-                        ))) =>
-                            return Err(Error::WheelIterBlocksInitCanceled { blockwheel_filename, }),
-                        Some(Order::Wheel(OrderWheel::IterBlocksNextCancel(
-                            komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksNext { blockwheel_filename, }, },
-                        ))) =>
-                            return Err(Error::WheelIterBlocksNextCanceled { blockwheel_filename, }),
-                        Some(other_order) =>
-                            sklavenwelt.env.delayed_orders.push(other_order),
-                    }
-                },
-
         }
     }
 }
@@ -446,33 +272,6 @@ impl Pools {
             block_entry_steps_pool: pool::Pool::new(),
         }
     }
-}
-
-enum RunOutcome<A> where A: AccessPolicy {
-    Rasten { running: WeltStateRunning<A>, },
-}
-
-struct WeltStateRunning<A> where A: AccessPolicy {
-    kont: Kont<A>,
-}
-
-enum Kont<A> where A: AccessPolicy {
-    Initialize { performer: performer::Performer<Context<A>>, },
-}
-
-fn job_running<A, P>(
-    mut welt_state_running: WeltStateRunning<A>,
-    sklavenwelt: &mut Welt<A>,
-    thread_pool: &P,
-)
-    -> Result<RunOutcome<A>, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
-{
-
-    // sklave_job.sklavenwelt_mut().state = WeltState::Running(running);
-
-    todo!();
 }
 
 impl<A> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<A> where A: AccessPolicy {
@@ -573,7 +372,7 @@ impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksN
     }
 }
 
-struct Context<A>(PhantomData<A>);
+pub struct Context<A>(PhantomData<A>);
 
 impl<A> context::Context for Context<A> where A: AccessPolicy {
     type Info = A::Info;
