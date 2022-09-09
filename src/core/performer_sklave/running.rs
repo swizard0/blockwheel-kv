@@ -41,6 +41,5 @@ where A: AccessPolicy,
       P: edeltraud::ThreadPool<job::Job<A>>,
 {
 
-
     todo!();
 }

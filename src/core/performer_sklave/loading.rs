@@ -112,7 +112,7 @@ where A: AccessPolicy,
                 return Ok(Outcome::Done { performer, });
             },
 
-            WeltStateMode::Loading { mut wheels_left, } =>
+            WeltStateMode::Loading { wheels_left, } =>
                 loop {
                     match sklavenwelt.env.incoming_orders.pop() {
                         None => {
@@ -164,23 +164,20 @@ where A: AccessPolicy,
                             };
 
                             welt_state.blocks_total += 1;
-                            let deserializer = match storage::block_deserialize_iter(&block_bytes) {
+                            match storage::block_deserialize_iter(&block_bytes) {
                                 Ok(deserializer) =>
-                                    deserializer,
-                                Err(storage::Error::InvalidBlockMagic { expected, provided, }) => {
-                                    log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected);
-                                    continue;
-                                },
+                                    match deserializer.block_header().node_type {
+                                        storage::NodeType::Root { tree_entries_count, } => {
+                                            log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
+                                            welt_state.forest.add_constructed(block_ref, tree_entries_count);
+                                        },
+                                        storage::NodeType::Leaf =>
+                                            (),
+                                    },
+                                Err(storage::Error::InvalidBlockMagic { expected, provided, }) =>
+                                    log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected),
                                 Err(error) =>
                                     return Err(Error::DeserializeBlock { block_ref, error, }),
-                            };
-                            match deserializer.block_header().node_type {
-                                storage::NodeType::Root { tree_entries_count, } => {
-                                    log::debug!("root search_tree found with {:?} entries in {:?}", tree_entries_count, block_ref);
-                                    welt_state.forest.add_constructed(block_ref, tree_entries_count);
-                                },
-                                storage::NodeType::Leaf =>
-                                    (),
                             }
 
                             let wheel_ref = sklavenwelt.env
@@ -209,7 +206,9 @@ where A: AccessPolicy,
                             stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
                         }))) => {
                             log::debug!("iter blocks done on {blockwheel_filename:?}");
-                            wheels_left -= 1;
+                            welt_state.mode =
+                                WeltStateMode::Loading { wheels_left: wheels_left - 1, };
+                            break;
                         },
                         Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(
                             komm::UmschlagAbbrechen { stamp: WheelRouteIterBlocksInit { blockwheel_filename, }, },
