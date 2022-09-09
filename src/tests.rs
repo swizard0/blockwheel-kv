@@ -1,5 +1,8 @@
 use std::{
     fs,
+    sync::{
+        mpsc,
+    },
     path::{
         PathBuf,
     },
@@ -8,7 +11,13 @@ use std::{
     },
 };
 
-use rand::Rng;
+use rand::{
+    Rng,
+    SeedableRng,
+    rngs::SmallRng,
+    seq::IteratorRandom,
+    distributions::Uniform,
+};
 
 use alloc_pool::{
     bytes::{
@@ -39,6 +48,7 @@ fn stress() {
         actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
+        insert_or_remove_prob: 0.5,
     };
     let init_wheel_size_bytes = (limits.key_size_bytes + limits.value_size_bytes) * limits.actions;
 
@@ -47,6 +57,7 @@ fn stress() {
     //     actions: 32768,
     //     key_size_bytes: 32,
     //     value_size_bytes: 4096,
+    //     insert_or_remove_prob: 0.5,
     // };
     // let init_wheel_size_bytes = 134217728; // (limits.key_size_bytes + limits.value_size_bytes) * limits.actions / 8;
 
@@ -120,38 +131,44 @@ struct Limits {
     active_tasks: usize,
     key_size_bytes: usize,
     value_size_bytes: usize,
+    insert_or_remove_prob: f64,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
 struct Counter {
-    lookups: usize,
     lookups_range: usize,
     inserts: usize,
     removes: usize,
+    insert_jobs: usize,
 }
 
 impl Counter {
     fn sum(&self) -> usize {
-        self.lookups + self.lookups_range + self.inserts + self.removes
+        self.lookups_range + self.inserts + self.removes
+    }
+
+    fn sum_total(&self) -> usize {
+        self.sum()
     }
 
     fn clear(&mut self) {
-        self.lookups = 0;
         self.lookups_range = 0;
         self.inserts = 0;
         self.removes = 0;
+        self.insert_jobs = 0;
     }
 }
 
 struct DataIndex {
     index: HashMap<kv::Key, usize>,
     alive: HashMap<kv::Key, usize>,
-    data: Vec<kv::KeyValuePair<kv::Value>>,
+    data: Vec<kv::KeyValuePair<u64>>,
 }
 
 #[derive(Debug)]
 pub enum Error {
     ThreadPool(edeltraud::BuildError),
+    Edeltraud(edeltraud::SpawnError),
     WheelRefMeister(blockwheel_fs::Error),
     BlockwheelKvMeister(blockwheel_kv::Error),
     ExpectedValueNotFound {
@@ -176,6 +193,8 @@ pub enum Error {
     WheelsFlush(wheels::FlushError),
     Storage(storage::Error),
     BackwardIterKeyNotFound,
+    FtdProcessIsLost,
+    RequestInsert(arbeitssklave::Error),
 }
 
 fn make_wheel_ref(
@@ -230,10 +249,16 @@ enum ReplyOrder {
     Remove(komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>),
     FlushCancel(komm::UmschlagAbbrechen<ReplyFlush>),
     Flush(komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>),
+
+    InsertJobCancel(komm::UmschlagAbbrechen<InsertJob>),
+    InsertJob(komm::Umschlag<Result<(), Error>, InsertJob>),
 }
 
 struct ReplyInfo;
-struct ReplyInsert;
+struct ReplyInsert {
+    key: kv::Key,
+    value_crc: u64,
+}
 struct ReplyLookupRange;
 struct ReplyRemove;
 struct ReplyFlush;
@@ -298,9 +323,27 @@ impl From<komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>> for ReplyOrder {
     }
 }
 
+impl From<komm::UmschlagAbbrechen<InsertJob>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<InsertJob>) -> ReplyOrder {
+        ReplyOrder::InsertJobCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<Result<(), Error>, InsertJob>> for ReplyOrder {
+    fn from(v: komm::Umschlag<Result<(), Error>, InsertJob>) -> ReplyOrder {
+        ReplyOrder::InsertJob(v)
+    }
+}
+
+struct Welt {
+    ftd_tx: mpsc::Sender<ReplyOrder>,
+}
+
 enum Job {
     BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>),
     BlockwheelKv(blockwheel_kv::job::Job<AccessPolicy>),
+    FtdSklave(arbeitssklave::SklaveJob<Welt, ReplyOrder>),
+    Insert(JobInsertArgs),
 }
 
 impl From<blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>> for Job {
@@ -315,6 +358,18 @@ impl From<blockwheel_kv::job::Job<AccessPolicy>> for Job {
     }
 }
 
+impl From<arbeitssklave::SklaveJob<Welt, ReplyOrder>> for Job {
+    fn from(job: arbeitssklave::SklaveJob<Welt, ReplyOrder>) -> Job {
+        Job::FtdSklave(job)
+    }
+}
+
+impl From<JobInsertArgs> for Job {
+    fn from(args: JobInsertArgs) -> Job {
+        Job::Insert(args)
+    }
+}
+
 impl edeltraud::Job for Job {
     fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
         match self {
@@ -322,9 +377,84 @@ impl edeltraud::Job for Job {
                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
             Job::BlockwheelKv(job) =>
                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
+            Job::FtdSklave(mut sklave_job) =>
+                loop {
+                    match sklave_job.zu_ihren_diensten().unwrap() {
+                        arbeitssklave::Gehorsam::Machen { mut befehle, } =>
+                            loop {
+                                match befehle.befehl() {
+                                    arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
+                                        mehr_befehle.sklavenwelt().ftd_tx.send(befehl).unwrap();
+                                        befehle = mehr_befehle;
+                                    },
+                                    arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
+                                        sklave_job = next_sklave_job;
+                                        break;
+                                    },
+                                }
+                            },
+                        arbeitssklave::Gehorsam::Rasten =>
+                            break,
+                    }
+                },
+            Job::Insert(args) =>
+                job_insert(args, thread_pool),
         }
     }
 }
+
+#[derive(Debug)]
+struct InsertJob;
+
+struct JobInsertArgs {
+    main: JobInsertArgsMain,
+    job_complete: komm::Rueckkopplung<ReplyOrder, InsertJob>,
+}
+
+struct JobInsertArgsMain {
+    blocks_pool: BytesPool,
+    version_provider: version::Provider,
+    key_amount: usize,
+    value_amount: usize,
+    limits: Limits,
+    blockwheel_kv_meister: blockwheel_kv::Meister<AccessPolicy>,
+    ftd_sendegeraet: komm::Sendegeraet<ReplyOrder>,
+}
+
+fn job_insert<P>(args: JobInsertArgs, thread_pool: &P) where P: edeltraud::ThreadPool<Job> {
+    let output = run_job_insert(args.main, thread_pool);
+    args.job_complete.commit(output).ok();
+}
+
+fn run_job_insert<P>(args: JobInsertArgsMain, thread_pool: &P) -> Result<(), Error> where P: edeltraud::ThreadPool<Job> {
+    let mut key_block = args.blocks_pool.lend();
+    let mut value_block = args.blocks_pool.lend();
+    let mut rng = SmallRng::from_entropy();
+    key_block.reserve(args.key_amount);
+    for _ in 0 .. args.key_amount {
+        key_block.push(rng.gen());
+    }
+    value_block.reserve(args.value_amount);
+    for _ in 0 .. args.value_amount {
+        value_block.push(rng.gen());
+    }
+    let key_bytes = key_block.freeze();
+    let value_bytes = value_block.freeze();
+    let value_crc = blockwheel_fs::block::crc(&value_bytes);
+
+    let key = kv::Key { key_bytes, };
+    let value = kv::Value { value_bytes, };
+
+    let stamp = ReplyInsert {
+        key: key.clone(),
+        value_crc,
+    };
+    let rueckkopplung = args.ftd_sendegeraet.rueckkopplung(stamp);
+    args.blockwheel_kv_meister
+        .insert(key, value, rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+        .map_err(Error::RequestInsert)
+}
+
 
 fn stress_loop(
     params: Params,
@@ -343,9 +473,6 @@ fn stress_loop(
     let wheel_ref_a = make_wheel_ref(params.wheel_a, &blocks_pool, &thread_pool)?;
     let wheel_ref_b = make_wheel_ref(params.wheel_b, &blocks_pool, &thread_pool)?;
 
-//     let mut wheel_a_pid = wheel_ref_a.blockwheel_pid.clone();
-//     let mut wheel_b_pid = wheel_ref_b.blockwheel_pid.clone();
-
     let wheels = wheels::WheelsBuilder::new()
         .add_wheel_ref(wheel_ref_a)
         .add_wheel_ref(wheel_ref_b)
@@ -363,183 +490,154 @@ fn stress_loop(
         )
         .map_err(Error::BlockwheelKvMeister)?;
 
-    std::thread::sleep(std::time::Duration::from_secs(8));
+    let (ftd_tx, ftd_rx) = mpsc::channel();
+    let ftd_sklave_freie = arbeitssklave::Freie::new();
+    let ftd_sendegeraet = komm::Sendegeraet::starten(&ftd_sklave_freie, thread_pool.clone())
+        .unwrap();
+    let _ftd_sklave_meister = ftd_sklave_freie
+        .versklaven(Welt { ftd_tx, }, &thread_pool)
+        .unwrap();
 
-//     let wheel_kv_gen_server = blockwheel_kv::GenServer::new();
-//     let mut wheel_kv_pid = wheel_kv_gen_server.pid();
-//     supervisor_pid.spawn_link_permanent(
-//         wheel_kv_gen_server.run(
-//             supervisor_pid.clone(),
-//             thread_pool.clone(),
-//             blocks_pool.clone(),
-//             version_provider.clone(),
-//             wheels.clone(),
-//             params.kv,
-//         ),
-//     );
+    let mut rng = SmallRng::from_entropy();
+    let p_distribution = Uniform::new(0.0, 1.0);
+    let key_distribution = Uniform::new(1, limits.key_size_bytes);
+    let value_distribution = Uniform::new(1, limits.value_size_bytes);
 
-//     let mut rng = rand::thread_rng();
-//     let (done_tx, done_rx) = mpsc::channel(0);
-//     pin_mut!(done_rx);
-//     let mut active_tasks_counter = Counter::default();
-//     let mut actions_counter = 0;
+    let mut active_tasks_counter = Counter::default();
+    let mut actions_counter = 0;
 
-//     enum TaskDone {
-//         Lookup { key: kv::Key, found_value_cell: kv::ValueCell<kv::Value>, version_snapshot: u64, lookup_kind: LookupKind, },
-//         Insert { key: kv::Key, value: kv::Value, version: u64, },
-//         Remove { key: kv::Key, version: u64, },
-//     }
+    loop {
+        if actions_counter >= limits.actions {
+            while active_tasks_counter.sum_total() > 0 {
+                log::debug!("terminating, waiting for {} tasks to finish | active = {:?}", active_tasks_counter.sum(), active_tasks_counter);
+                process(ftd_rx.recv(), data, counter, &mut active_tasks_counter, &ftd_sendegeraet, &thread_pool)?;
+            }
+            break;
+        }
 
-//     #[derive(Debug)]
-//     enum LookupKind { Single, Range, }
+        let maybe_task_result = if (active_tasks_counter.sum() >= limits.active_tasks) ||
+            (data.data.is_empty() && active_tasks_counter.inserts > 0)
+        {
+            Some(ftd_rx.recv())
+        } else {
+            match ftd_rx.try_recv() {
+                Ok(order) =>
+                    Some(Ok(order)),
+                Err(mpsc::TryRecvError::Empty) =>
+                    None,
+                Err(mpsc::TryRecvError::Disconnected) =>
+                    Some(Err(mpsc::RecvError)),
+            }
+        };
 
-//     fn spawn_task<T>(
-//         supervisor_pid: &mut SupervisorPid,
-//         mut done_tx: mpsc::Sender<Result<TaskDone, Error>>,
-//         task: T,
-//     )
-//     where T: Future<Output = Result<TaskDone, Error>> + Send + 'static
-//     {
-//         supervisor_pid.spawn_link_temporary(async move {
-//             let result = task.await;
-//             done_tx.send(result).await.ok();
-//         })
-//     }
+        match maybe_task_result {
+            None =>
+                (),
+            Some(task_result) => {
+                process(task_result, data, counter, &mut active_tasks_counter, &ftd_sendegeraet, &thread_pool)?;
+                continue;
+            }
+        }
 
-//     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) -> Result<(), Error> {
-//         match task_done {
-//             TaskDone::Insert { key, value, version, } => {
-//                 let data_cell = kv::KeyValuePair {
-//                     key: key.clone(),
-//                     value_cell: kv::ValueCell {
-//                         version,
-//                         cell: kv::Cell::Value(value.clone()),
-//                     },
-//                 };
-//                 if let Some(&offset) = data.index.get(&key) {
-//                     if data.data[offset].value_cell.version < data_cell.value_cell.version {
-//                         data.data[offset] = data_cell;
-//                         data.alive.insert(key.clone(), offset);
-//                     }
-//                 } else {
-//                     let offset = data.data.len();
-//                     data.data.push(data_cell);
-//                     data.index.insert(key.clone(), offset);
-//                     data.alive.insert(key.clone(), offset);
-//                 }
+        // construct action and run task
+        if data.data.is_empty() || rng.sample(p_distribution) < limits.insert_or_remove_prob {
+            // insert or remove task
+            let db_size = limits.actions / 2;
+            let insert_prob = 1.0 - (data.alive.len() as f64 / db_size as f64);
+            let dice = rng.sample(p_distribution);
+            if data.alive.is_empty() || dice < insert_prob {
+                // insert task
+                let key_amount = rng.sample(key_distribution);
+                let value_amount = rng.sample(value_distribution);
 
-//                 counter.inserts += 1;
-//                 active_tasks_counter.inserts -= 1;
-//             },
-//             TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind, } => {
-//                 let &offset = data.index.get(&key).unwrap();
-//                 let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
-//                 let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
-//                 if version_found == version_current {
-//                     if cell_found == cell_current {
-//                         // everything is up to date
-//                     } else {
-//                         // version matches, but actual values are not
-//                         return Err(Error::UnexpectedValueFound {
-//                             key,
-//                             expected_value_cell: data.data[offset].value_cell.clone(),
-//                             found_value_cell,
-//                         });
-//                     }
-//                 } else if version_found < version_current {
-//                     if version_snapshot < version_current {
-//                         // deprecated lookup (ignoring)
-//                     } else {
-//                         // lookup started after value is actually updated, something wrong
-//                         return Err(Error::UnexpectedValueFound {
-//                             key,
-//                             expected_value_cell: data.data[offset].value_cell.clone(),
-//                             found_value_cell,
-//                         });
-//                     }
-//                 } else {
-//                     panic!(
-//                         "version_found = {} > version_current = {} for key = {:?}, data found = {}, data current = {}, wtf?",
-//                         version_found,
-//                         version_current,
-//                         key,
-//                         match cell_found {
-//                             kv::Cell::Value(v) =>
-//                                 format!("{} bytes", v.value_bytes.len()),
-//                             kv::Cell::Tombstone =>
-//                                 "TOMBSTONE".to_string(),
-//                         },
-//                         match cell_current {
-//                             kv::Cell::Value(v) =>
-//                                 format!("{} bytes", v.value_bytes.len()),
-//                             kv::Cell::Tombstone =>
-//                                 "TOMBSTONE".to_string(),
-//                         },
-//                     );
-//                 }
-//                 match lookup_kind {
-//                     LookupKind::Single => {
-//                         counter.lookups += 1;
-//                         active_tasks_counter.lookups -= 1;
-//                     },
-//                     LookupKind::Range => {
-//                         counter.lookups_range += 1;
-//                         active_tasks_counter.lookups_range -= 1;
-//                     },
-//                 }
-//             }
-//             TaskDone::Remove { key, version, } => {
-//                 let data_cell = kv::KeyValuePair {
-//                     key: key.clone(),
-//                     value_cell: kv::ValueCell {
-//                         version,
-//                         cell: kv::Cell::Tombstone,
-//                     },
-//                 };
-//                 let &offset = data.index.get(&key).unwrap();
-//                 if data.data[offset].value_cell.version < data_cell.value_cell.version {
-//                     data.data[offset] = data_cell;
-//                     data.alive.remove(&key);
-//                 }
+                log::debug!(
+                    "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
+                    actions_counter,
+                    key_amount,
+                    value_amount,
+                    dice,
+                    insert_prob,
+                    counter,
+                    active_tasks_counter,
+                );
 
-//                 counter.removes += 1;
-//                 active_tasks_counter.removes -= 1;
-//             },
-//         }
-//         Ok(())
-//     }
+                let job = JobInsertArgs {
+                    main: JobInsertArgsMain {
+                        blocks_pool: blocks_pool.clone(),
+                        version_provider: version_provider.clone(),
+                        key_amount,
+                        value_amount,
+                        limits: limits.clone(),
+                        blockwheel_kv_meister: meister.clone(),
+                        ftd_sendegeraet: ftd_sendegeraet.clone(),
+                    },
+                    job_complete: ftd_sendegeraet.rueckkopplung(InsertJob),
+                };
+                edeltraud::job(&thread_pool, job)
+                    .map_err(Error::Edeltraud)?;
+                active_tasks_counter.inserts += 1;
+                active_tasks_counter.insert_jobs += 1;
+            } else {
+                // remove task
+                let (key, value) = loop {
+                    let index = rng.gen_range(0 .. data.alive.len());
+                    let &key_index = data.alive
+                        .values()
+                        .nth(index)
+                        .unwrap();
+                    let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
+                    match &value_cell.cell {
+                        kv::Cell::Value(value) =>
+                            break (key, value),
+                        kv::Cell::Tombstone =>
+                            continue,
+                    }
+                };
 
-//     loop {
-//         if actions_counter >= limits.actions {
-//             std::mem::drop(done_tx);
+                log::debug!(
+                    "{}. performing REMOVE with {} bytes key (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
+                    actions_counter,
+                    key.key_bytes.len(),
+                    dice,
+                    1.0 - insert_prob,
+                    counter,
+                    active_tasks_counter,
+                );
 
-//             while active_tasks_counter.sum() > 0 {
-//                 log::debug!("terminating, waiting for {} tasks to finish | active = {:?}", active_tasks_counter.sum(), active_tasks_counter);
-//                 process(done_rx.next().await.unwrap()?, data, counter, &mut active_tasks_counter)?;
-//             }
-//             break;
-//         }
-//         let maybe_task_result =
-//             if (active_tasks_counter.sum() >= limits.active_tasks) || (data.data.is_empty() && active_tasks_counter.inserts > 0) {
-//                 Some(done_rx.next().await.unwrap())
-//             } else {
-//                 select! {
-//                     task_result = done_rx.next() =>
-//                         Some(task_result.unwrap()),
-//                     default =>
-//                         None,
-//                 }
-//             };
-//         match maybe_task_result {
-//             None =>
-//                 (),
-//             Some(task_result) => {
-//                 process(task_result?, data, counter, &mut active_tasks_counter)?;
-//                 continue;
-//             }
-//         }
+                todo!();
+                // backend.spawn_remove_task(supervisor_pid, &done_tx, &blocks_pool, &version_provider, key.clone(), &limits);
+                active_tasks_counter.removes += 1;
+            }
+        } else {
+            // lookup range task
+            let key_index = rng.gen_range(0 .. data.data.len());
+            let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
 
-//         // construct action and run task
+            log::debug!(
+                "{}. performing LOOKUP_RANGE with {} bytes key and {} value | {:?}, active = {:?}",
+                actions_counter,
+                key.key_bytes.len(),
+                match &value_cell.cell {
+                    kv::Cell::Value(..) =>
+                        "active",
+                    kv::Cell::Tombstone =>
+                        "tombstone",
+                },
+                counter,
+                active_tasks_counter,
+            );
+
+            let key = key.clone();
+            let value_cell = value_cell.clone();
+
+            todo!();
+            //backend.spawn_lookup_range_task(supervisor_pid, &done_tx, &blocks_pool, key, value_cell, &limits);
+            active_tasks_counter.lookups_range += 1;
+        }
+        actions_counter += 1;
+    }
+
+        // construct action and run task
 //         let info_a = wheel_a_pid.info().await
 //             .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
 //         let info_b = wheel_b_pid.info().await
@@ -719,6 +817,8 @@ fn stress_loop(
 //         actions_counter += 1;
 //     }
 
+    todo!();
+
 //     assert!(done_rx.next().await.is_none());
 
 //     let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
@@ -785,3 +885,127 @@ fn stress_loop(
 
     Ok::<_, Error>(())
 }
+
+fn process<P>(
+    maybe_recv_order: Result<ReplyOrder, mpsc::RecvError>,
+    data: &mut DataIndex,
+    counter: &mut Counter,
+    active_tasks_counter: &mut Counter,
+    ftd_sendegeraet: &komm::Sendegeraet<ReplyOrder>,
+    thread_pool: &P,
+)
+    -> Result<(), Error>
+where P: edeltraud::ThreadPool<Job>,
+{
+    let recv_order = maybe_recv_order
+        .map_err(|mpsc::RecvError| Error::FtdProcessIsLost)?;
+
+    todo!()
+//     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) -> Result<(), Error> {
+//         match task_done {
+//             TaskDone::Insert { key, value, version, } => {
+//                 let data_cell = kv::KeyValuePair {
+//                     key: key.clone(),
+//                     value_cell: kv::ValueCell {
+//                         version,
+//                         cell: kv::Cell::Value(value.clone()),
+//                     },
+//                 };
+//                 if let Some(&offset) = data.index.get(&key) {
+//                     if data.data[offset].value_cell.version < data_cell.value_cell.version {
+//                         data.data[offset] = data_cell;
+//                         data.alive.insert(key.clone(), offset);
+//                     }
+//                 } else {
+//                     let offset = data.data.len();
+//                     data.data.push(data_cell);
+//                     data.index.insert(key.clone(), offset);
+//                     data.alive.insert(key.clone(), offset);
+//                 }
+
+//                 counter.inserts += 1;
+//                 active_tasks_counter.inserts -= 1;
+//             },
+//             TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind, } => {
+//                 let &offset = data.index.get(&key).unwrap();
+//                 let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
+//                 let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
+//                 if version_found == version_current {
+//                     if cell_found == cell_current {
+//                         // everything is up to date
+//                     } else {
+//                         // version matches, but actual values are not
+//                         return Err(Error::UnexpectedValueFound {
+//                             key,
+//                             expected_value_cell: data.data[offset].value_cell.clone(),
+//                             found_value_cell,
+//                         });
+//                     }
+//                 } else if version_found < version_current {
+//                     if version_snapshot < version_current {
+//                         // deprecated lookup (ignoring)
+//                     } else {
+//                         // lookup started after value is actually updated, something wrong
+//                         return Err(Error::UnexpectedValueFound {
+//                             key,
+//                             expected_value_cell: data.data[offset].value_cell.clone(),
+//                             found_value_cell,
+//                         });
+//                     }
+//                 } else {
+//                     panic!(
+//                         "version_found = {} > version_current = {} for key = {:?}, data found = {}, data current = {}, wtf?",
+//                         version_found,
+//                         version_current,
+//                         key,
+//                         match cell_found {
+//                             kv::Cell::Value(v) =>
+//                                 format!("{} bytes", v.value_bytes.len()),
+//                             kv::Cell::Tombstone =>
+//                                 "TOMBSTONE".to_string(),
+//                         },
+//                         match cell_current {
+//                             kv::Cell::Value(v) =>
+//                                 format!("{} bytes", v.value_bytes.len()),
+//                             kv::Cell::Tombstone =>
+//                                 "TOMBSTONE".to_string(),
+//                         },
+//                     );
+//                 }
+//                 match lookup_kind {
+//                     LookupKind::Single => {
+//                         counter.lookups += 1;
+//                         active_tasks_counter.lookups -= 1;
+//                     },
+//                     LookupKind::Range => {
+//                         counter.lookups_range += 1;
+//                         active_tasks_counter.lookups_range -= 1;
+//                     },
+//                 }
+//             }
+//             TaskDone::Remove { key, version, } => {
+//                 let data_cell = kv::KeyValuePair {
+//                     key: key.clone(),
+//                     value_cell: kv::ValueCell {
+//                         version,
+//                         cell: kv::Cell::Tombstone,
+//                     },
+//                 };
+//                 let &offset = data.index.get(&key).unwrap();
+//                 if data.data[offset].value_cell.version < data_cell.value_cell.version {
+//                     data.data[offset] = data_cell;
+//                     data.alive.remove(&key);
+//                 }
+
+//                 counter.removes += 1;
+//                 active_tasks_counter.removes -= 1;
+//             },
+//         }
+//         Ok(())
+}
+
+//     enum TaskDone {
+//         Lookup { key: kv::Key, found_value_cell: kv::ValueCell<kv::Value>, version_snapshot: u64, lookup_kind: LookupKind, },
+//         Insert { key: kv::Key, value: kv::Value, version: u64, },
+//         Remove { key: kv::Key, version: u64, },
+//     }

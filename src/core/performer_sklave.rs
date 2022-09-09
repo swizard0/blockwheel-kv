@@ -175,6 +175,11 @@ pub enum Error {
         error: storage::Error,
     },
     SendegeraetGone(arbeitssklave::Error),
+    UnexpectedIterBlocksReplyInRunningMode,
+    CommitInfo(komm::Error),
+    CommitInserted(komm::Error),
+    CommitRemoved(komm::Error),
+    CommitFlushed(komm::Error),
 }
 
 pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
@@ -375,9 +380,9 @@ impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksN
 pub struct Context<A>(PhantomData<A>);
 
 impl<A> context::Context for Context<A> where A: AccessPolicy {
-    type Info = A::Info;
-    type Insert = A::Insert;
-    type Lookup = A::LookupRange;
-    type Remove = A::Remove;
-    type Flush = A::Flush;
+    type Info = komm::Rueckkopplung<A::Order, A::Info>;
+    type Insert = komm::Rueckkopplung<A::Order, A::Insert>;
+    type Lookup = komm::Rueckkopplung<A::Order, A::LookupRange>;
+    type Remove = komm::Rueckkopplung<A::Order, A::Remove>;
+    type Flush = komm::Rueckkopplung<A::Order, A::Flush>;
 }
