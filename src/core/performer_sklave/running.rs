@@ -8,7 +8,6 @@ use crate::{
         performer,
         performer_sklave::{
             Welt,
-            Error,
             Order,
             Context,
             OrderWheel,
@@ -18,6 +17,8 @@ use crate::{
             OrderRequestLookupRange,
             OrderRequestRemove,
             OrderRequestFlush,
+            LookupRangeRoute,
+            LookupRangeMergeDrop,
             LookupRangeStreamNext,
         },
     },
@@ -26,6 +27,8 @@ use crate::{
     Inserted,
     AccessPolicy,
 };
+
+pub mod lookup_range_merge;
 
 pub struct WeltState<A> where A: AccessPolicy {
     kont: Kont<A>,
@@ -50,6 +53,16 @@ enum Kont<A> where A: AccessPolicy {
     StepPoll {
         next: performer::KontPollNext<Context<A>>,
     },
+}
+
+#[derive(Debug)]
+pub enum Error {
+    UnexpectedIterBlocksReplyInRunningMode,
+    CommitInfo(komm::Error),
+    CommitInserted(komm::Error),
+    CommitRemoved(komm::Error),
+    CommitFlushed(komm::Error),
+    LookupRangeMergerVersklaven(arbeitssklave::Error),
 }
 
 pub fn job<A, P>(
@@ -78,21 +91,49 @@ where A: AccessPolicy,
                             break next.incoming_info(rueckkopplung),
                         Some(Order::Request(OrderRequest::Insert(OrderRequestInsert { key, value, rueckkopplung, }))) =>
                             break next.incoming_insert(key, value, rueckkopplung),
-                        Some(Order::Request(OrderRequest::LookupRange(OrderRequestLookupRange { .. }))) => {
-                            todo!();
-                        },
+                        Some(Order::Request(OrderRequest::LookupRange(OrderRequestLookupRange { search_range, rueckkopplung, }))) =>
+                            break next.begin_lookup_range(search_range, rueckkopplung),
                         Some(Order::Request(OrderRequest::Remove(OrderRequestRemove { key, rueckkopplung, }))) =>
                             break next.incoming_remove(key, rueckkopplung),
                         Some(Order::Request(OrderRequest::Flush(OrderRequestFlush { rueckkopplung, }))) =>
                             break next.incoming_flush(rueckkopplung),
-                        Some(Order::LookupRangeStreamCancel(komm::UmschlagAbbrechen { stamp: lookup_range_route, })) => {
-                            todo!();
+                        Some(Order::LookupRangeStreamCancel(komm::UmschlagAbbrechen {
+                            stamp: LookupRangeRoute { meister_ref, },
+                        })) => {
+                            log::debug!(" ;; lookup range merge sklave cancel initiated for: {meister_ref:?}");
+                            let maybe_meister = sklavenwelt.env
+                                .lookup_range_merge_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) =>
+                                    if let Err(error) = meister.befehl(lookup_range_merge::Order::Terminate, thread_pool) {
+                                        log::warn!("lookup range merge sklave order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                    },
+                                None =>
+                                    log::debug!("lookup range merge sklave entry has already unregistered before cancel"),
+                            }
                         },
                         Some(Order::LookupRangeStreamNext(komm::Umschlag {
                             payload: LookupRangeStreamNext { rueckkopplung, },
                             stamp: lookup_range_router,
                         })) => {
                             todo!();
+                        },
+                        Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
+                            stamp: LookupRangeMergeDrop {
+                                access_token,
+                                route: LookupRangeRoute { meister_ref, },
+                            },
+                        })) => {
+                            log::debug!(" ;; unregistering lookup range merge sklave: {meister_ref:?}");
+                            let maybe_removed = sklavenwelt.env
+                                .lookup_range_merge_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("lookup range merge sklave entry has already unregistered");
+                            }
+                            break next.commit_lookup_range(access_token);
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: wheel_route_info, }))) => {
                             todo!();
@@ -195,8 +236,29 @@ where A: AccessPolicy,
                     // next.scheduled()
                 },
                 performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady { ranges_merger, lookup_context, next, }) => {
-                    todo!()
-                    // next.got_it()
+                    let merger_freie = arbeitssklave::Freie::new();
+                    let merger_meister = merger_freie.meister();
+                    let meister_ref = sklavenwelt.env
+                        .lookup_range_merge_sklaven
+                        .insert(merger_meister);
+                    merger_freie
+                        .versklaven(
+                            lookup_range_merge::Welt {
+                                kont: Some(lookup_range_merge::Kont::Start {
+                                    merger: ranges_merger.source,
+                                }),
+                                lookup_context,
+                                drop_bomb: sklavenwelt.env
+                                    .sendegeraet
+                                    .rueckkopplung(LookupRangeMergeDrop {
+                                        access_token: ranges_merger.token,
+                                        route: LookupRangeRoute { meister_ref, },
+                                    }),
+                            },
+                            thread_pool,
+                        )
+                        .map_err(Error::LookupRangeMergerVersklaven)?;
+                    next.got_it()
                 },
                 performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees { ranges_merger, next, }) => {
                     todo!()

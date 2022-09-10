@@ -5,6 +5,13 @@ use std::{
     },
 };
 
+use o1::{
+    set::{
+        Ref,
+        Set,
+    },
+};
+
 use alloc_pool::{
     pool,
     bytes::{
@@ -26,7 +33,6 @@ use crate::{
     job,
     wheels,
     version,
-    storage,
     core::{
         context,
         performer,
@@ -38,13 +44,14 @@ use crate::{
     AccessPolicy,
 };
 
-mod loading;
-mod running;
+pub mod loading;
+pub mod running;
 
 pub enum Order<A> where A: AccessPolicy {
     Request(OrderRequest<A>),
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
+    UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     Wheel(OrderWheel),
 }
 
@@ -90,13 +97,37 @@ impl<A> Welt<A> where A: AccessPolicy {
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order<A>>;
 
 pub struct Env<A> where A: AccessPolicy {
-    pub params: Params,
-    pub blocks_pool: BytesPool,
-    pub version_provider: version::Provider,
-    pub wheels: wheels::Wheels<A>,
-    pub sendegeraet: komm::Sendegeraet<Order<A>>,
-    pub incoming_orders: Vec<Order<A>>,
-    pub delayed_orders: Vec<Order<A>>,
+    params: Params,
+    blocks_pool: BytesPool,
+    version_provider: version::Provider,
+    wheels: wheels::Wheels<A>,
+    sendegeraet: komm::Sendegeraet<Order<A>>,
+    incoming_orders: Vec<Order<A>>,
+    delayed_orders: Vec<Order<A>>,
+    lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
+}
+
+impl<A> Env<A> where A: AccessPolicy {
+    pub fn new(
+        params: Params,
+        blocks_pool: BytesPool,
+        version_provider: version::Provider,
+        wheels: wheels::Wheels<A>,
+        sendegeraet: komm::Sendegeraet<Order<A>>,
+    )
+        -> Self
+    {
+        Env {
+            params,
+            blocks_pool,
+            version_provider,
+            wheels,
+            sendegeraet,
+            incoming_orders: Vec::new(),
+            delayed_orders: Vec::new(),
+            lookup_range_merge_sklaven: Set::new(),
+        }
+    }
 }
 
 enum WeltState<A> where A: AccessPolicy {
@@ -107,7 +138,12 @@ enum WeltState<A> where A: AccessPolicy {
 
 #[derive(Debug)]
 pub struct LookupRangeRoute {
-    meister_ref: o1::set::Ref,
+    meister_ref: Ref,
+}
+
+pub struct LookupRangeMergeDrop {
+    access_token: performer::AccessToken,
+    route: LookupRangeRoute,
 }
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
@@ -154,33 +190,9 @@ pub struct WheelRouteIterBlocksNext {
 
 #[derive(Debug)]
 pub enum Error {
-    WheelIterBlocksInit {
-        wheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
-    },
-    WheelIterBlocksNext {
-        wheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
-    },
-    WheelIterBlocksInitCanceled {
-        blockwheel_filename: wheels::WheelFilename,
-    },
-    WheelIterBlocksNextCanceled {
-        blockwheel_filename: wheels::WheelFilename,
-    },
-    WheelIterBlocksGetFailed {
-        blockwheel_filename: wheels::WheelFilename,
-    },
-    DeserializeBlock {
-        block_ref: wheels::BlockRef,
-        error: storage::Error,
-    },
+    Loading(loading::Error),
+    Running(running::Error),
     SendegeraetGone(arbeitssklave::Error),
-    UnexpectedIterBlocksReplyInRunningMode,
-    CommitInfo(komm::Error),
-    CommitInserted(komm::Error),
-    CommitRemoved(komm::Error),
-    CommitFlushed(komm::Error),
 }
 
 pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
@@ -236,7 +248,7 @@ where A: AccessPolicy,
                         WeltState::Loading(loading::WeltState::new());
                 },
                 WeltState::Loading(loading) =>
-                    match loading::job(loading, sklavenwelt, thread_pool)? {
+                    match loading::job(loading, sklavenwelt, thread_pool).map_err(Error::Loading)? {
                         loading::Outcome::Rasten { loading, } => {
                             sklavenwelt.state = WeltState::Loading(loading);
                             break;
@@ -251,7 +263,7 @@ where A: AccessPolicy,
                         },
                     },
                 WeltState::Running(running) =>
-                    match running::job(running, sklavenwelt, thread_pool)? {
+                    match running::job(running, sklavenwelt, thread_pool).map_err(Error::Running)? {
                         running::Outcome::Rasten { running, } => {
                             sklavenwelt.state = WeltState::Running(running);
                             break;
@@ -289,6 +301,12 @@ impl<A> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<A> where A: Ac
 impl<A> From<komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>) -> Order<A> {
         Order::LookupRangeStreamNext(v)
+    }
+}
+
+impl<A> From<komm::UmschlagAbbrechen<LookupRangeMergeDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::UmschlagAbbrechen<LookupRangeMergeDrop>) -> Order<A> {
+        Order::UnregisterLookupRangeMerge(v)
     }
 }
 

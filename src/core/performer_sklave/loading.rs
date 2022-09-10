@@ -10,7 +10,6 @@ use crate::{
         performer,
         performer_sklave::{
             Welt,
-            Error,
             Order,
             Pools,
             Context,
@@ -54,6 +53,31 @@ pub enum Outcome<A> where A: AccessPolicy {
 enum WeltStateMode {
     NeedIterBlocksRequest,
     Loading { wheels_left: usize, },
+}
+
+#[derive(Debug)]
+pub enum Error {
+    WheelIterBlocksInit {
+        wheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
+    WheelIterBlocksNext {
+        wheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
+    WheelIterBlocksInitCanceled {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    WheelIterBlocksNextCanceled {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    WheelIterBlocksGetFailed {
+        blockwheel_filename: wheels::WheelFilename,
+    },
+    DeserializeBlock {
+        block_ref: wheels::BlockRef,
+        error: storage::Error,
+    },
 }
 
 pub fn job<A, P>(

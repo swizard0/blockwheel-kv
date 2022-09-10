@@ -128,15 +128,13 @@ impl<A> Freie<A> where A: AccessPolicy {
             .map_err(Error::PerformerSendegeraet)?;
 
         let welt = core::performer_sklave::Welt::new(
-            core::performer_sklave::Env {
+            core::performer_sklave::Env::new(
                 params,
                 blocks_pool,
                 version_provider,
                 wheels,
-                sendegeraet: performer_sklave_sendegeraet,
-                incoming_orders: Vec::new(),
-                delayed_orders: Vec::new(),
-            }
+                performer_sklave_sendegeraet,
+            ),
         );
 
         let performer_sklave_meister = self
