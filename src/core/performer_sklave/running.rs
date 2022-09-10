@@ -20,6 +20,7 @@ use crate::{
             LookupRangeRoute,
             LookupRangeMergeDrop,
             LookupRangeStreamNext,
+            WheelRouteReadBlock,
         },
     },
     Flushed,
@@ -107,7 +108,7 @@ where A: AccessPolicy,
                             match maybe_meister {
                                 Some(meister) =>
                                     if let Err(error) = meister.befehl(lookup_range_merge::Order::Terminate, thread_pool) {
-                                        log::warn!("lookup range merge sklave order failed: {error:?}, unregistering");
+                                        log::warn!("lookup range merge sklave terminate order failed: {error:?}, unregistering");
                                         sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
                                     },
                                 None =>
@@ -161,9 +162,33 @@ where A: AccessPolicy,
                         },
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
                             payload: read_block_result,
-                            stamp: wheel_route_read_block,
+                            stamp: WheelRouteReadBlock::LookupRangeMerge {
+                                route: LookupRangeRoute { meister_ref, },
+                                target,
+                            },
                         }))) => {
-                            todo!();
+                            let maybe_meister = sklavenwelt.env
+                                .lookup_range_merge_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) => {
+                                    let send_result = meister.befehl(
+                                        lookup_range_merge::Order::ReadBlock(
+                                            lookup_range_merge::OrderReadBlock {
+                                                read_block_result,
+                                                target,
+                                            },
+                                        ),
+                                        thread_pool,
+                                    );
+                                    if let Err(error) = send_result {
+                                        log::warn!("lookup range merge sklave read block order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                    }
+                                },
+                                None =>
+                                    log::debug!("lookup range merge sklave entry has already unregistered before cancel"),
+                            }
                         },
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp: wheel_route_delete_block, }))) => {
                             todo!();
@@ -246,8 +271,11 @@ where A: AccessPolicy,
                             lookup_range_merge::Welt {
                                 kont: Some(lookup_range_merge::Kont::Start {
                                     merger: ranges_merger.source,
+                                    lookup_context,
                                 }),
-                                lookup_context,
+                                meister_ref,
+                                sendegeraet: sklavenwelt.env.sendegeraet.clone(),
+                                wheels: sklavenwelt.env.wheels.clone(),
                                 drop_bomb: sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {

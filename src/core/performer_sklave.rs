@@ -175,9 +175,18 @@ pub struct OrderRequestFlush<A> where A: AccessPolicy {
 }
 
 pub struct WheelRouteInfo;
+
 pub struct WheelRouteFlush;
+
 pub struct WheelRouteWriteBlock;
-pub struct WheelRouteReadBlock;
+
+pub enum WheelRouteReadBlock {
+    LookupRangeMerge {
+        route: LookupRangeRoute,
+        target: running::lookup_range_merge::ReadBlockTarget,
+    },
+}
+
 pub struct WheelRouteDeleteBlock;
 
 pub struct WheelRouteIterBlocksInit {
@@ -192,7 +201,7 @@ pub struct WheelRouteIterBlocksNext {
 pub enum Error {
     Loading(loading::Error),
     Running(running::Error),
-    SendegeraetGone(arbeitssklave::Error),
+    OrphanSklave(arbeitssklave::Error),
 }
 
 pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
@@ -214,7 +223,7 @@ where A: AccessPolicy,
             // skip it on initialize
         } else {
             let gehorsam = sklave_job.zu_ihren_diensten()
-                .map_err(Error::SendegeraetGone)?;
+                .map_err(Error::OrphanSklave)?;
             match gehorsam {
                 arbeitssklave::Gehorsam::Rasten =>
                     return Ok(()),
