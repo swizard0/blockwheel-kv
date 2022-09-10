@@ -171,13 +171,14 @@ pub enum Error {
     Edeltraud(edeltraud::SpawnError),
     WheelRefMeister(blockwheel_fs::Error),
     BlockwheelKvMeister(blockwheel_kv::Error),
+    UnexpectedFtdOrder(String),
     ExpectedValueNotFound {
         key: kv::Key,
-        value_cell: kv::ValueCell<kv::Value>,
+        value_cell: kv::ValueCell<u64>,
     },
     UnexpectedValueFound {
         key: kv::Key,
-        expected_value_cell: kv::ValueCell<kv::Value>,
+        expected_value_cell: kv::ValueCell<u64>,
         found_value_cell: kv::ValueCell<kv::Value>,
     },
     UnexpectedValueForLookupRange {
@@ -195,6 +196,9 @@ pub enum Error {
     BackwardIterKeyNotFound,
     FtdProcessIsLost,
     RequestInsert(arbeitssklave::Error),
+    RequestRemove(arbeitssklave::Error),
+    RequestLookupRange(arbeitssklave::Error),
+    InsertJobCanceled,
 }
 
 fn make_wheel_ref(
@@ -238,6 +242,7 @@ impl blockwheel_kv::AccessPolicy for AccessPolicy {
     type Flush = ReplyFlush;
 }
 
+#[derive(Debug)]
 enum ReplyOrder {
     InfoCancel(komm::UmschlagAbbrechen<ReplyInfo>),
     Info(komm::Umschlag<blockwheel_kv::Info, ReplyInfo>),
@@ -254,13 +259,27 @@ enum ReplyOrder {
     InsertJob(komm::Umschlag<Result<(), Error>, InsertJob>),
 }
 
+#[derive(Debug)]
 struct ReplyInfo;
+
+#[derive(Debug)]
 struct ReplyInsert {
     key: kv::Key,
     value_crc: u64,
 }
-struct ReplyLookupRange;
-struct ReplyRemove;
+
+#[derive(Debug)]
+struct ReplyLookupRange {
+    key: kv::Key,
+    value_cell: kv::ValueCell<u64>,
+}
+
+#[derive(Debug)]
+struct ReplyRemove {
+    key: kv::Key,
+}
+
+#[derive(Debug)]
 struct ReplyFlush;
 
 impl From<komm::UmschlagAbbrechen<ReplyInfo>> for ReplyOrder {
@@ -384,7 +403,10 @@ impl edeltraud::Job for Job {
                             loop {
                                 match befehle.befehl() {
                                     arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
-                                        mehr_befehle.sklavenwelt().ftd_tx.send(befehl).unwrap();
+                                        if let Err(_send_error) = mehr_befehle.sklavenwelt().ftd_tx.send(befehl) {
+                                            log::warn!("frontend tx lost, terminatong FtdSklave job");
+                                            return;
+                                        }
                                         befehle = mehr_befehle;
                                     },
                                     arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -604,8 +626,10 @@ fn stress_loop(
                     active_tasks_counter,
                 );
 
-                todo!();
-                // backend.spawn_remove_task(supervisor_pid, &done_tx, &blocks_pool, &version_provider, key.clone(), &limits);
+                let rueckkopplung = ftd_sendegeraet.rueckkopplung(ReplyRemove { key: key.clone(), });
+                meister
+                    .remove(key.clone(), rueckkopplung, &edeltraud::ThreadPoolMap::new(&thread_pool))
+                    .map_err(Error::RequestRemove)?;
                 active_tasks_counter.removes += 1;
             }
         } else {
@@ -630,192 +654,14 @@ fn stress_loop(
             let key = key.clone();
             let value_cell = value_cell.clone();
 
-            todo!();
-            //backend.spawn_lookup_range_task(supervisor_pid, &done_tx, &blocks_pool, key, value_cell, &limits);
+            let rueckkopplung = ftd_sendegeraet.rueckkopplung(ReplyLookupRange { key: key.clone(), value_cell: value_cell.clone(), });
+            meister
+                .lookup_range(key.clone() ..= key.clone(), rueckkopplung, &edeltraud::ThreadPoolMap::new(&thread_pool))
+                .map_err(Error::RequestLookupRange)?;
             active_tasks_counter.lookups_range += 1;
         }
         actions_counter += 1;
     }
-
-        // construct action and run task
-//         let info_a = wheel_a_pid.info().await
-//             .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
-//         let info_b = wheel_b_pid.info().await
-//             .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
-//         if data.data.is_empty() || rng.gen_range(0.0 .. 1.0) < 0.5 {
-//             // insert or remove task
-//             let prob_space = (info_a.wheel_size_bytes + info_b.wheel_size_bytes) as f64;
-//             let insert_prob_space = (info_a.bytes_free + info_b.bytes_free) as f64;
-//             let insert_prob = insert_prob_space / prob_space;
-//             let dice = rng.gen_range(0.0 .. 1.0);
-//             if data.alive.is_empty() || dice < insert_prob {
-//                 // insert task
-//                 let mut wheel_kv_pid = wheel_kv_pid.clone();
-//                 let blocks_pool = blocks_pool.clone();
-//                 let key_amount = rng.gen_range(1 .. limits.key_size_bytes);
-//                 let value_amount = rng.gen_range(1 .. limits.value_size_bytes);
-
-//                 log::debug!(
-//                     "{}. performing INSERT with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
-//                     actions_counter,
-//                     key_amount,
-//                     value_amount,
-//                     dice,
-//                     insert_prob,
-//                     counter,
-//                     active_tasks_counter,
-//                 );
-
-//                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-//                     let mut key_block = blocks_pool.lend();
-//                     let mut value_block = blocks_pool.lend();
-//                     let gen_task = tokio::task::spawn_blocking(move || {
-//                         let mut rng = rand::thread_rng();
-//                         key_block.reserve(key_amount);
-//                         for _ in 0 .. key_amount {
-//                             key_block.push(rng.gen());
-//                         }
-//                         value_block.reserve(value_amount);
-//                         for _ in 0 .. value_amount {
-//                             value_block.push(rng.gen());
-//                         }
-//                         (key_block.freeze(), value_block.freeze())
-//                     });
-//                     let (key_bytes, value_bytes) = gen_task.await
-//                         .map_err(Error::GenTaskJoin)?;
-//                     let key = kv::Key { key_bytes, };
-//                     let value = kv::Value { value_bytes, };
-//                     match wheel_kv_pid.insert(key.clone(), value.clone()).await {
-//                         Ok(blockwheel_kv::Inserted { version, }) =>
-//                             Ok(TaskDone::Insert { key, value, version, }),
-//                         Err(error) =>
-//                             Err(Error::Insert(error))
-//                     }
-//                 });
-//                 active_tasks_counter.inserts += 1;
-//             } else {
-//                 // remove task
-//                 let (key, value) = loop {
-//                     let index = rng.gen_range(0 .. data.alive.len());
-//                     let &key_index = data.alive
-//                         .values()
-//                         .nth(index)
-//                         .unwrap();
-//                     let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
-//                     match &value_cell.cell {
-//                         kv::Cell::Value(value) =>
-//                             break (key, value),
-//                         kv::Cell::Tombstone =>
-//                             continue,
-//                     }
-//                 };
-
-//                 log::debug!(
-//                     "{}. performing REMOVE with {} bytes key and {} bytes value (dice = {:.3}, prob = {:.3}) | {:?}, active = {:?}",
-//                     actions_counter,
-//                     key.key_bytes.len(),
-//                     value.value_bytes.len(),
-//                     dice,
-//                     1.0 - insert_prob,
-//                     counter,
-//                     active_tasks_counter,
-//                 );
-
-//                 let key = key.clone();
-//                 let mut wheel_kv_pid = wheel_kv_pid.clone();
-//                 spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-//                     match wheel_kv_pid.remove(key.clone()).await {
-//                         Ok(blockwheel_kv::Removed { version, }) =>
-//                             Ok(TaskDone::Remove { key, version, }),
-//                         Err(error) =>
-//                             Err(Error::Remove(error))
-//                     }
-//                 });
-//                 active_tasks_counter.removes += 1;
-//             }
-//         } else {
-//             // lookup task
-//             let key_index = rng.gen_range(0 .. data.data.len());
-//             let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
-
-//             let lookup_kind = if rng.gen_range(0.0 .. 1.0) < 0.5 {
-//                 LookupKind::Single
-//             } else {
-//                 LookupKind::Range
-//             };
-
-//             log::debug!(
-//                 "{}. performing {:?} LOOKUP with {} bytes key and {} value | {:?}, active = {:?}",
-//                 actions_counter,
-//                 lookup_kind,
-//                 key.key_bytes.len(),
-//                 match &value_cell.cell {
-//                     kv::Cell::Value(value) =>
-//                         format!("{} bytes", value.value_bytes.len()),
-//                     kv::Cell::Tombstone =>
-//                         "tombstone".to_string(),
-//                 },
-//                 counter,
-//                 active_tasks_counter,
-//             );
-
-//             let key = key.clone();
-//             let value_cell = value_cell.clone();
-//             let mut wheel_kv_pid = wheel_kv_pid.clone();
-
-//             match lookup_kind {
-//                 LookupKind::Single => {
-//                     spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-//                         match wheel_kv_pid.lookup(key.clone()).await {
-//                             Ok(None) =>
-//                                 Err(Error::ExpectedValueNotFound { key, value_cell, }),
-//                             Ok(Some(found_value_cell)) =>
-//                                 Ok(TaskDone::Lookup {
-//                                     key,
-//                                     found_value_cell,
-//                                     version_snapshot: value_cell.version,
-//                                     lookup_kind: LookupKind::Single,
-//                                 }),
-//                             Err(error) =>
-//                                 Err(Error::Lookup(error))
-//                         }
-//                     });
-//                     active_tasks_counter.lookups += 1;
-//                 },
-//                 LookupKind::Range => {
-//                     spawn_task(&mut supervisor_pid, done_tx.clone(), async move {
-//                         let mut lookup_range = wheel_kv_pid.lookup_range(key.clone() ..= key.clone()).await
-//                             .map_err(Error::LookupRange)?;
-//                         let result = match lookup_range.key_values_rx.next().await {
-//                             None =>
-//                                 return Err(Error::UnexpectedLookupRangeRxFinish),
-//                             Some(blockwheel_kv::KeyValueStreamItem::KeyValue(key_value_pair)) =>
-//                                 TaskDone::Lookup {
-//                                     key: key.clone(),
-//                                     found_value_cell: key_value_pair.value_cell,
-//                                     version_snapshot: value_cell.version,
-//                                     lookup_kind: LookupKind::Range,
-//                                 },
-//                             Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
-//                                 return Err(Error::ExpectedValueNotFound { key, value_cell, }),
-//                         };
-//                         match lookup_range.key_values_rx.next().await {
-//                             None =>
-//                                 return Err(Error::UnexpectedLookupRangeRxFinish),
-//                             Some(blockwheel_kv::KeyValueStreamItem::KeyValue(key_value_pair)) =>
-//                                 return Err(Error::UnexpectedValueForLookupRange { key, key_value_pair, }),
-//                             Some(blockwheel_kv::KeyValueStreamItem::NoMore) =>
-//                                 ()
-//                         }
-//                         assert!(lookup_range.key_values_rx.next().await.is_none());
-//                         Ok(result)
-//                     });
-//                     active_tasks_counter.lookups_range += 1;
-//                 },
-//             }
-//         }
-//         actions_counter += 1;
-//     }
 
     todo!();
 
@@ -900,112 +746,138 @@ where P: edeltraud::ThreadPool<Job>,
     let recv_order = maybe_recv_order
         .map_err(|mpsc::RecvError| Error::FtdProcessIsLost)?;
 
-    todo!()
-//     fn process(task_done: TaskDone, data: &mut DataIndex, counter: &mut Counter, active_tasks_counter: &mut Counter) -> Result<(), Error> {
-//         match task_done {
-//             TaskDone::Insert { key, value, version, } => {
-//                 let data_cell = kv::KeyValuePair {
-//                     key: key.clone(),
-//                     value_cell: kv::ValueCell {
-//                         version,
-//                         cell: kv::Cell::Value(value.clone()),
-//                     },
-//                 };
-//                 if let Some(&offset) = data.index.get(&key) {
-//                     if data.data[offset].value_cell.version < data_cell.value_cell.version {
-//                         data.data[offset] = data_cell;
-//                         data.alive.insert(key.clone(), offset);
-//                     }
-//                 } else {
-//                     let offset = data.data.len();
-//                     data.data.push(data_cell);
-//                     data.index.insert(key.clone(), offset);
-//                     data.alive.insert(key.clone(), offset);
-//                 }
+    match recv_order {
+        order @ ReplyOrder::Info(komm::Umschlag { stamp: ReplyInfo, .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        order @ ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        ReplyOrder::Insert(komm::Umschlag { payload: blockwheel_kv::Inserted { version, }, stamp: ReplyInsert { key, value_crc }, }) => {
+            let data_cell = kv::KeyValuePair {
+                key: key.clone(),
+                value_cell: kv::ValueCell {
+                    version,
+                    cell: kv::Cell::Value(value_crc),
+                },
+            };
+            if let Some(&offset) = data.index.get(&key) {
+                if data.data[offset].value_cell.version < data_cell.value_cell.version {
+                    data.data[offset] = data_cell;
+                    data.alive.insert(key.clone(), offset);
+                }
+            } else {
+                let offset = data.data.len();
+                data.data.push(data_cell);
+                data.index.insert(key.clone(), offset);
+                data.alive.insert(key.clone(), offset);
+            }
 
-//                 counter.inserts += 1;
-//                 active_tasks_counter.inserts -= 1;
-//             },
-//             TaskDone::Lookup { key, found_value_cell, version_snapshot, lookup_kind, } => {
-//                 let &offset = data.index.get(&key).unwrap();
-//                 let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
-//                 let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
-//                 if version_found == version_current {
-//                     if cell_found == cell_current {
-//                         // everything is up to date
-//                     } else {
-//                         // version matches, but actual values are not
-//                         return Err(Error::UnexpectedValueFound {
-//                             key,
-//                             expected_value_cell: data.data[offset].value_cell.clone(),
-//                             found_value_cell,
-//                         });
-//                     }
-//                 } else if version_found < version_current {
-//                     if version_snapshot < version_current {
-//                         // deprecated lookup (ignoring)
-//                     } else {
-//                         // lookup started after value is actually updated, something wrong
-//                         return Err(Error::UnexpectedValueFound {
-//                             key,
-//                             expected_value_cell: data.data[offset].value_cell.clone(),
-//                             found_value_cell,
-//                         });
-//                     }
-//                 } else {
-//                     panic!(
-//                         "version_found = {} > version_current = {} for key = {:?}, data found = {}, data current = {}, wtf?",
-//                         version_found,
-//                         version_current,
-//                         key,
-//                         match cell_found {
-//                             kv::Cell::Value(v) =>
-//                                 format!("{} bytes", v.value_bytes.len()),
-//                             kv::Cell::Tombstone =>
-//                                 "TOMBSTONE".to_string(),
-//                         },
-//                         match cell_current {
-//                             kv::Cell::Value(v) =>
-//                                 format!("{} bytes", v.value_bytes.len()),
-//                             kv::Cell::Tombstone =>
-//                                 "TOMBSTONE".to_string(),
-//                         },
-//                     );
-//                 }
-//                 match lookup_kind {
-//                     LookupKind::Single => {
-//                         counter.lookups += 1;
-//                         active_tasks_counter.lookups -= 1;
-//                     },
-//                     LookupKind::Range => {
-//                         counter.lookups_range += 1;
-//                         active_tasks_counter.lookups_range -= 1;
-//                     },
-//                 }
-//             }
-//             TaskDone::Remove { key, version, } => {
-//                 let data_cell = kv::KeyValuePair {
-//                     key: key.clone(),
-//                     value_cell: kv::ValueCell {
-//                         version,
-//                         cell: kv::Cell::Tombstone,
-//                     },
-//                 };
-//                 let &offset = data.index.get(&key).unwrap();
-//                 if data.data[offset].value_cell.version < data_cell.value_cell.version {
-//                     data.data[offset] = data_cell;
-//                     data.alive.remove(&key);
-//                 }
+            log::debug!(" ;; inserted: {:?}", key);
 
-//                 counter.removes += 1;
-//                 active_tasks_counter.removes -= 1;
-//             },
-//         }
-//         Ok(())
+            counter.inserts += 1;
+            active_tasks_counter.inserts -= 1;
+            Ok(())
+        },
+        ReplyOrder::InsertJob(komm::Umschlag { payload: output, stamp: InsertJob, }) => {
+            counter.insert_jobs += 1;
+            active_tasks_counter.insert_jobs -= 1;
+            output
+        },
+        ReplyOrder::Remove(komm::Umschlag { payload: blockwheel_kv::Removed { version, }, stamp: ReplyRemove { key, }, }) => {
+            log::debug!(" ;; removed: {:?}", key);
+
+            let data_cell = kv::KeyValuePair {
+                key: key.clone(),
+                value_cell: kv::ValueCell {
+                    version,
+                    cell: kv::Cell::Tombstone,
+                },
+            };
+            let &offset = data.index.get(&key).unwrap();
+            if data.data[offset].value_cell.version < data_cell.value_cell.version {
+                data.data[offset] = data_cell;
+                data.alive.remove(&key);
+            }
+
+            counter.removes += 1;
+            active_tasks_counter.removes -= 1;
+            Ok(())
+        },
+        ReplyOrder::LookupRange(komm::Umschlag {
+            payload: blockwheel_kv::KeyValueStreamItem::KeyValue {
+                key_value_pair: kv::KeyValuePair { value_cell: found_value_cell, .. },
+                ..
+            },
+            stamp: ReplyLookupRange {
+                key,
+                value_cell: kv::ValueCell { version: version_snapshot, .. },
+            },
+        }) => {
+            let &offset = data.index.get(&key).unwrap();
+            let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
+            let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
+            if version_found == version_current {
+                let is_equal = match (&cell_found, &cell_current) {
+                    (kv::Cell::Tombstone, kv::Cell::Tombstone) =>
+                        true,
+                    (kv::Cell::Value(found_value), kv::Cell::Value(current_crc))
+                        if blockwheel_fs::block::crc(&found_value.value_bytes) == *current_crc =>
+                        true,
+                    _ =>
+                        false,
+                };
+                if is_equal {
+                    // everything is up to date
+                } else {
+                    // version matches, but actual values are not
+                    return Err(Error::UnexpectedValueFound {
+                        key,
+                        expected_value_cell: data.data[offset].value_cell.clone(),
+                        found_value_cell,
+                    });
+                }
+            } else if version_snapshot < version_current {
+                // deprecated lookup (ignoring)
+                log::debug!("deprecated lookup: awaiting version {} but there is {} already", version_snapshot, version_current);
+            } else {
+                // premature lookup (ignoring, don't want to wait)
+                log::debug!(
+                    "premature lookup: found version {} but current is still {} (awaiting {})",
+                    version_found,
+                    version_current,
+                    version_snapshot,
+                );
+            }
+            counter.lookups_range += 1;
+            active_tasks_counter.lookups_range -= 1;
+            Ok(())
+        },
+        ReplyOrder::LookupRange(komm::Umschlag {
+            payload: blockwheel_kv::KeyValueStreamItem::NoMore,
+            stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: version_snapshot, .. }, },
+        }) => {
+            let &offset = data.index.get(&key).unwrap();
+            let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } =
+                data.data[offset];
+            match cell_current {
+                kv::Cell::Tombstone => {
+                    log::warn!("deprecated lookup: already removed during lookup_range");
+                    Ok(())
+                },
+                kv::Cell::Value(..) =>
+                    Err(Error::ExpectedValueNotFound { key, value_cell: data.data[offset].value_cell.clone(), }),
+            }
+        },
+        order @ ReplyOrder::InfoCancel(komm::UmschlagAbbrechen { .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        order @ ReplyOrder::InsertCancel(komm::UmschlagAbbrechen { .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        order @ ReplyOrder::LookupRangeCancel(komm::UmschlagAbbrechen { .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        order @ ReplyOrder::RemoveCancel(komm::UmschlagAbbrechen { .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        order @ ReplyOrder::FlushCancel(komm::UmschlagAbbrechen { .. }) =>
+            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+        ReplyOrder::InsertJobCancel(komm::UmschlagAbbrechen { stamp: InsertJob, }) =>
+            Err(Error::InsertJobCanceled),
+    }
 }
-
-//     enum TaskDone {
-//         Lookup { key: kv::Key, found_value_cell: kv::ValueCell<kv::Value>, version_snapshot: u64, lookup_kind: LookupKind, },
-//         Insert { key: kv::Key, value: kv::Value, version: u64, },
-//         Remove { key: kv::Key, version: u64, },
-//     }

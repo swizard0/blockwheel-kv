@@ -105,6 +105,7 @@ enum WeltState<A> where A: AccessPolicy {
     Running(running::WeltState<A>),
 }
 
+#[derive(Debug)]
 pub struct LookupRangeRoute {
     meister_ref: o1::set::Ref,
 }

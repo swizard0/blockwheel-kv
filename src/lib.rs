@@ -1,6 +1,7 @@
 #[forbid(unsafe_code)]
 
 use std::{
+    fmt,
     ops::{
         AddAssign,
         RangeBounds,
@@ -304,5 +305,22 @@ impl Info {
     pub fn reset(&mut self) {
         self.alive_cells_count = 0;
         self.tombstones_count = 0;
+    }
+}
+
+impl<A> fmt::Debug for KeyValueStreamItem<A> where A: AccessPolicy {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyValueStreamItem::KeyValue { key_value_pair, .. } => {
+                fmt.debug_struct("KeyValueStreamItem::KeyValue")
+                    .field("key_value_pair", key_value_pair)
+                    .field("next", &"<hidden>")
+                    .finish()
+            },
+            KeyValueStreamItem::NoMore => {
+                fmt.debug_struct("KeyValueStreamItem::NoMore")
+                    .finish()
+            },
+        }
     }
 }
