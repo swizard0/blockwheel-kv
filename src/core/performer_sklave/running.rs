@@ -117,9 +117,29 @@ where A: AccessPolicy,
                         },
                         Some(Order::LookupRangeStreamNext(komm::Umschlag {
                             payload: LookupRangeStreamNext { rueckkopplung, },
-                            stamp: lookup_range_router,
+                            stamp: LookupRangeRoute { meister_ref, },
                         })) => {
-                            todo!();
+                            let maybe_meister = sklavenwelt.env
+                                .lookup_range_merge_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) => {
+                                    let send_result = meister.befehl(
+                                        lookup_range_merge::Order::ItemNext(
+                                            lookup_range_merge::OrderItemNext {
+                                                lookup_context: rueckkopplung,
+                                            },
+                                        ),
+                                        thread_pool,
+                                    );
+                                    if let Err(error) = send_result {
+                                        log::warn!("lookup range merge sklave item next order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                    }
+                                },
+                                None =>
+                                    log::debug!("lookup range merge sklave entry has already unregistered before item next order"),
+                            }
                         },
                         Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
                             stamp: LookupRangeMergeDrop {
@@ -187,7 +207,7 @@ where A: AccessPolicy,
                                     }
                                 },
                                 None =>
-                                    log::debug!("lookup range merge sklave entry has already unregistered before cancel"),
+                                    log::debug!("lookup range merge sklave entry has already unregistered before read block order"),
                             }
                         },
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp: wheel_route_delete_block, }))) => {
@@ -276,6 +296,8 @@ where A: AccessPolicy,
                                 meister_ref,
                                 sendegeraet: sklavenwelt.env.sendegeraet.clone(),
                                 wheels: sklavenwelt.env.wheels.clone(),
+                                incoming_orders: Vec::new(),
+                                delayed_orders: Vec::new(),
                                 drop_bomb: sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
