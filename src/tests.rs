@@ -195,6 +195,8 @@ pub enum Error {
     Storage(storage::Error),
     BackwardIterKeyNotFound,
     FtdProcessIsLost,
+    RequestInfo(arbeitssklave::Error),
+    RequestFlush(arbeitssklave::Error),
     RequestInsert(arbeitssklave::Error),
     RequestRemove(arbeitssklave::Error),
     RequestLookupRange(arbeitssklave::Error),
@@ -663,18 +665,27 @@ fn stress_loop(
         actions_counter += 1;
     }
 
-    todo!();
+    log::info!("DONE, performing flush");
 
-//     assert!(done_rx.next().await.is_none());
+    meister.flush(ftd_sendegeraet.rueckkopplung(ReplyFlush), &edeltraud::ThreadPoolMap::new(&thread_pool))
+        .map_err(Error::RequestFlush)?;
+    match ftd_rx.recv() {
+        Ok(ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, })) =>
+            (),
+        other_order =>
+            return Err(Error::UnexpectedFtdOrder(format!("{other_order:?}"))),
+    }
 
-//     let blockwheel_kv::Flushed = wheel_kv_pid.flush().await
-//         .map_err(Error::Flush)?;
-//     let wheels::Flushed = wheels.flush().await
-//         .map_err(Error::WheelsFlush)?;
+    meister.info(ftd_sendegeraet.rueckkopplung(ReplyInfo), &edeltraud::ThreadPoolMap::new(&thread_pool))
+        .map_err(Error::RequestInfo)?;
+    let info = match ftd_rx.recv() {
+        Ok(ReplyOrder::Info(komm::Umschlag { payload: info, stamp: ReplyInfo, })) =>
+            info,
+        other_order =>
+            return Err(Error::UnexpectedFtdOrder(format!("{other_order:?}"))),
+    };
 
-//     let info = wheel_kv_pid.info().await
-//         .map_err(|ero::NoProcError| Error::WheelKvGoneDuringInfo)?;
-//     log::info!("FINAL INFO: {info:?}");
+    log::info!("FINAL INFO: {info:?}");
 
 //     // backwards check with iterator
 //     let mut checked_blocks = 0;
