@@ -37,6 +37,7 @@ use crate::{
         context,
         performer,
         search_tree_walker,
+        BlockRef,
         SearchRangeBounds,
         SearchTreeBuilderBlockEntry,
     },
@@ -51,6 +52,7 @@ pub enum Order<A> where A: AccessPolicy {
     Request(OrderRequest<A>),
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
+    FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
     UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     UnregisterFlushButcher(komm::UmschlagAbbrechen<FlushButcherDrop>),
     Wheel(OrderWheel),
@@ -155,7 +157,12 @@ pub struct FlushButcherRoute {
 }
 
 pub struct FlushButcherDrop {
+    search_tree_id: u64,
     route: FlushButcherRoute,
+}
+
+pub struct FlushButcherDone {
+    root_block: BlockRef,
 }
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
@@ -190,8 +197,15 @@ pub struct WheelRouteInfo;
 
 pub struct WheelRouteFlush;
 
-pub struct WheelRouteWriteBlock;
+#[derive(Debug)]
+pub enum WheelRouteWriteBlock {
+    FlushButcher {
+        route: FlushButcherRoute,
+        target: running::flush_butcher::WriteBlockTarget,
+    },
+}
 
+#[derive(Debug)]
 pub enum WheelRouteReadBlock {
     LookupRangeMerge {
         route: LookupRangeRoute,
@@ -420,6 +434,12 @@ impl<A> From<komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>> for Order<A> whe
 impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>) -> Order<A> {
         Order::Wheel(OrderWheel::IterBlocksNext(v))
+    }
+}
+
+impl<A> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::Umschlag<FlushButcherDone, FlushButcherDrop>) -> Order<A> {
+        Order::FlushButcherDone(v)
     }
 }
 

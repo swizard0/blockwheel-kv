@@ -19,6 +19,7 @@ use crate::{
         performer_sklave,
         search_ranges_merge,
     },
+    HideDebug,
     AccessPolicy,
     LookupRangeStream,
     KeyValueStreamItem,
@@ -39,11 +40,15 @@ pub struct OrderItemNext<A> where A: AccessPolicy {
     pub lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
 }
 
+#[derive(Debug)]
 pub enum ReadBlockTarget {
     LoadValue,
-    LoadBlock {
-        async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
-    },
+    LoadBlock(ReadBlockTargetLoadBlock),
+}
+
+#[derive(Debug)]
+pub struct ReadBlockTargetLoadBlock {
+    async_token: HideDebug<search_ranges_merge::AsyncToken<performer::LookupRangeSource>>,
 }
 
 pub struct Welt<A> where A: AccessPolicy {
@@ -168,7 +173,7 @@ where A: AccessPolicy,
                                 return Ok(()),
                             Some(Order::ReadBlock(OrderReadBlock {
                                 read_block_result: Ok(block_bytes),
-                                target: ReadBlockTarget::LoadBlock { async_token, },
+                                target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
                             })) => {
                                 let merger_kont = next.block_arrived(async_token, block_bytes)
                                     .map_err(Error::SearchRangesMerge)?;
@@ -193,7 +198,7 @@ where A: AccessPolicy,
                         .commit(KeyValueStreamItem::KeyValue {
                             key_value_pair,
                             next: LookupRangeStream {
-                                next: next_rueckkopplung,
+                                next: HideDebug(next_rueckkopplung),
                             },
                         })
                         .map_err(Error::SendegeraetGone)?;
@@ -275,7 +280,7 @@ where A: AccessPolicy,
                                     route: performer_sklave::LookupRangeRoute {
                                         meister_ref: sklavenwelt.meister_ref,
                                     },
-                                    target: ReadBlockTarget::LoadBlock { async_token, },
+                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
                                 },
                             );
                         wheel_ref.meister

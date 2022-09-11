@@ -29,6 +29,7 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Copy)]
 pub struct Params {
     pub tree_items_count: usize,
     pub tree_block_size: usize,

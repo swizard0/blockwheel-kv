@@ -6,7 +6,6 @@ use crate::{
     job,
     core::{
         performer,
-        search_tree_builder,
         performer_sklave::{
             Welt,
             Order,
@@ -22,9 +21,11 @@ use crate::{
             LookupRangeRoute,
             LookupRangeMergeDrop,
             LookupRangeStreamNext,
+            FlushButcherDone,
             FlushButcherDrop,
             FlushButcherRoute,
             WheelRouteReadBlock,
+            WheelRouteWriteBlock,
         },
     },
     Flushed,
@@ -73,6 +74,12 @@ pub enum Error {
     LookupRangeMergerVersklaven(arbeitssklave::Error),
     FlushButcherVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
+    WheelIsGoneDuringReadBlock {
+        route: WheelRouteReadBlock,
+    },
+    WheelIsGoneDuringWriteBlock {
+        route: WheelRouteWriteBlock,
+    },
 }
 
 pub fn job<A, P>(
@@ -168,6 +175,7 @@ where A: AccessPolicy,
                         Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
                             stamp: FlushButcherDrop {
                                 route: FlushButcherRoute { meister_ref, },
+                                ..
                             },
                         })) => {
                             log::debug!(" ;; unregistering flush butcher sklave: {meister_ref:?}");
@@ -178,6 +186,22 @@ where A: AccessPolicy,
                                 log::debug!("flush butcher sklave entry has already unregistered");
                             }
                             return Err(Error::FlushButcherSklaveCrashed);
+                        },
+                        Some(Order::FlushButcherDone(komm::Umschlag {
+                            payload: FlushButcherDone { root_block, },
+                            stamp: FlushButcherDrop {
+                                search_tree_id,
+                                route: FlushButcherRoute { meister_ref, },
+                            },
+                        })) => {
+                            log::debug!(" ;; flush butcher process {meister_ref:?} done, root block = {root_block:?}");
+                            let maybe_removed = sklavenwelt.env
+                                .flush_butcher_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("flush butcher sklave entry has already unregistered");
+                            }
+                            break next.butcher_flushed(search_tree_id, root_block);
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: wheel_route_info, }))) => {
                             todo!();
@@ -191,18 +215,40 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: wheel_route_flush, }))) => {
                             todo!();
                         },
-                        Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp: wheel_route_write_block, }))) => {
-                            todo!();
-                        },
+                        Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
+                            return Err(Error::WheelIsGoneDuringWriteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
                             payload: write_block_result,
-                            stamp: wheel_route_write_block,
+                            stamp: WheelRouteWriteBlock::FlushButcher {
+                                route: FlushButcherRoute { meister_ref, },
+                                target,
+                            },
                         }))) => {
-                            todo!();
+                            let maybe_meister = sklavenwelt.env
+                                .flush_butcher_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) => {
+                                    let send_result = meister.befehl(
+                                        flush_butcher::Order::WriteBlock(
+                                            flush_butcher::OrderWriteBlock {
+                                                write_block_result,
+                                                target,
+                                            },
+                                        ),
+                                        thread_pool,
+                                    );
+                                    if let Err(error) = send_result {
+                                        log::warn!("flush butcher sklave write block order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref);
+                                    }
+                                },
+                                None =>
+                                    log::debug!("flush butcher sklave entry has already unregistered before write block order"),
+                            }
                         },
-                        Some(Order::Wheel(OrderWheel::ReadBlockCancel(komm::UmschlagAbbrechen { stamp: wheel_route_read_block, }))) => {
-                            todo!();
-                        },
+                        Some(Order::Wheel(OrderWheel::ReadBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
+                            return Err(Error::WheelIsGoneDuringReadBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
                             payload: read_block_result,
                             stamp: WheelRouteReadBlock::LookupRangeMerge {
@@ -307,30 +353,25 @@ where A: AccessPolicy,
                         .insert(flush_butcher_meister);
                     flush_butcher_freie
                         .versklaven(
-                            flush_butcher::Welt {
-                                search_tree_builder_params: search_tree_builder::Params {
-                                    tree_items_count: frozen_memcache.len(),
-                                    tree_block_size: sklavenwelt.env.params.tree_block_size,
-                                },
-                                values_inline_size_limit: sklavenwelt.env.params
+                            flush_butcher::Welt::new(
+                                frozen_memcache,
+                                sklavenwelt.env.params.tree_block_size,
+                                sklavenwelt.env.params
                                     .search_tree_values_inline_size_limit,
-                                kont: Some(flush_butcher::Kont::Start {
-                                    frozen_memcache,
-                                }),
-                                search_tree_id,
                                 meister_ref,
-                                sendegeraet: sklavenwelt.env.sendegeraet.clone(),
-                                wheels: sklavenwelt.env.wheels.clone(),
-                                blocks_pool: sklavenwelt.env.blocks_pool.clone(),
-                                block_entries_pool: welt_state.pools.block_entries_pool.clone(),
-                                incoming_orders: Vec::new(),
-                                delayed_orders: Vec::new(),
-                                drop_bomb: sklavenwelt.env
+                                sklavenwelt.env.sendegeraet.clone(),
+                                sklavenwelt.env.wheels.clone(),
+                                sklavenwelt.env.blocks_pool.clone(),
+                                welt_state.pools.block_entries_pool.clone(),
+                                sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(FlushButcherDrop {
-                                        route: FlushButcherRoute { meister_ref, },
+                                        search_tree_id,
+                                        route: FlushButcherRoute {
+                                            meister_ref,
+                                        },
                                     }),
-                            },
+                            ),
                             thread_pool,
                         )
                         .map_err(Error::FlushButcherVersklaven)?;

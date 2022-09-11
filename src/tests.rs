@@ -234,6 +234,7 @@ fn make_wheel_ref(
     Ok(wheels::WheelRef { blockwheel_filename, meister, })
 }
 
+#[derive(Debug)]
 struct AccessPolicy;
 
 impl blockwheel_kv::AccessPolicy for AccessPolicy {

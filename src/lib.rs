@@ -74,6 +74,7 @@ where Self::Order: From<komm::UmschlagAbbrechen<Self::Info>>,
     type Flush;
 }
 
+#[derive(Debug)]
 pub enum KeyValueStreamItem<A> where A: AccessPolicy {
     KeyValue {
         key_value_pair: kv::KeyValuePair<kv::Value>,
@@ -82,13 +83,14 @@ pub enum KeyValueStreamItem<A> where A: AccessPolicy {
     NoMore,
 }
 
+#[derive(Debug)]
 pub struct LookupRangeStream<A> where A: AccessPolicy {
-    next: komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRoute>,
+    next: HideDebug<komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRoute>>,
 }
 
 impl<A> LookupRangeStream<A> where A: AccessPolicy {
     pub fn next(self, rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>) -> Result<(), komm::Error> {
-        self.next.commit(core::performer_sklave::LookupRangeStreamNext { rueckkopplung, })
+        self.next.0.commit(core::performer_sklave::LookupRangeStreamNext { rueckkopplung, })
     }
 }
 
@@ -306,19 +308,12 @@ impl Info {
     }
 }
 
-impl<A> fmt::Debug for KeyValueStreamItem<A> where A: AccessPolicy {
+struct HideDebug<T>(T);
+
+impl<T> fmt::Debug for HideDebug<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KeyValueStreamItem::KeyValue { key_value_pair, .. } => {
-                fmt.debug_struct("KeyValueStreamItem::KeyValue")
-                    .field("key_value_pair", key_value_pair)
-                    .field("next", &"<hidden>")
-                    .finish()
-            },
-            KeyValueStreamItem::NoMore => {
-                fmt.debug_struct("KeyValueStreamItem::NoMore")
-                    .finish()
-            },
-        }
+        fmt.debug_tuple("Hidden")
+            .field(&"<contents>")
+            .finish()
     }
 }
