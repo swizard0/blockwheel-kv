@@ -53,8 +53,10 @@ pub enum Order<A> where A: AccessPolicy {
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
+    MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
     UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     UnregisterFlushButcher(komm::UmschlagAbbrechen<FlushButcherDrop>),
+    UnregisterMergeSearchTrees(komm::UmschlagAbbrechen<MergeSearchTreesDrop>),
     Wheel(OrderWheel),
 }
 
@@ -109,6 +111,7 @@ pub struct Env<A> where A: AccessPolicy {
     delayed_orders: Vec<Order<A>>,
     lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
     flush_butcher_sklaven: Set<running::flush_butcher::Meister<A>>,
+    merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<A>>,
 }
 
 impl<A> Env<A> where A: AccessPolicy {
@@ -131,6 +134,7 @@ impl<A> Env<A> where A: AccessPolicy {
             delayed_orders: Vec::new(),
             lookup_range_merge_sklaven: Set::new(),
             flush_butcher_sklaven: Set::new(),
+            merge_search_trees_sklaven: Set::new(),
         }
     }
 }
@@ -163,6 +167,21 @@ pub struct FlushButcherDrop {
 
 pub struct FlushButcherDone {
     root_block: BlockRef,
+}
+
+#[derive(Debug)]
+pub struct MergeSearchTreesRoute {
+    meister_ref: Ref,
+}
+
+pub struct MergeSearchTreesDrop {
+    access_token: performer::AccessToken,
+    route: MergeSearchTreesRoute,
+}
+
+pub struct MergeSearchTreesDone {
+    merged_search_tree_ref: BlockRef,
+    merged_search_tree_items_count: usize,
 }
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
@@ -351,6 +370,12 @@ impl<A> From<komm::UmschlagAbbrechen<FlushButcherDrop>> for Order<A> where A: Ac
     }
 }
 
+impl<A> From<komm::UmschlagAbbrechen<MergeSearchTreesDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::UmschlagAbbrechen<MergeSearchTreesDrop>) -> Order<A> {
+        Order::UnregisterMergeSearchTrees(v)
+    }
+}
+
 impl<A> From<komm::UmschlagAbbrechen<WheelRouteInfo>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::UmschlagAbbrechen<WheelRouteInfo>) -> Order<A> {
         Order::Wheel(OrderWheel::InfoCancel(v))
@@ -440,6 +465,12 @@ impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksN
 impl<A> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::Umschlag<FlushButcherDone, FlushButcherDrop>) -> Order<A> {
         Order::FlushButcherDone(v)
+    }
+}
+
+impl<A> From<komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>) -> Order<A> {
+        Order::MergeSearchTreesDone(v)
     }
 }
 

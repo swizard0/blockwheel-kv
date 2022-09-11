@@ -1,7 +1,13 @@
 use alloc_pool::{
-    Unique,
     bytes::{
         Bytes,
+    },
+    Unique,
+};
+
+use o1::{
+    set::{
+        Ref,
     },
 };
 
@@ -52,13 +58,36 @@ pub struct ReadBlockTargetLoadBlock {
 }
 
 pub struct Welt<A> where A: AccessPolicy {
-    pub kont: Option<Kont<A>>,
-    pub meister_ref: o1::set::Ref,
-    pub sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-    pub wheels: wheels::Wheels<A>,
-    pub drop_bomb: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::LookupRangeMergeDrop>,
-    pub incoming_orders: Vec<Order<A>>,
-    pub delayed_orders: Vec<Order<A>>,
+    kont: Option<Kont<A>>,
+    meister_ref: Ref,
+    sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
+    wheels: wheels::Wheels<A>,
+    incoming_orders: Vec<Order<A>>,
+    delayed_orders: Vec<Order<A>>,
+    _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::LookupRangeMergeDrop>,
+}
+
+impl<A> Welt<A> where A: AccessPolicy {
+    pub fn new(
+        merger: SearchRangesMergeCps,
+        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        meister_ref: Ref,
+        sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
+        wheels: wheels::Wheels<A>,
+        drop_bomb: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::LookupRangeMergeDrop>,
+    )
+        -> Self
+    {
+        Welt {
+            kont: Some(Kont::Start { merger, lookup_context, }),
+            meister_ref,
+            sendegeraet,
+            wheels,
+            _drop_bomb: drop_bomb,
+            incoming_orders: Vec::new(),
+            delayed_orders: Vec::new(),
+        }
+    }
 }
 
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order<A>>;
@@ -71,7 +100,7 @@ type SearchRangesMergeBlockNext =
 type SearchRangesMergeItemNext =
     search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 
-pub enum Kont<A> where A: AccessPolicy {
+enum Kont<A> where A: AccessPolicy {
     Start {
         merger: SearchRangesMergeCps,
         lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
@@ -97,7 +126,7 @@ pub enum Kont<A> where A: AccessPolicy {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchRangesMerge(search_ranges_merge::Error),
     SendegeraetGone(komm::Error),

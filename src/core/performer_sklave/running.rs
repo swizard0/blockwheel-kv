@@ -24,6 +24,9 @@ use crate::{
             FlushButcherDone,
             FlushButcherDrop,
             FlushButcherRoute,
+            MergeSearchTreesDone,
+            MergeSearchTreesDrop,
+            MergeSearchTreesRoute,
             WheelRouteReadBlock,
             WheelRouteWriteBlock,
         },
@@ -36,6 +39,7 @@ use crate::{
 
 pub mod flush_butcher;
 pub mod lookup_range_merge;
+pub mod merge_search_trees;
 
 pub struct WeltState<A> where A: AccessPolicy {
     kont: Kont<A>,
@@ -73,7 +77,9 @@ pub enum Error {
     CommitFlushed(komm::Error),
     LookupRangeMergerVersklaven(arbeitssklave::Error),
     FlushButcherVersklaven(arbeitssklave::Error),
+    MergeSearchTreesVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
+    MergeSearchTreesSklaveCrashed,
     WheelIsGoneDuringReadBlock {
         route: WheelRouteReadBlock,
     },
@@ -187,6 +193,21 @@ where A: AccessPolicy,
                             }
                             return Err(Error::FlushButcherSklaveCrashed);
                         },
+                        Some(Order::UnregisterMergeSearchTrees(komm::UmschlagAbbrechen {
+                            stamp: MergeSearchTreesDrop {
+                                route: MergeSearchTreesRoute { meister_ref, },
+                                ..
+                            },
+                        })) => {
+                            log::debug!(" ;; unregistering merge search trees sklave: {meister_ref:?}");
+                            let maybe_removed = sklavenwelt.env
+                                .merge_search_trees_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("merge search trees sklave entry has already unregistered");
+                            }
+                            return Err(Error::MergeSearchTreesSklaveCrashed);
+                        },
                         Some(Order::FlushButcherDone(komm::Umschlag {
                             payload: FlushButcherDone { root_block, },
                             stamp: FlushButcherDrop {
@@ -202,6 +223,33 @@ where A: AccessPolicy,
                                 log::debug!("flush butcher sklave entry has already unregistered");
                             }
                             break next.butcher_flushed(search_tree_id, root_block);
+                        },
+                        Some(Order::MergeSearchTreesDone(komm::Umschlag {
+                            payload: MergeSearchTreesDone {
+                                merged_search_tree_ref,
+                                merged_search_tree_items_count,
+                            },
+                            stamp: MergeSearchTreesDrop {
+                                access_token,
+                                route: MergeSearchTreesRoute { meister_ref, },
+                            },
+                        })) => {
+                            log::debug!(
+                                " ;; merge search trees process {meister_ref:?} done, tree ref: {:?}, items_count: {:?}",
+                                merged_search_tree_ref,
+                                merged_search_tree_items_count,
+                            );
+                            let maybe_removed = sklavenwelt.env
+                                .merge_search_trees_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("merge search trees sklave entry has already unregistered");
+                            }
+                            break next.search_trees_merged(
+                                merged_search_tree_ref,
+                                merged_search_tree_items_count,
+                                access_token,
+                            );
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: wheel_route_info, }))) => {
                             todo!();
@@ -385,31 +433,51 @@ where A: AccessPolicy,
                         .insert(merger_meister);
                     merger_freie
                         .versklaven(
-                            lookup_range_merge::Welt {
-                                kont: Some(lookup_range_merge::Kont::Start {
-                                    merger: ranges_merger.source,
-                                    lookup_context,
-                                }),
+                            lookup_range_merge::Welt::new(
+                                ranges_merger.source,
+                                lookup_context,
                                 meister_ref,
-                                sendegeraet: sklavenwelt.env.sendegeraet.clone(),
-                                wheels: sklavenwelt.env.wheels.clone(),
-                                incoming_orders: Vec::new(),
-                                delayed_orders: Vec::new(),
-                                drop_bomb: sklavenwelt.env
+                                sklavenwelt.env.sendegeraet.clone(),
+                                sklavenwelt.env.wheels.clone(),
+                                sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
                                         access_token: ranges_merger.token,
                                         route: LookupRangeRoute { meister_ref, },
                                     }),
-                            },
+                            ),
                             thread_pool,
                         )
                         .map_err(Error::LookupRangeMergerVersklaven)?;
                     next.got_it()
                 },
                 performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees { ranges_merger, next, }) => {
-                    todo!()
-                    // next.scheduled()
+                    let merge_freie = arbeitssklave::Freie::new();
+                    let merge_meister = merge_freie.meister();
+                    let meister_ref = sklavenwelt.env
+                        .merge_search_trees_sklaven
+                        .insert(merge_meister);
+                    merge_freie
+                        .versklaven(
+                            merge_search_trees::Welt::new(
+                                ranges_merger.source_count_items,
+                                ranges_merger.source_build,
+                                meister_ref,
+                                sklavenwelt.env.sendegeraet.clone(),
+                                sklavenwelt.env.wheels.clone(),
+                                welt_state.pools.block_entries_pool.clone(),
+                                sklavenwelt.env.params.tree_block_size,
+                                sklavenwelt.env
+                                    .sendegeraet
+                                    .rueckkopplung(MergeSearchTreesDrop {
+                                        access_token: ranges_merger.token,
+                                        route: MergeSearchTreesRoute { meister_ref, },
+                                    }),
+                            ),
+                            thread_pool,
+                        )
+                        .map_err(Error::MergeSearchTreesVersklaven)?;
+                    next.scheduled()
                 },
                 performer::Kont::DemolishSearchTree(performer::KontDemolishSearchTree { order, next, }) => {
                     todo!()

@@ -47,7 +47,6 @@ use crate::{
 };
 
 pub enum Order {
-    Terminate,
     WriteBlock(OrderWriteBlock),
 }
 
@@ -71,7 +70,7 @@ pub enum WriteBlockTarget {
 
 pub struct Welt<A> where A: AccessPolicy {
     kont: Option<Kont>,
-    meister_ref: o1::set::Ref,
+    meister_ref: Ref,
     sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
     wheels: wheels::Wheels<A>,
     blocks_pool: BytesPool,
@@ -204,8 +203,6 @@ where A: AccessPolicy,
                                 sklavenwelt.kont = Some(Kont::Continue { next, });
                                 continue 'outer;
                             },
-                            Some(Order::Terminate) =>
-                                return Ok(()),
                             Some(Order::WriteBlock(OrderWriteBlock {
                                 write_block_result: Ok(block_id),
                                 target: WriteBlockTarget::WriteBlock { async_ref, blockwheel_filename, },
