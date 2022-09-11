@@ -124,14 +124,14 @@ struct ValueWritePending {
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
 
-pub enum Kont {
+enum Kont {
     Start { frozen_memcache: Arc<MemCache>, },
     Continue { next: SearchTreeBuilderBlockNext, },
     Finished { root_block_ref: BlockRef, },
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchTreeBuilder(search_tree_builder::Error),
     SerializeBlockStorage(storage::Error),

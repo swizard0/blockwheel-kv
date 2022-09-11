@@ -2,7 +2,6 @@ use alloc_pool::{
     bytes::{
         Bytes,
     },
-    Unique,
 };
 
 use o1::{
@@ -24,6 +23,9 @@ use crate::{
         performer,
         performer_sklave,
         search_ranges_merge,
+        SearchRangesMergeCps,
+        SearchRangesMergeBlockNext,
+        SearchRangesMergeItemNext,
     },
     HideDebug,
     AccessPolicy,
@@ -92,13 +94,6 @@ impl<A> Welt<A> where A: AccessPolicy {
 
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order<A>>;
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order<A>>;
-
-type SearchRangesMergeCps =
-    search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
-type SearchRangesMergeBlockNext =
-    search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
-type SearchRangesMergeItemNext =
-    search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 
 enum Kont<A> where A: AccessPolicy {
     Start {

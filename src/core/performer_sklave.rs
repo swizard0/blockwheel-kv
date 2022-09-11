@@ -222,6 +222,10 @@ pub enum WheelRouteWriteBlock {
         route: FlushButcherRoute,
         target: running::flush_butcher::WriteBlockTarget,
     },
+    MergeSearchTrees {
+        route: MergeSearchTreesRoute,
+        target: running::merge_search_trees::WriteBlockTarget,
+    },
 }
 
 #[derive(Debug)]
@@ -230,9 +234,18 @@ pub enum WheelRouteReadBlock {
         route: LookupRangeRoute,
         target: running::lookup_range_merge::ReadBlockTarget,
     },
+    MergeSearchTrees {
+        route: MergeSearchTreesRoute,
+        target: running::merge_search_trees::ReadBlockTarget,
+    },
 }
 
-pub struct WheelRouteDeleteBlock;
+#[derive(Debug)]
+pub enum WheelRouteDeleteBlock {
+    MergeSearchTrees {
+        route: MergeSearchTreesRoute,
+    },
+}
 
 pub struct WheelRouteIterBlocksInit {
     blockwheel_filename: wheels::WheelFilename,
