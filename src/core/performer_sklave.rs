@@ -52,6 +52,7 @@ pub enum Order<A> where A: AccessPolicy {
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
     UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
+    UnregisterFlushButcher(komm::UmschlagAbbrechen<FlushButcherDrop>),
     Wheel(OrderWheel),
 }
 
@@ -105,6 +106,7 @@ pub struct Env<A> where A: AccessPolicy {
     incoming_orders: Vec<Order<A>>,
     delayed_orders: Vec<Order<A>>,
     lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
+    flush_butcher_sklaven: Set<running::flush_butcher::Meister<A>>,
 }
 
 impl<A> Env<A> where A: AccessPolicy {
@@ -126,6 +128,7 @@ impl<A> Env<A> where A: AccessPolicy {
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
             lookup_range_merge_sklaven: Set::new(),
+            flush_butcher_sklaven: Set::new(),
         }
     }
 }
@@ -144,6 +147,15 @@ pub struct LookupRangeRoute {
 pub struct LookupRangeMergeDrop {
     access_token: performer::AccessToken,
     route: LookupRangeRoute,
+}
+
+#[derive(Debug)]
+pub struct FlushButcherRoute {
+    meister_ref: Ref,
+}
+
+pub struct FlushButcherDrop {
+    route: FlushButcherRoute,
 }
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
@@ -262,9 +274,9 @@ where A: AccessPolicy,
                             sklavenwelt.state = WeltState::Loading(loading);
                             break;
                         },
-                        loading::Outcome::Done { performer, } => {
+                        loading::Outcome::Done { performer, pools, } => {
                             sklavenwelt.state =
-                                WeltState::Running(running::WeltState::new(performer));
+                                WeltState::Running(running::WeltState::new(performer, pools));
                             sklavenwelt
                                 .env
                                 .incoming_orders
@@ -283,7 +295,7 @@ where A: AccessPolicy,
     }
 }
 
-struct Pools {
+pub struct Pools {
     kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     sources_pool: pool::Pool<Vec<performer::LookupRangeSource>>,
@@ -316,6 +328,12 @@ impl<A> From<komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>> for Ord
 impl<A> From<komm::UmschlagAbbrechen<LookupRangeMergeDrop>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::UmschlagAbbrechen<LookupRangeMergeDrop>) -> Order<A> {
         Order::UnregisterLookupRangeMerge(v)
+    }
+}
+
+impl<A> From<komm::UmschlagAbbrechen<FlushButcherDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::UmschlagAbbrechen<FlushButcherDrop>) -> Order<A> {
+        Order::UnregisterFlushButcher(v)
     }
 }
 

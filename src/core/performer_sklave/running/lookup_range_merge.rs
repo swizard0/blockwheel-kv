@@ -92,7 +92,7 @@ pub enum Kont<A> where A: AccessPolicy {
 }
 
 #[derive(Debug)]
-pub enum Error {
+enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchRangesMerge(search_ranges_merge::Error),
     SendegeraetGone(komm::Error),

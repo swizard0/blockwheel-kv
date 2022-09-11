@@ -47,6 +47,7 @@ pub enum Outcome<A> where A: AccessPolicy {
     },
     Done {
         performer: performer::Performer<Context<A>>,
+        pools: Pools,
     },
 }
 
@@ -133,7 +134,7 @@ where A: AccessPolicy,
                     welt_state.forest,
                 );
 
-                return Ok(Outcome::Done { performer, });
+                return Ok(Outcome::Done { performer, pools, });
             },
 
             WeltStateMode::Loading { wheels_left, } =>

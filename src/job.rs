@@ -17,9 +17,8 @@ pub enum Job<A> where A: AccessPolicy {
     BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>),
     PerformerSklave(core::performer_sklave::SklaveJob<A>),
     LookupRangeMergeSklave(core::performer_sklave::running::lookup_range_merge::SklaveJob<A>),
-    // ManagerTaskPerformer(edeltraud::AsyncJob<core::manager::task::performer::Job>),
-    // ManagerTaskFlushButcher(edeltraud::AsyncJob<core::manager::task::flush_butcher::JobArgs>),
-    // ManagerTaskLookupRangeMerge(edeltraud::AsyncJob<core::manager::task::lookup_range_merge::JobArgs>),
+    FlushButcherSklave(core::performer_sklave::running::flush_butcher::SklaveJob<A>),
+
     // ManagerTaskMergeSearchTrees(edeltraud::AsyncJob<core::manager::task::merge_search_trees::JobArgs>),
     // ManagerTaskDemolishSearchTree(edeltraud::AsyncJob<core::manager::task::demolish_search_tree::JobArgs>),
 }
@@ -39,6 +38,12 @@ impl<A> From<core::performer_sklave::SklaveJob<A>> for Job<A> where A: AccessPol
 impl<A> From<core::performer_sklave::running::lookup_range_merge::SklaveJob<A>> for Job<A> where A: AccessPolicy {
     fn from(sklave_job: core::performer_sklave::running::lookup_range_merge::SklaveJob<A>) -> Job<A> {
         Job::LookupRangeMergeSklave(sklave_job)
+    }
+}
+
+impl<A> From<core::performer_sklave::running::flush_butcher::SklaveJob<A>> for Job<A> where A: AccessPolicy {
+    fn from(sklave_job: core::performer_sklave::running::flush_butcher::SklaveJob<A>) -> Job<A> {
+        Job::FlushButcherSklave(sklave_job)
     }
 }
 
@@ -81,8 +86,7 @@ impl<A> From<core::performer_sklave::running::lookup_range_merge::SklaveJob<A>> 
 pub static JOB_BLOCKWHEEL_FS: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_PERFORMER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_LOOKUP_RANGE_MERGE_SKLAVE: AtomicUsize = AtomicUsize::new(0);
-// pub static JOB_MANAGER_TASK_PERFORMER: AtomicUsize = AtomicUsize::new(0);
-// pub static JOB_MANAGER_TASK_FLUSH_BUTCHER: AtomicUsize = AtomicUsize::new(0);
+pub static JOB_FLUSH_BUTCHER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 // pub static JOB_MANAGER_TASK_MERGE_SEARCH_TREES: AtomicUsize = AtomicUsize::new(0);
 // pub static JOB_MANAGER_TASK_DEMOLISH_SEARCH_TREE: AtomicUsize = AtomicUsize::new(0);
 
@@ -101,11 +105,11 @@ impl<A> edeltraud::Job for Job<A> where A: AccessPolicy {
                 JOB_LOOKUP_RANGE_MERGE_SKLAVE.fetch_add(1, Ordering::Relaxed);
                 core::performer_sklave::running::lookup_range_merge::run_job(sklave_job, thread_pool)
             },
+            Job::FlushButcherSklave(sklave_job) => {
+                JOB_FLUSH_BUTCHER_SKLAVE.fetch_add(1, Ordering::Relaxed);
+                core::performer_sklave::running::flush_butcher::run_job(sklave_job, thread_pool)
+            },
 
-//             Job::ManagerTaskFlushButcher(job) => {
-//                 JOB_MANAGER_TASK_FLUSH_BUTCHER.fetch_add(1, Ordering::Relaxed);
-//                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
-//             },
 //             Job::ManagerTaskMergeSearchTrees(job) => {
 //                 JOB_MANAGER_TASK_MERGE_SEARCH_TREES.fetch_add(1, Ordering::Relaxed);
 //                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool));

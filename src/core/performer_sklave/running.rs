@@ -6,9 +6,11 @@ use crate::{
     job,
     core::{
         performer,
+        search_tree_builder,
         performer_sklave::{
             Welt,
             Order,
+            Pools,
             Context,
             OrderWheel,
             OrderRequest,
@@ -20,6 +22,8 @@ use crate::{
             LookupRangeRoute,
             LookupRangeMergeDrop,
             LookupRangeStreamNext,
+            FlushButcherDrop,
+            FlushButcherRoute,
             WheelRouteReadBlock,
         },
     },
@@ -29,16 +33,19 @@ use crate::{
     AccessPolicy,
 };
 
+pub mod flush_butcher;
 pub mod lookup_range_merge;
 
 pub struct WeltState<A> where A: AccessPolicy {
     kont: Kont<A>,
+    pools: Pools,
 }
 
 impl<A> WeltState<A> where A: AccessPolicy {
-    pub fn new(performer: performer::Performer<Context<A>>) -> Self {
+    pub fn new(performer: performer::Performer<Context<A>>, pools: Pools) -> Self {
         WeltState {
             kont: Kont::Start { performer, },
+            pools,
         }
     }
 }
@@ -64,6 +71,8 @@ pub enum Error {
     CommitRemoved(komm::Error),
     CommitFlushed(komm::Error),
     LookupRangeMergerVersklaven(arbeitssklave::Error),
+    FlushButcherVersklaven(arbeitssklave::Error),
+    FlushButcherSklaveCrashed,
 }
 
 pub fn job<A, P>(
@@ -155,6 +164,20 @@ where A: AccessPolicy,
                                 log::debug!("lookup range merge sklave entry has already unregistered");
                             }
                             break next.commit_lookup_range(access_token);
+                        },
+                        Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
+                            stamp: FlushButcherDrop {
+                                route: FlushButcherRoute { meister_ref, },
+                            },
+                        })) => {
+                            log::debug!(" ;; unregistering flush butcher sklave: {meister_ref:?}");
+                            let maybe_removed = sklavenwelt.env
+                                .flush_butcher_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("flush butcher sklave entry has already unregistered");
+                            }
+                            return Err(Error::FlushButcherSklaveCrashed);
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: wheel_route_info, }))) => {
                             todo!();
@@ -277,8 +300,41 @@ where A: AccessPolicy,
                     next.commit_flush()
                 },
                 performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_id, frozen_memcache, next, }) => {
-                    todo!()
-                    // next.scheduled()
+                    let flush_butcher_freie = arbeitssklave::Freie::new();
+                    let flush_butcher_meister = flush_butcher_freie.meister();
+                    let meister_ref = sklavenwelt.env
+                        .flush_butcher_sklaven
+                        .insert(flush_butcher_meister);
+                    flush_butcher_freie
+                        .versklaven(
+                            flush_butcher::Welt {
+                                search_tree_builder_params: search_tree_builder::Params {
+                                    tree_items_count: frozen_memcache.len(),
+                                    tree_block_size: sklavenwelt.env.params.tree_block_size,
+                                },
+                                values_inline_size_limit: sklavenwelt.env.params
+                                    .search_tree_values_inline_size_limit,
+                                kont: Some(flush_butcher::Kont::Start {
+                                    frozen_memcache,
+                                }),
+                                search_tree_id,
+                                meister_ref,
+                                sendegeraet: sklavenwelt.env.sendegeraet.clone(),
+                                wheels: sklavenwelt.env.wheels.clone(),
+                                blocks_pool: sklavenwelt.env.blocks_pool.clone(),
+                                block_entries_pool: welt_state.pools.block_entries_pool.clone(),
+                                incoming_orders: Vec::new(),
+                                delayed_orders: Vec::new(),
+                                drop_bomb: sklavenwelt.env
+                                    .sendegeraet
+                                    .rueckkopplung(FlushButcherDrop {
+                                        route: FlushButcherRoute { meister_ref, },
+                                    }),
+                            },
+                            thread_pool,
+                        )
+                        .map_err(Error::FlushButcherVersklaven)?;
+                    next.scheduled()
                 },
                 performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady { ranges_merger, lookup_context, next, }) => {
                     let merger_freie = arbeitssklave::Freie::new();
