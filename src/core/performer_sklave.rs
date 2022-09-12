@@ -54,9 +54,11 @@ pub enum Order<A> where A: AccessPolicy {
     LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
     MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
+    DemolishSearchTreeDone(komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>),
     UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     UnregisterFlushButcher(komm::UmschlagAbbrechen<FlushButcherDrop>),
     UnregisterMergeSearchTrees(komm::UmschlagAbbrechen<MergeSearchTreesDrop>),
+    UnregisterDemolishSearchTree(komm::UmschlagAbbrechen<DemolishSearchTreeDrop>),
     Wheel(OrderWheel),
 }
 
@@ -112,6 +114,7 @@ pub struct Env<A> where A: AccessPolicy {
     lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
     flush_butcher_sklaven: Set<running::flush_butcher::Meister<A>>,
     merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<A>>,
+    demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<A>>,
 }
 
 impl<A> Env<A> where A: AccessPolicy {
@@ -135,6 +138,7 @@ impl<A> Env<A> where A: AccessPolicy {
             lookup_range_merge_sklaven: Set::new(),
             flush_butcher_sklaven: Set::new(),
             merge_search_trees_sklaven: Set::new(),
+            demolish_search_tree_sklaven: Set::new(),
         }
     }
 }
@@ -183,6 +187,18 @@ pub struct MergeSearchTreesDone {
     merged_search_tree_ref: BlockRef,
     merged_search_tree_items_count: usize,
 }
+
+#[derive(Debug)]
+pub struct DemolishSearchTreeRoute {
+    meister_ref: Ref,
+}
+
+pub struct DemolishSearchTreeDrop {
+    search_tree_id: u64,
+    route: DemolishSearchTreeRoute,
+}
+
+pub struct DemolishSearchTreeDone;
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
     pub rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
@@ -238,12 +254,18 @@ pub enum WheelRouteReadBlock {
         route: MergeSearchTreesRoute,
         target: running::merge_search_trees::ReadBlockTarget,
     },
+    DemolishSearchTree {
+        route: DemolishSearchTreeRoute,
+    },
 }
 
 #[derive(Debug)]
 pub enum WheelRouteDeleteBlock {
     MergeSearchTrees {
         route: MergeSearchTreesRoute,
+    },
+    DemolishSearchTree {
+        route: DemolishSearchTreeRoute,
     },
 }
 
@@ -389,6 +411,12 @@ impl<A> From<komm::UmschlagAbbrechen<MergeSearchTreesDrop>> for Order<A> where A
     }
 }
 
+impl<A> From<komm::UmschlagAbbrechen<DemolishSearchTreeDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::UmschlagAbbrechen<DemolishSearchTreeDrop>) -> Order<A> {
+        Order::UnregisterDemolishSearchTree(v)
+    }
+}
+
 impl<A> From<komm::UmschlagAbbrechen<WheelRouteInfo>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::UmschlagAbbrechen<WheelRouteInfo>) -> Order<A> {
         Order::Wheel(OrderWheel::InfoCancel(v))
@@ -484,6 +512,12 @@ impl<A> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<A> wh
 impl<A> From<komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>> for Order<A> where A: AccessPolicy {
     fn from(v: komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>) -> Order<A> {
         Order::MergeSearchTreesDone(v)
+    }
+}
+
+impl<A> From<komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>> for Order<A> where A: AccessPolicy {
+    fn from(v: komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>) -> Order<A> {
+        Order::DemolishSearchTreeDone(v)
     }
 }
 

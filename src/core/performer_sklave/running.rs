@@ -27,7 +27,11 @@ use crate::{
             MergeSearchTreesDone,
             MergeSearchTreesDrop,
             MergeSearchTreesRoute,
+            DemolishSearchTreeDone,
+            DemolishSearchTreeDrop,
+            DemolishSearchTreeRoute,
             WheelRouteInfo,
+            WheelRouteFlush,
             WheelRouteReadBlock,
             WheelRouteWriteBlock,
             WheelRouteDeleteBlock,
@@ -42,6 +46,7 @@ use crate::{
 pub mod flush_butcher;
 pub mod lookup_range_merge;
 pub mod merge_search_trees;
+pub mod demolish_search_tree;
 
 pub struct WeltState<A> where A: AccessPolicy {
     kont: Kont<A>,
@@ -80,8 +85,10 @@ pub enum Error {
     LookupRangeMergerVersklaven(arbeitssklave::Error),
     FlushButcherVersklaven(arbeitssklave::Error),
     MergeSearchTreesVersklaven(arbeitssklave::Error),
+    DemolishSearchTreeVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
     MergeSearchTreesSklaveCrashed,
+    DemolishSearchTreeSklaveCrashed,
     WheelIsGoneDuringReadBlock {
         route: WheelRouteReadBlock,
     },
@@ -213,6 +220,21 @@ where A: AccessPolicy,
                             }
                             return Err(Error::MergeSearchTreesSklaveCrashed);
                         },
+                        Some(Order::UnregisterDemolishSearchTree(komm::UmschlagAbbrechen {
+                            stamp: DemolishSearchTreeDrop {
+                                route: DemolishSearchTreeRoute { meister_ref, },
+                                ..
+                            },
+                        })) => {
+                            log::debug!(" ;; unregistering demolish search tree sklave: {meister_ref:?}");
+                            let maybe_removed = sklavenwelt.env
+                                .demolish_search_tree_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::debug!("demolish search tree sklave entry has already unregistered");
+                            }
+                            return Err(Error::DemolishSearchTreeSklaveCrashed);
+                        },
                         Some(Order::FlushButcherDone(komm::Umschlag {
                             payload: FlushButcherDone { root_block, },
                             stamp: FlushButcherDrop {
@@ -225,7 +247,7 @@ where A: AccessPolicy,
                                 .flush_butcher_sklaven
                                 .remove(meister_ref);
                             if let None = maybe_removed {
-                                log::debug!("flush butcher sklave entry has already unregistered");
+                                log::warn!("flush butcher sklave entry has already unregistered");
                             }
                             break next.butcher_flushed(search_tree_id, root_block);
                         },
@@ -248,7 +270,7 @@ where A: AccessPolicy,
                                 .merge_search_trees_sklaven
                                 .remove(meister_ref);
                             if let None = maybe_removed {
-                                log::debug!("merge search trees sklave entry has already unregistered");
+                                log::warn!("merge search trees sklave entry has already unregistered");
                             }
                             break next.search_trees_merged(
                                 merged_search_tree_ref,
@@ -256,14 +278,30 @@ where A: AccessPolicy,
                                 access_token,
                             );
                         },
+                        Some(Order::DemolishSearchTreeDone(komm::Umschlag {
+                            payload: DemolishSearchTreeDone,
+                            stamp: DemolishSearchTreeDrop {
+                                search_tree_id,
+                                route: DemolishSearchTreeRoute { meister_ref, },
+                            },
+                        })) => {
+                            log::debug!(" ;; demolish search tree process {meister_ref:?} done");
+                            let maybe_removed = sklavenwelt.env
+                                .demolish_search_tree_sklaven
+                                .remove(meister_ref);
+                            if let None = maybe_removed {
+                                log::warn!("demolish search trees sklave entry has already unregistered");
+                            }
+                            break next.search_tree_demolished(search_tree_id);
+                        },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: _wheel_route_info, }))) =>
                             unreachable!(),
                         Some(Order::Wheel(OrderWheel::Info(komm::Umschlag { payload: _info, stamp: WheelRouteInfo, }))) =>
                             unreachable!(),
-                        Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: wheel_route_flush, }))) => {
+                        Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: WheelRouteFlush, }))) => {
                             todo!();
                         },
-                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: wheel_route_flush, }))) => {
+                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) => {
                             todo!();
                         },
                         Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
@@ -390,6 +428,34 @@ where A: AccessPolicy,
                                     log::warn!("merge search trees sklave entry has already unregistered before read block order"),
                             }
                         },
+                        Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
+                            payload: read_block_result,
+                            stamp: WheelRouteReadBlock::DemolishSearchTree {
+                                route: DemolishSearchTreeRoute { meister_ref, },
+                            },
+                        }))) => {
+                            let maybe_meister = sklavenwelt.env
+                                .demolish_search_tree_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) => {
+                                    let send_result = meister.befehl(
+                                        demolish_search_tree::Order::ReadBlock(
+                                            demolish_search_tree::OrderReadBlock {
+                                                read_block_result,
+                                            },
+                                        ),
+                                        thread_pool,
+                                    );
+                                    if let Err(error) = send_result {
+                                        log::warn!("demolish search tree sklave read block order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref);
+                                    }
+                                },
+                                None =>
+                                    log::warn!("demolish search tree sklave entry has already unregistered before read block order"),
+                            }
+                        },
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringDeleteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
@@ -420,6 +486,34 @@ where A: AccessPolicy,
                                     log::warn!("merge search trees sklave entry has already unregistered before delete block order"),
                             }
                         },
+                        Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
+                            payload: delete_block_result,
+                            stamp: WheelRouteDeleteBlock::DemolishSearchTree {
+                                route: DemolishSearchTreeRoute { meister_ref, },
+                            },
+                        }))) => {
+                            let maybe_meister = sklavenwelt.env
+                                .demolish_search_tree_sklaven
+                                .get(meister_ref);
+                            match maybe_meister {
+                                Some(meister) => {
+                                    let send_result = meister.befehl(
+                                        demolish_search_tree::Order::DeleteBlock(
+                                            demolish_search_tree::OrderDeleteBlock {
+                                                delete_block_result,
+                                            },
+                                        ),
+                                        thread_pool,
+                                    );
+                                    if let Err(error) = send_result {
+                                        log::warn!("demolish search tree sklave delete block order failed: {error:?}, unregistering");
+                                        sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref);
+                                    }
+                                },
+                                None =>
+                                    log::warn!("demolish search tree sklave entry has already unregistered before delete block order"),
+                            }
+                        },
                         Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(komm::UmschlagAbbrechen { .. }))) |
                         Some(Order::Wheel(OrderWheel::IterBlocksInit(komm::Umschlag { .. }))) |
                         Some(Order::Wheel(OrderWheel::IterBlocksNextCancel(komm::UmschlagAbbrechen { .. }))) |
@@ -427,28 +521,6 @@ where A: AccessPolicy,
                             return Err(Error::UnexpectedIterBlocksReplyInRunningMode),
                     }
                 },
-    //             } else if let Some(RequestLookupRange { search_range, reply_kind, }) = env.incoming.request_lookup_range.pop() {
-    //                 next.begin_lookup_range(search_range, reply_kind)
-    //             } else if let Some(EventButcherFlushed { search_tree_id, root_block, }) = env.incoming.butcher_flushed.pop() {
-    //                 next.butcher_flushed(search_tree_id, root_block)
-    //             } else if let Some(EventLookupRangeMergeDone { access_token, }) = env.incoming.lookup_range_merge_done.pop() {
-    //                 next.commit_lookup_range(access_token)
-    //             } else if let Some(merge_search_trees_done) = env.incoming.merge_search_trees_done.pop() {
-    //                 let EventMergeSearchTreesDone {
-    //                     merged_search_tree_ref,
-    //                     merged_search_tree_items_count,
-    //                     access_token,
-    //                 } = merge_search_trees_done;
-    //                 next.search_trees_merged(
-    //                     merged_search_tree_ref,
-    //                     merged_search_tree_items_count,
-    //                     access_token,
-    //                 )
-    //             } else if let Some(EventDemolishDone { search_tree_id, }) = env.incoming.demolish_done.pop() {
-    //                 next.search_tree_demolished(search_tree_id)
-    //             } else {
-    //                 return Ok(Done { env, next: Next::Poll { next, }, });
-    //             },
         };
 
         loop {
@@ -565,8 +637,29 @@ where A: AccessPolicy,
                     next.scheduled()
                 },
                 performer::Kont::DemolishSearchTree(performer::KontDemolishSearchTree { order, next, }) => {
-                    todo!()
-                    // next.roger_that()
+                    let demolish_freie = arbeitssklave::Freie::new();
+                    let demolish_meister = demolish_freie.meister();
+                    let meister_ref = sklavenwelt.env
+                        .demolish_search_tree_sklaven
+                        .insert(demolish_meister);
+                    demolish_freie
+                        .versklaven(
+                            demolish_search_tree::Welt::new(
+                                order.walker,
+                                meister_ref,
+                                sklavenwelt.env.sendegeraet.clone(),
+                                sklavenwelt.env.wheels.clone(),
+                                sklavenwelt.env
+                                    .sendegeraet
+                                    .rueckkopplung(DemolishSearchTreeDrop {
+                                        search_tree_id: order.search_tree_id,
+                                        route: DemolishSearchTreeRoute { meister_ref, },
+                                    }),
+                            ),
+                            thread_pool,
+                        )
+                        .map_err(Error::DemolishSearchTreeVersklaven)?;
+                    next.roger_that()
                 },
             };
         }
