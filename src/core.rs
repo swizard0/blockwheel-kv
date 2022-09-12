@@ -20,11 +20,6 @@ use crate::{
     wheels::{
         BlockRef,
     },
-    // Info,
-    // Inserted,
-    // Removed,
-    // Flushed,
-    // LookupRange,
 };
 
 // pub mod manager;
@@ -40,24 +35,6 @@ mod search_ranges_merge;
 
 #[cfg(test)]
 mod tests;
-
-// pub type RequestInfoReplyTx = oneshot::Sender<Info>;
-// pub type RequestInsertReplyTx = oneshot::Sender<Inserted>;
-// pub type RequestRemoveReplyTx = oneshot::Sender<Removed>;
-// pub type RequestFlushReplyTx = oneshot::Sender<Flushed>;
-
-// pub enum RequestLookupKind {
-//     Single(RequestLookupKindSingle),
-//     Range(RequestLookupKindRange),
-// }
-
-// pub struct RequestLookupKindSingle {
-//     reply_tx: oneshot::Sender<Option<kv::ValueCell<kv::Value>>>,
-// }
-
-// pub struct RequestLookupKindRange {
-//     reply_tx: oneshot::Sender<LookupRange>,
-// }
 
 pub type SearchTreeBuilderCps =
     search_tree_builder::BuilderCps<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
@@ -78,44 +55,6 @@ pub type SearchRangesMergeBlockNext =
     search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 pub type SearchRangesMergeItemNext =
     search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
-
-// #[derive(Debug)]
-// pub struct RequestInfo {
-//     reply_tx: RequestInfoReplyTx,
-// }
-
-// #[derive(Debug)]
-// pub struct RequestInsert {
-//     key: kv::Key,
-//     value: kv::Value,
-//     reply_tx: RequestInsertReplyTx,
-// }
-
-// pub struct RequestLookupRange {
-//     search_range: SearchRangeBounds,
-//     reply_kind: RequestLookupKind,
-// }
-
-// #[derive(Debug)]
-// pub struct RequestRemove {
-//     key: kv::Key,
-//     reply_tx: RequestRemoveReplyTx,
-// }
-
-// #[derive(Debug)]
-// pub struct RequestFlush {
-//     reply_tx: RequestFlushReplyTx,
-// }
-
-// pub struct Context;
-
-// impl context::Context for Context {
-//     type Info = RequestInfoReplyTx;
-//     type Insert = RequestInsertReplyTx;
-//     type Remove = RequestRemoveReplyTx;
-//     type Lookup = RequestLookupKind;
-//     type Flush = RequestFlushReplyTx;
-// }
 
 pub struct MemCache {
     cache: BTreeMap<OrdKey, kv::ValueCell<kv::Value>>,
@@ -176,13 +115,6 @@ impl SearchRangeBounds {
             range_to: Bound::Unbounded,
         }
     }
-
-    // fn single(key: kv::Key) -> SearchRangeBounds {
-    //     SearchRangeBounds {
-    //         range_from: Bound::Included(key.clone()),
-    //         range_to: Bound::Included(key),
-    //     }
-    // }
 }
 
 impl<R> From<R> for SearchRangeBounds where R: RangeBounds<kv::Key> {

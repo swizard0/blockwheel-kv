@@ -111,6 +111,7 @@ pub struct Env<A> where A: AccessPolicy {
     sendegeraet: komm::Sendegeraet<Order<A>>,
     incoming_orders: Vec<Order<A>>,
     delayed_orders: Vec<Order<A>>,
+    pending_info_requests: Set<running::PendingInfo<A>>,
     lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
     flush_butcher_sklaven: Set<running::flush_butcher::Meister<A>>,
     merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<A>>,
@@ -135,6 +136,7 @@ impl<A> Env<A> where A: AccessPolicy {
             sendegeraet,
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
+            pending_info_requests: Set::new(),
             lookup_range_merge_sklaven: Set::new(),
             flush_butcher_sklaven: Set::new(),
             merge_search_trees_sklaven: Set::new(),
@@ -198,6 +200,11 @@ pub struct DemolishSearchTreeDrop {
     route: DemolishSearchTreeRoute,
 }
 
+#[derive(Debug)]
+pub struct InfoRoute {
+    info_ref: Ref,
+}
+
 pub struct DemolishSearchTreeDone;
 
 pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
@@ -228,7 +235,11 @@ pub struct OrderRequestFlush<A> where A: AccessPolicy {
     pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
 }
 
-pub struct WheelRouteInfo;
+#[derive(Debug)]
+pub struct WheelRouteInfo {
+    pub route: InfoRoute,
+    pub blockwheel_filename: wheels::WheelFilename,
+}
 
 pub struct WheelRouteFlush;
 

@@ -43,7 +43,6 @@ fn stress() {
 
     let limits = Limits {
         active_tasks: 128,
-        // actions: 4,
         actions: 512,
         key_size_bytes: 32,
         value_size_bytes: 4096,
@@ -670,52 +669,7 @@ fn stress_loop(
             return Err(Error::UnexpectedFtdOrder(format!("{other_order:?}"))),
     };
 
-    log::info!("FINAL INFO: {info:?}");
-
-//     // backwards check with iterator
-//     let mut checked_blocks = 0;
-//     let mut checked_entries = 0;
-//     let mut iter_blocks = wheels.iter_blocks();
-//     loop {
-//         match iter_blocks.next().await {
-//             None =>
-//                 return Err(Error::WheelsIterBlocksRxDropped),
-//             Some(Ok(wheels::IterBlocksItem::Block { block_bytes, .. })) => {
-//                 checked_blocks += 1;
-//                 match storage::block_deserialize_iter(&block_bytes) {
-//                     Ok(deserializer) =>
-//                         for maybe_entry in deserializer {
-//                             let iter_entry = maybe_entry
-//                                 .map_err(Error::Storage)?;
-//                             checked_entries += 1;
-//                             match data.index.get(iter_entry.key) {
-//                                 None =>
-//                                     return Err(Error::BackwardIterKeyNotFound),
-//                                 Some(..) =>
-//                                     (),
-//                             }
-//                         },
-//                     Err(storage::Error::InvalidBlockMagic { provided, .. }) if provided == storage::VALUE_BLOCK_MAGIC =>
-//                         (),
-//                     Err(error) =>
-//                         return Err(Error::Storage(error)),
-//                 }
-//             },
-//             Some(Ok(wheels::IterBlocksItem::NoMoreBlocks)) =>
-//                 break,
-//             Some(Err(error)) =>
-//                 return Err(Error::WheelsIterBlocks(error)),
-//         }
-//     }
-
-//     log::info!("FINISHED: blocks checked = {}, entries = {} | {:?}", checked_blocks, checked_entries, counter);
-
-//     let info_a = wheel_a_pid.info().await
-//         .map_err(|ero::NoProcError| Error::WheelAGoneDuringInfo)?;
-//     log::info!("FINISHED: info_a: {info_a:?}");
-//     let info_b = wheel_b_pid.info().await
-//         .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
-//     log::info!("FINISHED: info_b: {info_b:?}");
+    log::info!("FINAL INFO: {info:#?}");
 
     use std::sync::atomic::Ordering;
     log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(Ordering::SeqCst));

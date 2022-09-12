@@ -19,6 +19,7 @@ use crate::{
             OrderRequestLookupRange,
             OrderRequestRemove,
             OrderRequestFlush,
+            InfoRoute,
             LookupRangeRoute,
             LookupRangeMergeDrop,
             LookupRangeStreamNext,
@@ -38,9 +39,11 @@ use crate::{
             WheelRouteDeleteBlock,
         },
     },
+    Info,
     Flushed,
     Removed,
     Inserted,
+    WheelInfo,
     AccessPolicy,
 };
 
@@ -71,6 +74,12 @@ enum ActiveFlush<A> where A: AccessPolicy {
         wheels_left: usize,
         rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
     },
+}
+
+pub struct PendingInfo<A> where A: AccessPolicy {
+    info: Info,
+    rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
+    wheels_left: usize,
 }
 
 pub enum Outcome<A> where A: AccessPolicy {
@@ -110,6 +119,13 @@ pub enum Error {
         route: WheelRouteDeleteBlock,
     },
     WheelIsGoneDuringFlush,
+    WheelIsGoneDuringInfo {
+        route: WheelRouteInfo,
+    },
+    WheelInfo {
+        blockwheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
     WheelFlush {
         blockwheel_filename: wheels::WheelFilename,
         error: arbeitssklave::Error,
@@ -320,10 +336,35 @@ where A: AccessPolicy,
                             }
                             break next.search_tree_demolished(search_tree_id);
                         },
-                        Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: _wheel_route_info, }))) =>
-                            todo!(),
-                        Some(Order::Wheel(OrderWheel::Info(komm::Umschlag { payload: _info, stamp: WheelRouteInfo, }))) =>
-                            todo!(),
+                        Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
+                            return Err(Error::WheelIsGoneDuringInfo { route, }),
+                        Some(Order::Wheel(OrderWheel::Info(komm::Umschlag {
+                            payload: info,
+                            stamp: WheelRouteInfo {
+                                route: InfoRoute { info_ref, },
+                                blockwheel_filename,
+                            },
+                        }))) => {
+                            let maybe_info = sklavenwelt.env
+                                .pending_info_requests
+                                .get_mut(info_ref);
+                            match maybe_info {
+                                Some(pending_info) => {
+                                    pending_info.info.wheels.push(WheelInfo { info, blockwheel_filename, });
+                                    pending_info.wheels_left -= 1;
+                                    if pending_info.wheels_left == 0 {
+                                        let PendingInfo { info, rueckkopplung, .. } = sklavenwelt.env
+                                            .pending_info_requests
+                                            .remove(info_ref)
+                                            .unwrap();
+                                        rueckkopplung.commit(info)
+                                            .map_err(Error::CommitInfo)?;
+                                    }
+                                },
+                                None =>
+                                    log::warn!("pending info entry has already removed"),
+                            }
+                        },
                         Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: WheelRouteFlush, }))) =>
                             return Err(Error::WheelIsGoneDuringFlush),
                         Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) =>
@@ -578,8 +619,27 @@ where A: AccessPolicy,
                     break;
                 },
                 performer::Kont::InfoReady(performer::KontInfoReady { info, info_context: rueckkopplung, next, }) => {
-                    rueckkopplung.commit(info)
-                        .map_err(Error::CommitInfo)?;
+                    let info_ref = sklavenwelt.env
+                        .pending_info_requests
+                        .insert(PendingInfo { info, rueckkopplung, wheels_left: 0, });
+                    for wheel_ref in sklavenwelt.env.wheels.iter() {
+                        let info_rueckkopplung = sklavenwelt.env
+                            .sendegeraet
+                            .rueckkopplung(WheelRouteInfo {
+                                route: InfoRoute { info_ref, },
+                                blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
+                            });
+                        wheel_ref.meister
+                            .info(info_rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+                            .map_err(|error| Error::WheelInfo {
+                                blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
+                                error,
+                            })?;
+                        sklavenwelt.env.pending_info_requests
+                            .get_mut(info_ref)
+                            .unwrap()
+                            .wheels_left += 1;
+                    }
                     next.got_it()
                 },
                 performer::Kont::Inserted(performer::KontInserted { version, insert_context: rueckkopplung, next, }) => {

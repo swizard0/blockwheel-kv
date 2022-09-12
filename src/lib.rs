@@ -175,10 +175,17 @@ pub struct Removed {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Flushed;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Info {
     pub alive_cells_count: usize,
     pub tombstones_count: usize,
+    pub wheels: Vec<WheelInfo>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct WheelInfo {
+    pub blockwheel_filename: wheels::WheelFilename,
+    pub info: blockwheel_fs::Info,
 }
 
 impl<A> Meister<A> where A: AccessPolicy {
