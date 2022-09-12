@@ -111,7 +111,7 @@ impl<A> Welt<A> where A: AccessPolicy {
         -> Self
     {
         Welt {
-            kont: Some(Kont {
+            kont: Some(Kont::Busy {
                 merge_kont: MergeKont::Start {
                     merger: source_count_items,
                 },
@@ -137,9 +137,15 @@ impl<A> Welt<A> where A: AccessPolicy {
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
 
-struct Kont {
-    merge_kont: MergeKont,
-    build_kont: BuildKont,
+enum Kont {
+    Busy {
+        merge_kont: MergeKont,
+        build_kont: BuildKont,
+    },
+    Finished {
+        items_count: usize,
+        root_block: BlockRef,
+    },
 }
 
 #[derive(Debug)]
@@ -173,7 +179,7 @@ where A: AccessPolicy,
 {
     'outer: loop {
         // first retrieve all orders available
-        if let Some(Kont { merge_kont: MergeKont::Start { .. }, .. }) = sklave_job.sklavenwelt().kont {
+        if let Some(Kont::Busy { merge_kont: MergeKont::Start { .. }, .. }) = sklave_job.sklavenwelt().kont {
             // skip it on initialize
         } else {
             let gehorsam = sklave_job.zu_ihren_diensten()
@@ -244,20 +250,30 @@ where A: AccessPolicy,
         }
 
         let sklavenwelt = sklave_job.sklavenwelt_mut();
-        if sklavenwelt.maybe_feedback.is_none() {
-            // merge search trees is done, waiting for delete tasks to finish
-            if sklavenwelt.pending_delete_tasks == 0 {
-                assert!(sklavenwelt.received_block_tasks.is_empty());
-                assert!(sklavenwelt.written_block_tasks.is_empty());
-                return Ok(());
-            } else {
-                continue 'outer;
-            }
-        }
-
         loop {
-            let Kont { mut merge_kont, mut build_kont } =
-                sklavenwelt.kont.take().unwrap();
+            let (mut merge_kont, mut build_kont) = match sklavenwelt.kont.take().unwrap() {
+                Kont::Busy { merge_kont, build_kont } =>
+                    (merge_kont, build_kont),
+                Kont::Finished { items_count, root_block, } => {
+                    if sklavenwelt.pending_delete_tasks == 0 {
+                        assert!(sklavenwelt.received_block_tasks.is_empty());
+                        assert!(sklavenwelt.written_block_tasks.is_empty());
+                        if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
+                            feedback
+                                .commit(performer_sklave::MergeSearchTreesDone {
+                                    merged_search_tree_ref: root_block,
+                                    merged_search_tree_items_count: items_count,
+                                })
+                                .map_err(Error::FeedbackCommit)?;
+                        }
+                        return Ok(());
+                    } else {
+                        sklavenwelt.kont = Some(Kont::Finished { items_count, root_block, });
+                        continue 'outer;
+                    }
+                },
+            };
+
             loop {
                 enum MergeKontState<K, A, I> {
                     Ready(K),
@@ -377,7 +393,7 @@ where A: AccessPolicy,
                         build_kont = BuildKont::CountItems { items_count, merger_source_build, };
                     },
                     (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: await_merge_kont,
                             build_kont: BuildKont::CountItems { items_count, merger_source_build, },
                         });
@@ -386,7 +402,7 @@ where A: AccessPolicy,
                     (MergeKontState::Idle(..), BuildKontState::CountItems { .. }) =>
                         unreachable!(),
                     (MergeKontState::Finished, BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: MergeKont::Start {
                                 merger: merger_source_build,
                             },
@@ -431,7 +447,7 @@ where A: AccessPolicy,
                         MergeKontState::Await(await_merge_kont),
                         BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), },
                     ) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: await_merge_kont,
                             build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
                         });
@@ -448,7 +464,7 @@ where A: AccessPolicy,
                         MergeKontState::Idle(idle_merge_kont),
                         BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), },
                     ) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: idle_merge_kont,
                             build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
                         });
@@ -465,7 +481,7 @@ where A: AccessPolicy,
                         MergeKontState::Finished,
                         BuildKontState::Active { item_arrived, kont: Active::Await(await_build_kont), },
                     ) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: MergeKont::Finished,
                             build_kont: BuildKont::Active { item_arrived, kont: await_build_kont, },
                         });
@@ -482,7 +498,7 @@ where A: AccessPolicy,
                         MergeKontState::Await(await_merge_kont),
                         BuildKontState::Active { item_arrived, kont: Active::Finished { items_count, root_block, }, },
                     ) => {
-                        sklavenwelt.kont = Some(Kont {
+                        sklavenwelt.kont = Some(Kont::Busy {
                             merge_kont: await_merge_kont,
                             build_kont: BuildKont::Active { item_arrived, kont: BuildKontActive::Finished { items_count, root_block, }, },
                         });
@@ -491,21 +507,8 @@ where A: AccessPolicy,
                     (MergeKontState::Idle(..), BuildKontState::Active { kont: Active::Finished { .. }, .. }) =>
                         unreachable!(),
                     (MergeKontState::Finished, BuildKontState::Active { kont: Active::Finished { items_count, root_block, }, .. }) => {
-                        if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
-                            feedback
-                                .commit(performer_sklave::MergeSearchTreesDone {
-                                    merged_search_tree_ref: root_block,
-                                    merged_search_tree_items_count: items_count,
-                                })
-                                .map_err(Error::FeedbackCommit)?;
-                        }
-                        if sklavenwelt.pending_delete_tasks == 0 {
-                            assert!(sklavenwelt.received_block_tasks.is_empty());
-                            assert!(sklavenwelt.written_block_tasks.is_empty());
-                            return Ok(());
-                        } else {
-                            continue 'outer;
-                        }
+                        sklavenwelt.kont = Some(Kont::Finished { items_count, root_block, });
+                        break;
                     },
                 }
             }
