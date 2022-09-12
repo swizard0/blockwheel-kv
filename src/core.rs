@@ -177,12 +177,12 @@ impl SearchRangeBounds {
         }
     }
 
-    fn single(key: kv::Key) -> SearchRangeBounds {
-        SearchRangeBounds {
-            range_from: Bound::Included(key.clone()),
-            range_to: Bound::Included(key),
-        }
-    }
+    // fn single(key: kv::Key) -> SearchRangeBounds {
+    //     SearchRangeBounds {
+    //         range_from: Bound::Included(key.clone()),
+    //         range_to: Bound::Included(key),
+    //     }
+    // }
 }
 
 impl<R> From<R> for SearchRangeBounds where R: RangeBounds<kv::Key> {
