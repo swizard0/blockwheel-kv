@@ -4,6 +4,7 @@ use arbeitssklave::{
 
 use crate::{
     job,
+    wheels,
     core::{
         performer,
         performer_sklave::{
@@ -51,6 +52,7 @@ pub mod demolish_search_tree;
 pub struct WeltState<A> where A: AccessPolicy {
     kont: Kont<A>,
     pools: Pools,
+    active_flush: Option<ActiveFlush<A>>,
 }
 
 impl<A> WeltState<A> where A: AccessPolicy {
@@ -58,8 +60,17 @@ impl<A> WeltState<A> where A: AccessPolicy {
         WeltState {
             kont: Kont::Start { performer, },
             pools,
+            active_flush: None,
         }
     }
+}
+
+enum ActiveFlush<A> where A: AccessPolicy {
+    Kv,
+    Wheels {
+        wheels_left: usize,
+        rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
+    },
 }
 
 pub enum Outcome<A> where A: AccessPolicy {
@@ -98,6 +109,11 @@ pub enum Error {
     WheelIsGoneDuringDeleteBlock {
         route: WheelRouteDeleteBlock,
     },
+    WheelIsGoneDuringFlush,
+    WheelFlush {
+        blockwheel_filename: wheels::WheelFilename,
+        error: arbeitssklave::Error,
+    },
 }
 
 pub fn job<A, P>(
@@ -122,16 +138,26 @@ where A: AccessPolicy,
                                 running: welt_state,
                             });
                         },
-                        Some(Order::Request(OrderRequest::Info(OrderRequestInfo { rueckkopplung, }))) =>
-                            break next.incoming_info(rueckkopplung),
-                        Some(Order::Request(OrderRequest::Insert(OrderRequestInsert { key, value, rueckkopplung, }))) =>
-                            break next.incoming_insert(key, value, rueckkopplung),
-                        Some(Order::Request(OrderRequest::LookupRange(OrderRequestLookupRange { search_range, rueckkopplung, }))) =>
-                            break next.begin_lookup_range(search_range, rueckkopplung),
-                        Some(Order::Request(OrderRequest::Remove(OrderRequestRemove { key, rueckkopplung, }))) =>
-                            break next.incoming_remove(key, rueckkopplung),
-                        Some(Order::Request(OrderRequest::Flush(OrderRequestFlush { rueckkopplung, }))) =>
-                            break next.incoming_flush(rueckkopplung),
+                        Some(Order::Request(request)) =>
+                            match welt_state.active_flush {
+                                None =>
+                                    match request {
+                                        OrderRequest::Info(OrderRequestInfo { rueckkopplung, }) =>
+                                            break next.incoming_info(rueckkopplung),
+                                        OrderRequest::Insert(OrderRequestInsert { key, value, rueckkopplung, }) =>
+                                            break next.incoming_insert(key, value, rueckkopplung),
+                                        OrderRequest::LookupRange(OrderRequestLookupRange { search_range, rueckkopplung, }) =>
+                                            break next.begin_lookup_range(search_range, rueckkopplung),
+                                        OrderRequest::Remove(OrderRequestRemove { key, rueckkopplung, }) =>
+                                            break next.incoming_remove(key, rueckkopplung),
+                                        OrderRequest::Flush(OrderRequestFlush { rueckkopplung, }) => {
+                                            welt_state.active_flush = Some(ActiveFlush::Kv);
+                                            break next.incoming_flush(rueckkopplung)
+                                        },
+                                    },
+                                Some(ActiveFlush::Kv | ActiveFlush::Wheels { .. }) =>
+                                    sklavenwelt.env.delayed_orders.push(Order::Request(request)),
+                            },
                         Some(Order::LookupRangeStreamCancel(komm::UmschlagAbbrechen {
                             stamp: LookupRangeRoute { meister_ref, },
                         })) => {
@@ -295,15 +321,37 @@ where A: AccessPolicy,
                             break next.search_tree_demolished(search_tree_id);
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: _wheel_route_info, }))) =>
-                            unreachable!(),
+                            todo!(),
                         Some(Order::Wheel(OrderWheel::Info(komm::Umschlag { payload: _info, stamp: WheelRouteInfo, }))) =>
-                            unreachable!(),
-                        Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: WheelRouteFlush, }))) => {
-                            todo!();
-                        },
-                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) => {
-                            todo!();
-                        },
+                            todo!(),
+                        Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: WheelRouteFlush, }))) =>
+                            return Err(Error::WheelIsGoneDuringFlush),
+                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) =>
+                            match welt_state.active_flush {
+                                Some(ActiveFlush::Wheels { wheels_left, rueckkopplung, }) if wheels_left > 1 => {
+                                    log::debug!("wheel flush is done, {} wheels is left", wheels_left - 1);
+                                    welt_state.active_flush = Some(ActiveFlush::Wheels {
+                                        wheels_left: wheels_left - 1,
+                                        rueckkopplung,
+                                    });
+                                },
+                                Some(ActiveFlush::Wheels { rueckkopplung, .. }) => {
+                                    log::debug!("wheels flush is done, reporting");
+                                    rueckkopplung.commit(Flushed)
+                                        .map_err(Error::CommitFlushed)?;
+                                    welt_state.active_flush = None;
+                                    sklavenwelt.env.incoming_orders.extend(
+                                        sklavenwelt.env.delayed_orders.drain(..),
+                                    );
+
+                                    assert!(sklavenwelt.env.lookup_range_merge_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.flush_butcher_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.merge_search_trees_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.demolish_search_tree_sklaven.is_empty());
+                                },
+                                None | Some(ActiveFlush::Kv) =>
+                                    unreachable!(),
+                            },
                         Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringWriteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
@@ -545,8 +593,28 @@ where A: AccessPolicy,
                     next.got_it()
                 },
                 performer::Kont::Flushed(performer::KontFlushed { flush_context: rueckkopplung, next, }) => {
-                    rueckkopplung.commit(Flushed)
-                        .map_err(Error::CommitFlushed)?;
+                    log::debug!("kv flush is done, performing flush for wheels");
+                    let mut wheels_left = 0;
+                    for wheel_ref in sklavenwelt.env.wheels.iter() {
+                        let flush_rueckkopplung = sklavenwelt.env
+                            .sendegeraet
+                            .rueckkopplung(WheelRouteFlush);
+                        wheel_ref.meister
+                            .flush(flush_rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+                            .map_err(|error| Error::WheelFlush {
+                                blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
+                                error,
+                            })?;
+                        wheels_left += 1;
+                        log::debug!("initiating flush for {:?}", wheel_ref.blockwheel_filename);
+                    }
+
+                    welt_state.active_flush = match welt_state.active_flush {
+                        Some(ActiveFlush::Kv) =>
+                            Some(ActiveFlush::Wheels { wheels_left, rueckkopplung, }),
+                        None | Some(ActiveFlush::Wheels { .. }) =>
+                            unreachable!(),
+                    };
                     next.commit_flush()
                 },
                 performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_id, frozen_memcache, next, }) => {

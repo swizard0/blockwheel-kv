@@ -15,7 +15,6 @@ use rand::{
     Rng,
     SeedableRng,
     rngs::SmallRng,
-    seq::IteratorRandom,
     distributions::Uniform,
 };
 
@@ -34,7 +33,6 @@ use crate::{
     job,
     wheels,
     version,
-    storage,
 };
 
 use crate as blockwheel_kv;
@@ -113,7 +111,8 @@ fn stress() {
 
     // next load existing wheel and repeat stress
     counter.clear();
-    // @@ runtime.block_on(stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)).unwrap();
+    stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)
+        .unwrap();
 
     fs::remove_file(&wheel_filename_a).ok();
     fs::remove_file(&wheel_filename_b).ok();
@@ -182,19 +181,7 @@ pub enum Error {
         expected_value_cell: kv::ValueCell<u64>,
         found_value_cell: kv::ValueCell<kv::Value>,
     },
-    UnexpectedValueForLookupRange {
-        key: kv::Key,
-        key_value_pair: kv::KeyValuePair<kv::Value>,
-    },
-    WheelKvGoneDuringInfo,
-    WheelAGoneDuringInfo,
-    WheelBGoneDuringInfo,
-    WheelsIterBlocks(wheels::IterBlocksItemError),
-    WheelsIterBlocksRxDropped,
     WheelsBuilder(wheels::BuilderError),
-    WheelsFlush(wheels::FlushError),
-    Storage(storage::Error),
-    BackwardIterKeyNotFound,
     FtdProcessIsLost,
     RequestInfo(arbeitssklave::Error),
     RequestFlush(arbeitssklave::Error),
@@ -439,10 +426,8 @@ struct JobInsertArgs {
 
 struct JobInsertArgsMain {
     blocks_pool: BytesPool,
-    version_provider: version::Provider,
     key_amount: usize,
     value_amount: usize,
-    limits: Limits,
     blockwheel_kv_meister: blockwheel_kv::Meister<AccessPolicy>,
     ftd_sendegeraet: komm::Sendegeraet<ReplyOrder>,
 }
@@ -536,7 +521,7 @@ fn stress_loop(
         if actions_counter >= limits.actions {
             while active_tasks_counter.sum_total() > 0 {
                 log::debug!("terminating, waiting for {} tasks to finish | active = {:?}", active_tasks_counter.sum(), active_tasks_counter);
-                process(ftd_rx.recv(), data, counter, &mut active_tasks_counter, &ftd_sendegeraet, &thread_pool)?;
+                process(ftd_rx.recv(), data, counter, &mut active_tasks_counter, &thread_pool)?;
             }
             break;
         }
@@ -560,7 +545,7 @@ fn stress_loop(
             None =>
                 (),
             Some(task_result) => {
-                process(task_result, data, counter, &mut active_tasks_counter, &ftd_sendegeraet, &thread_pool)?;
+                process(task_result, data, counter, &mut active_tasks_counter, &thread_pool)?;
                 continue;
             }
         }
@@ -590,10 +575,8 @@ fn stress_loop(
                 let job = JobInsertArgs {
                     main: JobInsertArgsMain {
                         blocks_pool: blocks_pool.clone(),
-                        version_provider: version_provider.clone(),
                         key_amount,
                         value_amount,
-                        limits: limits.clone(),
                         blockwheel_kv_meister: meister.clone(),
                         ftd_sendegeraet: ftd_sendegeraet.clone(),
                     },
@@ -605,7 +588,7 @@ fn stress_loop(
                 active_tasks_counter.insert_jobs += 1;
             } else {
                 // remove task
-                let (key, value) = loop {
+                let key = loop {
                     let index = rng.gen_range(0 .. data.alive.len());
                     let &key_index = data.alive
                         .values()
@@ -613,8 +596,8 @@ fn stress_loop(
                         .unwrap();
                     let kv::KeyValuePair { key, value_cell, } = &data.data[key_index];
                     match &value_cell.cell {
-                        kv::Cell::Value(value) =>
-                            break (key, value),
+                        kv::Cell::Value(..) =>
+                            break key,
                         kv::Cell::Tombstone =>
                             continue,
                     }
@@ -734,13 +717,13 @@ fn stress_loop(
 //         .map_err(|ero::NoProcError| Error::WheelBGoneDuringInfo)?;
 //     log::info!("FINISHED: info_b: {info_b:?}");
 
-//     use std::sync::atomic::Ordering;
-
-//     log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(Ordering::SeqCst));
-//     log::info!("JOB_MANAGER_TASK_PERFORMER: {}", job::JOB_MANAGER_TASK_PERFORMER.load(Ordering::SeqCst));
-//     log::info!("JOB_MANAGER_TASK_FLUSH_BUTCHER: {}", job::JOB_MANAGER_TASK_FLUSH_BUTCHER.load(Ordering::SeqCst));
-//     log::info!("JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE: {}", job::JOB_MANAGER_TASK_LOOKUP_RANGE_MERGE.load(Ordering::SeqCst));
-//     log::info!("JOB_MANAGER_TASK_MERGE_SEARCH_TREES: {}", job::JOB_MANAGER_TASK_MERGE_SEARCH_TREES.load(Ordering::SeqCst));
+    use std::sync::atomic::Ordering;
+    log::info!("JOB_BLOCKWHEEL_FS: {}", job::JOB_BLOCKWHEEL_FS.load(Ordering::SeqCst));
+    log::info!("JOB_PERFORMER_SKLAVE: {}", job::JOB_PERFORMER_SKLAVE.load(Ordering::SeqCst));
+    log::info!("JOB_LOOKUP_RANGE_MERGE_SKLAVE: {}", job::JOB_LOOKUP_RANGE_MERGE_SKLAVE.load(Ordering::SeqCst));
+    log::info!("JOB_FLUSH_BUTCHER_SKLAVE: {}", job::JOB_FLUSH_BUTCHER_SKLAVE.load(Ordering::SeqCst));
+    log::info!("JOB_MERGE_SEARCH_TREES_SKLAVE: {}", job::JOB_MERGE_SEARCH_TREES_SKLAVE.load(Ordering::SeqCst));
+    log::info!("JOB_DEMOLISH_SEARCH_TREE_SKLAVE: {}", job::JOB_DEMOLISH_SEARCH_TREE_SKLAVE.load(Ordering::SeqCst));
 
     Ok::<_, Error>(())
 }
@@ -750,8 +733,7 @@ fn process<P>(
     data: &mut DataIndex,
     counter: &mut Counter,
     active_tasks_counter: &mut Counter,
-    ftd_sendegeraet: &komm::Sendegeraet<ReplyOrder>,
-    thread_pool: &P,
+    _thread_pool: &P,
 )
     -> Result<(), Error>
 where P: edeltraud::ThreadPool<Job>,
