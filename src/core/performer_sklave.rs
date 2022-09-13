@@ -196,7 +196,7 @@ pub struct DemolishSearchTreeRoute {
 }
 
 pub struct DemolishSearchTreeDrop {
-    search_tree_id: u64,
+    demolish_group_ref: Ref,
     route: DemolishSearchTreeRoute,
 }
 
@@ -267,14 +267,12 @@ pub enum WheelRouteReadBlock {
     },
     DemolishSearchTree {
         route: DemolishSearchTreeRoute,
+        target: running::demolish_search_tree::ReadBlockTarget,
     },
 }
 
 #[derive(Debug)]
 pub enum WheelRouteDeleteBlock {
-    MergeSearchTrees {
-        route: MergeSearchTreesRoute,
-    },
     DemolishSearchTree {
         route: DemolishSearchTreeRoute,
     },

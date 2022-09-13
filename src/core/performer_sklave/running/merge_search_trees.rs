@@ -44,7 +44,6 @@ use crate::{
 pub enum Order {
     ReadBlock(OrderReadBlock),
     WriteBlock(OrderWriteBlock),
-    DeleteBlock(OrderDeleteBlock),
 }
 
 pub struct OrderReadBlock {
@@ -55,10 +54,6 @@ pub struct OrderReadBlock {
 pub struct OrderWriteBlock {
     pub write_block_result: Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>,
     pub target: WriteBlockTarget,
-}
-
-pub struct OrderDeleteBlock {
-    pub delete_block_result: Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>,
 }
 
 #[derive(Debug)]
@@ -93,7 +88,6 @@ pub struct Welt<A> where A: AccessPolicy {
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::MergeSearchTreesDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
     written_block_tasks: Vec<WrittenBlockTask>,
-    pending_delete_tasks: usize,
 }
 
 impl<A> Welt<A> where A: AccessPolicy {
@@ -129,7 +123,6 @@ impl<A> Welt<A> where A: AccessPolicy {
             maybe_feedback: Some(feedback),
             received_block_tasks: Vec::new(),
             written_block_tasks: Vec::new(),
-            pending_delete_tasks: 0,
         }
     }
 }
@@ -155,12 +148,10 @@ pub enum Error {
     SearchTreeBuilder(search_tree_builder::Error),
     ReadBlock(blockwheel_fs::RequestReadBlockError),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
-    DeleteBlock(blockwheel_fs::RequestDeleteBlockError),
     FeedbackCommit(komm::Error),
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
     BlockLoadReadBlockRequest(arbeitssklave::Error),
     BlockStoreWriteBlockRequest(arbeitssklave::Error),
-    DeprecatedDeleteBlockRequest(arbeitssklave::Error),
     SerializeBlockStorage(storage::Error),
 }
 
@@ -228,16 +219,6 @@ where A: AccessPolicy,
                                         target: WriteBlockTarget::StoreBlock { .. },
                                     }) =>
                                         return Err(Error::WriteBlock(error)),
-                                    Order::DeleteBlock(OrderDeleteBlock {
-                                        delete_block_result: Ok(blockwheel_fs::Deleted),
-                                    }) => {
-                                        assert!(sklavenwelt.pending_delete_tasks > 0);
-                                        sklavenwelt.pending_delete_tasks -= 1;
-                                    },
-                                    Order::DeleteBlock(OrderDeleteBlock {
-                                        delete_block_result: Err(error),
-                                    }) =>
-                                        return Err(Error::DeleteBlock(error)),
                                 }
                             },
                             arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -255,22 +236,17 @@ where A: AccessPolicy,
                 Kont::Busy { merge_kont, build_kont } =>
                     (merge_kont, build_kont),
                 Kont::Finished { items_count, root_block, } => {
-                    if sklavenwelt.pending_delete_tasks == 0 {
-                        assert!(sklavenwelt.received_block_tasks.is_empty());
-                        assert!(sklavenwelt.written_block_tasks.is_empty());
-                        if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
-                            feedback
-                                .commit(performer_sklave::MergeSearchTreesDone {
-                                    merged_search_tree_ref: root_block,
-                                    merged_search_tree_items_count: items_count,
-                                })
-                                .map_err(Error::FeedbackCommit)?;
-                        }
-                        return Ok(());
-                    } else {
-                        sklavenwelt.kont = Some(Kont::Finished { items_count, root_block, });
-                        continue 'outer;
+                    assert!(sklavenwelt.received_block_tasks.is_empty());
+                    assert!(sklavenwelt.written_block_tasks.is_empty());
+                    if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
+                        feedback
+                            .commit(performer_sklave::MergeSearchTreesDone {
+                                merged_search_tree_ref: root_block,
+                                merged_search_tree_items_count: items_count,
+                            })
+                            .map_err(Error::FeedbackCommit)?;
                     }
+                    return Ok(());
                 },
             };
 
@@ -389,7 +365,7 @@ where A: AccessPolicy,
 
                 match (merge_kont_state, build_kont_state) {
                     (MergeKontState::Ready(merger_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
-                        merge_kont = job_step_merger_emit_deprecated(sklavenwelt, merger_kont, thread_pool)?;
+                        merge_kont = job_step_merger(sklavenwelt, merger_kont, thread_pool)?;
                         build_kont = BuildKont::CountItems { items_count, merger_source_build, };
                     },
                     (MergeKontState::Await(await_merge_kont), BuildKontState::CountItems { items_count, merger_source_build, }) => {
@@ -516,34 +492,9 @@ where A: AccessPolicy,
     }
 }
 
-fn job_step_merger_emit_deprecated<A, P>(
-    sklavenwelt: &mut Welt<A>,
-    merger_kont: SearchRangesMergeKont,
-    thread_pool: &P,
-)
-    -> Result<MergeKont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
-{
-    job_step_merger_actual(sklavenwelt, merger_kont, true, thread_pool)
-}
-
 fn job_step_merger<A, P>(
     sklavenwelt: &mut Welt<A>,
-    merger_kont: SearchRangesMergeKont,
-    thread_pool: &P,
-)
-    -> Result<MergeKont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
-{
-    job_step_merger_actual(sklavenwelt, merger_kont, false, thread_pool)
-}
-
-fn job_step_merger_actual<A, P>(
-    sklavenwelt: &mut Welt<A>,
     mut merger_kont: SearchRangesMergeKont,
-    emit_deprecated: bool,
     thread_pool: &P,
 )
     -> Result<MergeKont, Error>
@@ -582,43 +533,6 @@ where A: AccessPolicy,
             search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) =>
                 return Ok(MergeKont::ProceedAwaitBlocks { next, }),
             search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
-                merger_kont = next.proceed()
-                    .map_err(Error::SearchRangesMerge)?;
-            },
-            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) if emit_deprecated => {
-                match item {
-                    kv::KeyValuePair {
-                        value_cell: kv::ValueCell {
-                            cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-                            ..
-                        },
-                        ..
-                    } => {
-                        let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
-                            .ok_or_else(|| Error::WheelNotFound {
-                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                            })?;
-                        let rueckkopplung = sklavenwelt
-                            .sendegeraet
-                            .rueckkopplung(
-                                performer_sklave::WheelRouteDeleteBlock::MergeSearchTrees {
-                                    route: performer_sklave::MergeSearchTreesRoute {
-                                        meister_ref: sklavenwelt.meister_ref,
-                                    },
-                                },
-                            );
-                        wheel_ref.meister
-                            .delete_block(
-                                block_ref.block_id,
-                                rueckkopplung,
-                                &edeltraud::ThreadPoolMap::new(thread_pool),
-                            )
-                            .map_err(Error::DeprecatedDeleteBlockRequest)?;
-                        sklavenwelt.pending_delete_tasks += 1;
-                    },
-                    _ =>
-                        (),
-                }
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },

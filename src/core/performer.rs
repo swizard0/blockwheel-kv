@@ -10,7 +10,13 @@ use std::{
     collections::{
         hash_map,
         HashMap,
-        HashSet,
+    },
+};
+
+use o1::{
+    set::{
+        Set,
+        Ref,
     },
 };
 
@@ -165,8 +171,8 @@ pub struct LookupRangeSource {
 }
 
 pub struct DemolishOrder {
-    pub walker: search_tree_walker::WalkerCps,
-    pub search_tree_id: u64,
+    pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub demolish_group_ref: Ref,
 }
 
 struct Inner<C> where C: Context {
@@ -187,8 +193,8 @@ pub struct SearchForest {
     next_id: u64,
     search_trees: HashMap<u64, SearchTree>,
     search_trees_pile: BinMerger<SearchTreeRef>,
-    search_trees_decay: HashMap<u64, SearchTreeConstructed>,
-    pending_demolish: HashSet<u64>,
+    search_trees_decay: HashMap<u64, SearchTreeDecay>,
+    demolish_groups: Set<DemolishGroup>,
     accesses_count: usize,
     butcher_flushes_count: usize,
 }
@@ -231,6 +237,16 @@ struct PendingEventFlushButcher {
 
 struct PendingEventMergeSearchTrees {
     ranges_merger: SearchTreesMerger,
+}
+
+struct SearchTreeDecay {
+    search_tree: SearchTreeConstructed,
+    demolish_group_ref: Ref,
+}
+
+struct DemolishGroup {
+    ready_search_trees: Vec<SearchTreeConstructed>,
+    search_trees_count: usize,
 }
 
 impl<C> Performer<C> where C: Context {
@@ -404,15 +420,15 @@ impl<C> Inner<C> where C: Context {
                         hash_map::Entry::Vacant(..) =>
                             unreachable!(),
                         hash_map::Entry::Occupied(mut oe) => {
-                            let search_tree = oe.get_mut();
-                            assert!(search_tree.accesses_count > 0);
-                            search_tree.accesses_count -= 1;
+                            let search_tree_decay = oe.get_mut();
+                            assert!(search_tree_decay.search_tree.accesses_count > 0);
+                            search_tree_decay.search_tree.accesses_count -= 1;
                             assert!(self.forest.accesses_count > 0);
                             self.forest.accesses_count -= 1;
 
-                            if search_tree.accesses_count == 0 {
-                                let search_tree = oe.remove();
-                                self.demand_search_tree_removal(search_tree_id, search_tree);
+                            if search_tree_decay.search_tree.accesses_count == 0 {
+                                let search_tree_decay = oe.remove();
+                                self.demand_search_tree_removal(search_tree_decay);
                             }
                         },
                     }
@@ -479,23 +495,32 @@ impl<C> Inner<C> where C: Context {
 
     fn search_trees_merged(&mut self, root_block: BlockRef, items_count: usize, access_token: AccessToken) {
         log::debug!("search trees: {:?} merged", access_token.search_trees_ids);
+        let demolish_group_ref = self.forest.demolish_groups
+            .insert(DemolishGroup {
+                ready_search_trees: Vec::with_capacity(access_token.search_trees_ids.len()),
+                search_trees_count: access_token.search_trees_ids.len(),
+            });
         for search_tree_id in access_token.search_trees_ids {
             match self.forest.search_trees.remove(&search_tree_id) {
                 None =>
                     unreachable!("should not hit None getting search_tree_id = {search_tree_id}"),
                 Some(SearchTree::Bootstrap(..)) =>
                     unreachable!("should not hit Some(Bootstrap) getting search_tree_id = {search_tree_id}"),
-                Some(SearchTree::Constructed(mut search_tree)) => {
-                    assert!(search_tree.accesses_count > 0);
-                    search_tree.accesses_count -= 1;
+                Some(SearchTree::Constructed(search_tree)) => {
+                    let mut search_tree_decay = SearchTreeDecay {
+                        search_tree,
+                        demolish_group_ref,
+                    };
+                    assert!(search_tree_decay.search_tree.accesses_count > 0);
+                    search_tree_decay.search_tree.accesses_count -= 1;
                     assert!(self.forest.accesses_count > 0);
                     self.forest.accesses_count -= 1;
-                    if search_tree.accesses_count == 0 {
-                        self.demand_search_tree_removal(search_tree_id, search_tree);
+                    if search_tree_decay.search_tree.accesses_count == 0 {
+                        self.demand_search_tree_removal(search_tree_decay);
                     } else {
                         // schedule for decay
                         self.forest.search_trees_decay
-                            .insert(search_tree_id, search_tree);
+                            .insert(search_tree_id, search_tree_decay);
                     }
                 },
             }
@@ -504,26 +529,38 @@ impl<C> Inner<C> where C: Context {
         self.forest.add_constructed(root_block, items_count);
     }
 
-    fn demand_search_tree_removal(&mut self, search_tree_id: u64, search_tree: SearchTreeConstructed) {
-        let walker = search_tree_walker::WalkerCps::new(
-            search_tree.root_block,
-            SearchRangeBounds::unbounded(),
-            self.block_entry_steps_pool.clone(),
-        );
-        let inserted = self.forest.pending_demolish.insert(search_tree_id);
-        assert!(inserted);
-        self.pending_events.push(PendingEvent::Demolish {
-            order: DemolishOrder {
-                walker,
-                search_tree_id,
-            },
-        });
+    fn demand_search_tree_removal(&mut self, search_tree_decay: SearchTreeDecay) {
+        let demolish_group = self.forest.demolish_groups
+            .get_mut(search_tree_decay.demolish_group_ref)
+            .unwrap();
+        demolish_group.ready_search_trees
+            .push(search_tree_decay.search_tree);
+        if demolish_group.ready_search_trees.len() == demolish_group.search_trees_count {
+            // search tree group is ready to demolish
+            let search_range = SearchRangeBounds::unbounded();
+            let mut sources = self.sources_pool.lend(Vec::new);
+            sources.clear();
+            for search_tree in &demolish_group.ready_search_trees {
+                sources.push(search_tree.build_source(&search_range));
+            }
+            sources.shrink_to_fit();
+            self.pending_events.push(PendingEvent::Demolish {
+                order: DemolishOrder {
+                    source: search_ranges_merge::RangesMergeCps::new(
+                        sources,
+                        self.kv_pool.clone(),
+                        self.block_entry_steps_pool.clone(),
+                    ),
+                    demolish_group_ref: search_tree_decay.demolish_group_ref,
+                },
+            });
+        }
     }
 
-    fn search_tree_demolished(&mut self, search_tree_id: u64) {
-        log::debug!("forest search tree id = {search_tree_id} has been demolished");
-        let removed = self.forest.pending_demolish.remove(&search_tree_id);
-        assert!(removed);
+    fn demolish_group_demolished(&mut self, demolish_group_ref: Ref) {
+        log::debug!("demolish group = {demolish_group_ref:?} has been demolished");
+        let removed = self.forest.demolish_groups.remove(demolish_group_ref);
+        assert!(removed.is_some());
     }
 
     fn poll(mut self) -> Kont<C> {
@@ -666,8 +703,8 @@ impl<C> KontPollNext<C> where C: Context {
         self.inner.poll()
     }
 
-    pub fn search_tree_demolished(mut self, search_tree_id: u64) -> Kont<C> {
-        self.inner.search_tree_demolished(search_tree_id);
+    pub fn demolished(mut self, demolish_group_ref: Ref) -> Kont<C> {
+        self.inner.demolish_group_demolished(demolish_group_ref);
         self.inner.poll()
     }
 }
@@ -747,7 +784,7 @@ impl SearchForest {
             search_trees: HashMap::new(),
             search_trees_pile: BinMerger::new(),
             search_trees_decay: HashMap::new(),
-            pending_demolish: HashSet::new(),
+            demolish_groups: Set::new(),
             accesses_count: 0,
             butcher_flushes_count: 0,
         }
@@ -760,7 +797,7 @@ impl SearchForest {
     pub fn flush_friendly(&self) -> bool {
         self.butcher_flushes_count == 0 &&
             self.accesses_count == 0 &&
-            self.pending_demolish.is_empty()
+            self.demolish_groups.is_empty()
     }
 
     pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> u64 {
@@ -807,25 +844,36 @@ impl SearchForest {
 impl SearchTree {
     fn build_source(&self, search_range: &SearchRangeBounds) -> LookupRangeSource {
         match self {
-            SearchTree::Bootstrap(SearchTreeBootstrap { frozen_memcache, }) =>
-                LookupRangeSource {
-                    source: search_ranges_merge::Source::Butcher(
-                        search_ranges_merge::SourceButcher::new(
-                            search_range.clone(),
-                            frozen_memcache.clone(),
-                        ),
-                    ),
-                },
-            SearchTree::Constructed(SearchTreeConstructed { root_block, .. }) => {
-                LookupRangeSource {
-                    source: search_ranges_merge::Source::SearchTree(
-                        search_ranges_merge::SourceSearchTree::new(
-                            search_range.clone(),
-                            root_block.clone(),
-                        ),
-                    ),
-                }
-            },
+            SearchTree::Bootstrap(search_tree_bootstrap) =>
+                search_tree_bootstrap.build_source(search_range),
+            SearchTree::Constructed(search_tree_constructed) =>
+                search_tree_constructed.build_source(search_range),
+        }
+    }
+}
+
+impl SearchTreeBootstrap {
+    fn build_source(&self, search_range: &SearchRangeBounds) -> LookupRangeSource {
+        LookupRangeSource {
+            source: search_ranges_merge::Source::Butcher(
+                search_ranges_merge::SourceButcher::new(
+                    search_range.clone(),
+                    self.frozen_memcache.clone(),
+                ),
+            ),
+        }
+    }
+}
+
+impl SearchTreeConstructed {
+    fn build_source(&self, search_range: &SearchRangeBounds) -> LookupRangeSource {
+        LookupRangeSource {
+            source: search_ranges_merge::Source::SearchTree(
+                search_ranges_merge::SourceSearchTree::new(
+                    search_range.clone(),
+                    self.root_block.clone(),
+                ),
+            ),
         }
     }
 }

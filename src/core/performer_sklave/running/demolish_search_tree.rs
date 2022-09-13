@@ -15,12 +15,19 @@ use arbeitssklave::{
 };
 
 use crate::{
+    kv,
     job,
     wheels,
+    storage,
     core::{
+        performer,
         performer_sklave,
-        search_tree_walker,
+        search_ranges_merge,
+        BlockRef,
+        SearchRangesMergeCps,
+        SearchRangesMergeBlockNext,
     },
+    HideDebug,
     AccessPolicy,
 };
 
@@ -31,6 +38,17 @@ pub enum Order {
 
 pub struct OrderReadBlock {
     pub read_block_result: Result<Bytes, blockwheel_fs::RequestReadBlockError>,
+    pub target: ReadBlockTarget,
+}
+
+#[derive(Debug)]
+pub enum ReadBlockTarget {
+    LoadBlock(ReadBlockTargetLoadBlock),
+}
+
+#[derive(Debug)]
+pub struct ReadBlockTargetLoadBlock {
+    async_token: HideDebug<search_ranges_merge::AsyncToken<performer::LookupRangeSource>>,
 }
 
 pub struct OrderDeleteBlock {
@@ -49,7 +67,7 @@ pub struct Welt<A> where A: AccessPolicy {
 
 impl<A> Welt<A> where A: AccessPolicy {
     pub fn new(
-        walker: search_tree_walker::WalkerCps,
+        merger: SearchRangesMergeCps,
         meister_ref: Ref,
         sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
         wheels: wheels::Wheels<A>,
@@ -58,7 +76,7 @@ impl<A> Welt<A> where A: AccessPolicy {
         -> Self
     {
         Welt {
-            kont: Some(Kont::Start { walker, }),
+            kont: Some(Kont::Start { merger, }),
             meister_ref,
             sendegeraet,
             wheels,
@@ -74,10 +92,10 @@ pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
 
 enum Kont {
     Start {
-        walker: search_tree_walker::WalkerCps,
+        merger: SearchRangesMergeCps,
     },
-    ProceedAwaitBlocks {
-        next: search_tree_walker::KontRequireBlockNext,
+    AwaitBlocks {
+        next: SearchRangesMergeBlockNext,
     },
     Finished,
 }
@@ -85,7 +103,7 @@ enum Kont {
 #[derive(Debug)]
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
-    SearchTreeWalker(search_tree_walker::Error),
+    SearchRangesMerge(search_ranges_merge::Error),
     ReadBlock(blockwheel_fs::RequestReadBlockError),
     DeleteBlock(blockwheel_fs::RequestDeleteBlockError),
     FeedbackCommit(komm::Error),
@@ -125,10 +143,15 @@ where A: AccessPolicy,
                                 let sklavenwelt = befehle.sklavenwelt_mut();
 
                                 match befehl {
-                                    Order::ReadBlock(OrderReadBlock { read_block_result: Ok(block_bytes), }) =>
+                                    Order::ReadBlock(OrderReadBlock {
+                                        read_block_result: Ok(block_bytes),
+                                        target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                            async_token: HideDebug(async_token),
+                                        }),
+                                    }) =>
                                         sklavenwelt.received_block_tasks
-                                            .push(ReceivedBlockTask { block_bytes, }),
-                                    Order::ReadBlock(OrderReadBlock { read_block_result: Err(error), }) =>
+                                            .push(ReceivedBlockTask { async_token, block_bytes, }),
+                                    Order::ReadBlock(OrderReadBlock { read_block_result: Err(error), .. }) =>
                                         return Err(Error::ReadBlock(error)),
                                     Order::DeleteBlock(OrderDeleteBlock { delete_block_result: Ok(blockwheel_fs::Deleted), }) => {
                                         assert!(sklavenwelt.pending_delete_tasks > 0);
@@ -151,17 +174,17 @@ where A: AccessPolicy,
 
         loop {
             let kont = sklavenwelt.kont.take().unwrap();
-            let mut walker_kont = match kont {
-                Kont::Start { walker } => {
-                    walker.step()
-                        .map_err(Error::SearchTreeWalker)?
+            let mut merger_kont = match kont {
+                Kont::Start { merger, } => {
+                    merger.step()
+                        .map_err(Error::SearchRangesMerge)?
                 },
-                Kont::ProceedAwaitBlocks { next, } =>
-                    if let Some(ReceivedBlockTask { block_bytes, }) = sklavenwelt.received_block_tasks.pop() {
-                        next.block_arrived(block_bytes)
-                            .map_err(Error::SearchTreeWalker)?
+                Kont::AwaitBlocks { next, } =>
+                    if let Some(ReceivedBlockTask { async_token, block_bytes, }) = sklavenwelt.received_block_tasks.pop() {
+                        next.block_arrived(async_token, block_bytes)
+                            .map_err(Error::SearchRangesMerge)?
                     } else {
-                        sklavenwelt.kont = Some(Kont::ProceedAwaitBlocks { next, });
+                        sklavenwelt.kont = Some(Kont::AwaitBlocks { next, });
                         continue 'outer;
                     },
                 Kont::Finished if sklavenwelt.pending_delete_tasks == 0 => {
@@ -179,8 +202,10 @@ where A: AccessPolicy,
             };
 
             loop {
-                match walker_kont {
-                    search_tree_walker::Kont::RequireBlock(search_tree_walker::KontRequireBlock { block_ref, next, }) => {
+                match merger_kont {
+                    search_ranges_merge::Kont::RequireBlockAsync(
+                        search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                    ) => {
                         let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
                             .ok_or_else(|| Error::WheelNotFound {
                                 blockwheel_filename: block_ref.blockwheel_filename.clone(),
@@ -192,6 +217,9 @@ where A: AccessPolicy,
                                     route: performer_sklave::DemolishSearchTreeRoute {
                                         meister_ref: sklavenwelt.meister_ref,
                                     },
+                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                        async_token: HideDebug(async_token),
+                                    }),
                                 },
                             );
                         wheel_ref.meister
@@ -201,42 +229,42 @@ where A: AccessPolicy,
                                 &edeltraud::ThreadPoolMap::new(thread_pool),
                             )
                             .map_err(Error::BlockLoadReadBlockRequest)?;
-                        sklavenwelt.kont = Some(Kont::ProceedAwaitBlocks { next, });
+                        merger_kont = next.scheduled()
+                            .map_err(Error::SearchRangesMerge)?;
+                    },
+                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
+                        sklavenwelt.kont = Some(Kont::AwaitBlocks { next, });
                         break;
                     },
-                    search_tree_walker::Kont::ItemFound(search_tree_walker::KontItemFound { next, .. }) => {
-                        walker_kont = next.item_received()
-                            .map_err(Error::SearchTreeWalker)?;
+                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { block_ref, next, }) => {
+                        schedule_delete_block(sklavenwelt, block_ref, thread_pool)?;
+                        merger_kont = next.proceed()
+                            .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_tree_walker::Kont::BlockFinished(search_tree_walker::KontBlockFinished { block_ref, next, }) => {
-                        let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
-                            .ok_or_else(|| Error::WheelNotFound {
-                                blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                            })?;
-                        let rueckkopplung = sklavenwelt
-                            .sendegeraet
-                            .rueckkopplung(
-                                performer_sklave::WheelRouteDeleteBlock::DemolishSearchTree {
-                                    route: performer_sklave::DemolishSearchTreeRoute {
-                                        meister_ref: sklavenwelt.meister_ref,
-                                    },
+                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) => {
+                        match item {
+                            kv::KeyValuePair {
+                                value_cell: kv::ValueCell {
+                                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                                    ..
                                 },
-                            );
-                        wheel_ref.meister
-                            .delete_block(
-                                block_ref.block_id,
-                                rueckkopplung,
-                                &edeltraud::ThreadPoolMap::new(thread_pool),
-                            )
-                            .map_err(Error::DeleteBlockRequest)?;
-                        sklavenwelt.pending_delete_tasks += 1;
-                        walker_kont = next.proceed()
-                            .map_err(Error::SearchTreeWalker)?;
+                                ..
+                            } =>
+                                schedule_delete_block(sklavenwelt, block_ref, thread_pool)?,
+                            _ =>
+                                (),
+                        }
+                        merger_kont = next.proceed()
+                            .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_tree_walker::Kont::Finished => {
+                    search_ranges_merge::Kont::EmitItem(search_ranges_merge::KontEmitItem { next, .. }) => {
+                        merger_kont = next.proceed()
+                            .map_err(Error::SearchRangesMerge)?;
+                    },
+                    search_ranges_merge::Kont::Finished => {
                         sklavenwelt.kont = Some(Kont::Finished);
                         break;
-                    }
+                    },
                 }
             }
         }
@@ -245,4 +273,39 @@ where A: AccessPolicy,
 
 struct ReceivedBlockTask {
     block_bytes: Bytes,
+    async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+}
+
+fn schedule_delete_block<A, P>(
+    sklavenwelt: &mut Welt<A>,
+    block_ref: BlockRef,
+    thread_pool: &P,
+)
+    -> Result<(), Error>
+where A: AccessPolicy,
+      P: edeltraud::ThreadPool<job::Job<A>>,
+{
+    let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
+        .ok_or_else(|| Error::WheelNotFound {
+            blockwheel_filename: block_ref.blockwheel_filename.clone(),
+        })?;
+    let rueckkopplung = sklavenwelt
+        .sendegeraet
+        .rueckkopplung(
+            performer_sklave::WheelRouteDeleteBlock::DemolishSearchTree {
+                route: performer_sklave::DemolishSearchTreeRoute {
+                    meister_ref: sklavenwelt.meister_ref,
+                },
+            },
+        );
+    wheel_ref.meister
+        .delete_block(
+            block_ref.block_id,
+            rueckkopplung,
+            &edeltraud::ThreadPoolMap::new(thread_pool),
+        )
+        .map_err(Error::DeleteBlockRequest)?;
+    sklavenwelt.pending_delete_tasks += 1;
+
+    Ok(())
 }

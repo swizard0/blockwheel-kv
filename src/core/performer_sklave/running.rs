@@ -323,7 +323,7 @@ where A: AccessPolicy,
                         Some(Order::DemolishSearchTreeDone(komm::Umschlag {
                             payload: DemolishSearchTreeDone,
                             stamp: DemolishSearchTreeDrop {
-                                search_tree_id,
+                                demolish_group_ref,
                                 route: DemolishSearchTreeRoute { meister_ref, },
                             },
                         })) => {
@@ -334,7 +334,7 @@ where A: AccessPolicy,
                             if let None = maybe_removed {
                                 log::warn!("demolish search trees sklave entry has already unregistered");
                             }
-                            break next.search_tree_demolished(search_tree_id);
+                            break next.demolished(demolish_group_ref);
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
                             return Err(Error::WheelIsGoneDuringInfo { route, }),
@@ -521,6 +521,7 @@ where A: AccessPolicy,
                             payload: read_block_result,
                             stamp: WheelRouteReadBlock::DemolishSearchTree {
                                 route: DemolishSearchTreeRoute { meister_ref, },
+                                target,
                             },
                         }))) => {
                             let maybe_meister = sklavenwelt.env
@@ -532,6 +533,7 @@ where A: AccessPolicy,
                                         demolish_search_tree::Order::ReadBlock(
                                             demolish_search_tree::OrderReadBlock {
                                                 read_block_result,
+                                                target,
                                             },
                                         ),
                                         thread_pool,
@@ -547,34 +549,6 @@ where A: AccessPolicy,
                         },
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringDeleteBlock { route: stamp, }),
-                        Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
-                            payload: delete_block_result,
-                            stamp: WheelRouteDeleteBlock::MergeSearchTrees {
-                                route: MergeSearchTreesRoute { meister_ref, },
-                            },
-                        }))) => {
-                            let maybe_meister = sklavenwelt.env
-                                .merge_search_trees_sklaven
-                                .get(meister_ref);
-                            match maybe_meister {
-                                Some(meister) => {
-                                    let send_result = meister.befehl(
-                                        merge_search_trees::Order::DeleteBlock(
-                                            merge_search_trees::OrderDeleteBlock {
-                                                delete_block_result,
-                                            },
-                                        ),
-                                        thread_pool,
-                                    );
-                                    if let Err(error) = send_result {
-                                        log::warn!("merge search trees sklave delete block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.merge_search_trees_sklaven.remove(meister_ref);
-                                    }
-                                },
-                                None =>
-                                    log::warn!("merge search trees sklave entry has already unregistered before delete block order"),
-                            }
-                        },
                         Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
                             payload: delete_block_result,
                             stamp: WheelRouteDeleteBlock::DemolishSearchTree {
@@ -773,14 +747,14 @@ where A: AccessPolicy,
                     demolish_freie
                         .versklaven(
                             demolish_search_tree::Welt::new(
-                                order.walker,
+                                order.source,
                                 meister_ref,
                                 sklavenwelt.env.sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(DemolishSearchTreeDrop {
-                                        search_tree_id: order.search_tree_id,
+                                        demolish_group_ref: order.demolish_group_ref,
                                         route: DemolishSearchTreeRoute { meister_ref, },
                                     }),
                             ),
