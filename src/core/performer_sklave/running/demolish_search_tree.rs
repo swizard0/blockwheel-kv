@@ -63,6 +63,8 @@ pub struct Welt<A> where A: AccessPolicy {
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::DemolishSearchTreeDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
     pending_delete_tasks: usize,
+    total_search_tree_blocks_removed: usize,
+    total_external_value_blocks_removed: usize,
 }
 
 impl<A> Welt<A> where A: AccessPolicy {
@@ -83,6 +85,8 @@ impl<A> Welt<A> where A: AccessPolicy {
             maybe_feedback: Some(feedback),
             received_block_tasks: Vec::new(),
             pending_delete_tasks: 0,
+            total_search_tree_blocks_removed: 0,
+            total_external_value_blocks_removed: 0,
         }
     }
 }
@@ -192,6 +196,11 @@ where A: AccessPolicy,
                         feedback
                             .commit(performer_sklave::DemolishSearchTreeDone)
                             .map_err(Error::FeedbackCommit)?;
+                        log::debug!(
+                            "finished, total_search_tree_blocks_removed: {}, total_external_value_blocks_removed: {}",
+                            sklavenwelt.total_search_tree_blocks_removed,
+                            sklavenwelt.total_external_value_blocks_removed,
+                        );
                     }
                     return Ok(());
                 },
@@ -237,6 +246,7 @@ where A: AccessPolicy,
                         break;
                     },
                     search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { block_ref, next, }) => {
+                        sklavenwelt.total_search_tree_blocks_removed += 1;
                         schedule_delete_block(sklavenwelt, block_ref, thread_pool)?;
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
@@ -249,8 +259,10 @@ where A: AccessPolicy,
                                     ..
                                 },
                                 ..
-                            } =>
-                                schedule_delete_block(sklavenwelt, block_ref, thread_pool)?,
+                            } => {
+                                sklavenwelt.total_external_value_blocks_removed += 1;
+                                schedule_delete_block(sklavenwelt, block_ref, thread_pool)?;
+                            },
                             _ =>
                                 (),
                         }
