@@ -3,7 +3,6 @@
 use std::{
     fmt,
     ops::{
-        AddAssign,
         RangeBounds,
     },
 };
@@ -301,17 +300,11 @@ impl<A> Meister<A> where A: AccessPolicy {
     }
 }
 
-impl AddAssign for Info {
-    fn add_assign(&mut self, rhs: Info) {
-        self.alive_cells_count += rhs.alive_cells_count;
-        self.tombstones_count += rhs.tombstones_count;
-    }
-}
-
 impl Info {
     pub fn reset(&mut self) {
         self.alive_cells_count = 0;
         self.tombstones_count = 0;
+        self.wheels.clear();
     }
 }
 
