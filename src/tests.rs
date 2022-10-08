@@ -76,7 +76,6 @@ fn stress() {
             work_block_size_bytes,
             lru_cache_size_bytes: 0,
             defrag_parallel_tasks_limit: 8,
-            ..Default::default()
         },
         wheel_b: blockwheel_fs::Params {
             interpreter: blockwheel_fs::InterpreterParams::FixedFile(blockwheel_fs::FixedFileInterpreterParams {
@@ -86,7 +85,6 @@ fn stress() {
             work_block_size_bytes,
             lru_cache_size_bytes: 0,
             defrag_parallel_tasks_limit: 8,
-            ..Default::default()
         },
         kv,
     };
@@ -110,7 +108,7 @@ fn stress() {
 
     // next load existing wheel and repeat stress
     counter.clear();
-    stress_loop(params.clone(), &version_provider, &mut data, &mut counter, &limits)
+    stress_loop(params, &version_provider, &mut data, &mut counter, &limits)
         .unwrap();
 
     fs::remove_file(&wheel_filename_a).ok();
@@ -147,7 +145,7 @@ impl Counter {
     }
 
     fn sum_total(&self) -> usize {
-        self.sum()
+        self.sum() + self.insert_jobs
     }
 
     fn clear(&mut self) {
@@ -386,7 +384,8 @@ impl edeltraud::Job for Job {
                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
             Job::BlockwheelKv(job) =>
                 job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
-            Job::FtdSklave(mut sklave_job) =>
+            Job::FtdSklave(mut sklave_job) => {
+                #[allow(clippy::while_let_loop)]
                 loop {
                     match sklave_job.zu_ihren_diensten().unwrap() {
                         arbeitssklave::Gehorsam::Machen { mut befehle, } =>
@@ -408,7 +407,8 @@ impl edeltraud::Job for Job {
                         arbeitssklave::Gehorsam::Rasten =>
                             break,
                     }
-                },
+                }
+            },
             Job::Insert(args) =>
                 job_insert(args, thread_pool),
         }
@@ -495,7 +495,7 @@ fn stress_loop(
             params.kv,
             blocks_pool.clone(),
             version_provider.clone(),
-            wheels.clone(),
+            wheels,
             &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
         )
         .map_err(Error::BlockwheelKvMeister)?;
@@ -657,7 +657,7 @@ fn stress_loop(
         Ok(ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, })) =>
             (),
         other_order =>
-            return Err(Error::UnexpectedFtdOrder(format!("{other_order:?}"))),
+            return Err(Error::UnexpectedFtdOrder(format!("expecting flush, but got {other_order:?}"))),
     }
 
     meister.info(ftd_sendegeraet.rueckkopplung(ReplyInfo), &edeltraud::ThreadPoolMap::new(&thread_pool))
@@ -666,7 +666,7 @@ fn stress_loop(
         Ok(ReplyOrder::Info(komm::Umschlag { payload: info, stamp: ReplyInfo, })) =>
             info,
         other_order =>
-            return Err(Error::UnexpectedFtdOrder(format!("{other_order:?}"))),
+            return Err(Error::UnexpectedFtdOrder(format!("expecting info, but go {other_order:?}"))),
     };
 
     log::info!("FINAL INFO: {info:#?}");
@@ -697,9 +697,9 @@ where P: edeltraud::ThreadPool<Job>,
 
     match recv_order {
         order @ ReplyOrder::Info(komm::Umschlag { stamp: ReplyInfo, .. }) =>
-            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+            Err(Error::UnexpectedFtdOrder(format!("unexpected info in process, got {order:?}"))),
         order @ ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, }) =>
-            Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
+            Err(Error::UnexpectedFtdOrder(format!("unexpected flush in process, got {order:?}"))),
         ReplyOrder::Insert(komm::Umschlag { payload: blockwheel_kv::Inserted { version, }, stamp: ReplyInsert { key, value_crc }, }) => {
             let data_cell = kv::KeyValuePair {
                 key: key.clone(),
@@ -802,10 +802,10 @@ where P: edeltraud::ThreadPool<Job>,
         },
         ReplyOrder::LookupRange(komm::Umschlag {
             payload: blockwheel_kv::KeyValueStreamItem::NoMore,
-            stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: version_snapshot, .. }, },
+            stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: _version_snapshot, .. }, },
         }) => {
             let &offset = data.index.get(&key).unwrap();
-            let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } =
+            let kv::KeyValuePair { value_cell: kv::ValueCell { version: _version_current, cell: ref cell_current, }, .. } =
                 data.data[offset];
             match cell_current {
                 kv::Cell::Tombstone => {

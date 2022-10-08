@@ -88,7 +88,7 @@ pub struct LookupRangeStream<A> where A: AccessPolicy {
 }
 
 impl<A> LookupRangeStream<A> where A: AccessPolicy {
-    pub fn next(self, rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>) -> Result<(), komm::Error> {
+    pub fn demand(self, rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>) -> Result<(), komm::Error> {
         self.next.0.commit(core::performer_sklave::LookupRangeStreamNext { rueckkopplung, })
     }
 }
