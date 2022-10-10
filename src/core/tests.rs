@@ -25,7 +25,7 @@ use crate::{
     },
 };
 
-pub const BLOCKWHEEL_FILENAME: &'static str = "my_filename.blockwheel";
+pub const BLOCKWHEEL_FILENAME: &str = "my_filename.blockwheel";
 
 pub fn to_bytes(s: &str) -> Bytes {
     BytesMut::new_detached(s.as_bytes().to_vec()).freeze()

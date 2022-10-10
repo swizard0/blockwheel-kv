@@ -96,6 +96,7 @@ enum Kont<A> where A: AccessPolicy {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Error {
     UnexpectedIterBlocksReplyInRunningMode,
     CommitInfo(komm::Error),
@@ -227,7 +228,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .lookup_range_merge_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::debug!("lookup range merge sklave entry has already unregistered");
                             }
                             break next.commit_lookup_range(access_token);
@@ -242,7 +243,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .flush_butcher_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::debug!("flush butcher sklave entry has already unregistered");
                             }
                             return Err(Error::FlushButcherSklaveCrashed);
@@ -257,7 +258,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .merge_search_trees_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::debug!("merge search trees sklave entry has already unregistered");
                             }
                             return Err(Error::MergeSearchTreesSklaveCrashed);
@@ -272,7 +273,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .demolish_search_tree_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::debug!("demolish search tree sklave entry has already unregistered");
                             }
                             return Err(Error::DemolishSearchTreeSklaveCrashed);
@@ -288,7 +289,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .flush_butcher_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::warn!("flush butcher sklave entry has already unregistered");
                             }
                             break next.butcher_flushed(search_tree_id, root_block);
@@ -311,7 +312,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .merge_search_trees_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::warn!("merge search trees sklave entry has already unregistered");
                             }
                             break next.search_trees_merged(
@@ -331,7 +332,7 @@ where A: AccessPolicy,
                             let maybe_removed = sklavenwelt.env
                                 .demolish_search_tree_sklaven
                                 .remove(meister_ref);
-                            if let None = maybe_removed {
+                            if maybe_removed.is_none() {
                                 log::warn!("demolish search trees sklave entry has already unregistered");
                             }
                             break next.demolished(demolish_group_ref);
@@ -381,8 +382,8 @@ where A: AccessPolicy,
                                     rueckkopplung.commit(Flushed)
                                         .map_err(Error::CommitFlushed)?;
                                     welt_state.active_flush = None;
-                                    sklavenwelt.env.incoming_orders.extend(
-                                        sklavenwelt.env.delayed_orders.drain(..),
+                                    sklavenwelt.env.incoming_orders.append(
+                                        &mut sklavenwelt.env.delayed_orders,
                                     );
 
                                     assert!(sklavenwelt.env.lookup_range_merge_sklaven.is_empty());

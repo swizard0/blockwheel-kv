@@ -287,6 +287,7 @@ pub struct WheelRouteIterBlocksNext {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Error {
     Loading(loading::Error),
     Running(running::Error),
@@ -354,10 +355,7 @@ where A: AccessPolicy,
                         loading::Outcome::Done { performer, pools, } => {
                             sklavenwelt.state =
                                 WeltState::Running(running::WeltState::new(performer, pools));
-                            sklavenwelt
-                                .env
-                                .incoming_orders
-                                .extend(sklavenwelt.env.delayed_orders.drain(..));
+                            sklavenwelt.env.incoming_orders.append(&mut sklavenwelt.env.delayed_orders);
                         },
                     },
                 WeltState::Running(running) =>

@@ -281,310 +281,311 @@ impl<S> PartialOrd for Front<S> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use alloc_pool::{
-//         bytes::{
-//             BytesMut,
-//         },
-//     };
+#[cfg(test)]
+mod tests {
+    use alloc_pool::{
+        bytes::{
+            BytesMut,
+        },
+    };
 
-//     use crate::{
-//         kv,
-//         core::{
-//             merger::{
-//                 Kont,
-//                 KontScheduleIterAwait,
-//                 KontAwaitScheduled,
-//                 KontEmitItem,
-//                 KontEmitDeprecated,
-//                 ItersMergerCps,
-//             },
-//         },
-//     };
+    use crate::{
+        kv,
+        core::{
+            merger::{
+                Kont,
+                KontScheduleIterAwait,
+                KontAwaitScheduled,
+                KontEmitItem,
+                KontEmitDeprecated,
+                ItersMergerCps,
+            },
+        },
+    };
 
-//     #[test]
-//     fn merge_basic() {
-//         let mut iters = vec![
-//             vec![4, 8, 9],
-//             vec![3, 6],
-//             vec![0, 1, 2, 5],
-//             vec![],
-//             vec![7, 10, 11],
-//         ];
+    #[test]
+    fn merge_basic() {
+        let mut iters = vec![
+            vec![4, 8, 9],
+            vec![3, 6],
+            vec![0, 1, 2, 5],
+            vec![],
+            vec![7, 10, 11],
+        ];
 
-//         let iters_merger = ItersMergerCps::new(&mut iters);
-//         let mut await_set = vec![];
-//         let mut kont = iters_merger.step();
-//         let mut output = vec![];
-//         loop {
-//             kont = match kont {
-//                 Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
-//                     await_set.push(await_iter);
-//                     next.proceed()
-//                 },
-//                 Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
-//                     let mut await_iter = await_set.pop().unwrap();
-//                     if await_iter.is_empty() {
-//                         next.no_more()
-//                     } else {
-//                         let byte = await_iter.remove(0);
-//                         next.item_arrived(
-//                             await_iter,
-//                             kv::KeyValuePair {
-//                                 key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
-//                                 value_cell: kv::ValueCell { version: 1, cell: kv::Cell::Tombstone, },
-//                             },
-//                         )
-//                     }
-//                 },
-//                 Kont::EmitDeprecated(KontEmitDeprecated { .. }) => {
-//                     unreachable!();
-//                 },
-//                 Kont::EmitItem(KontEmitItem { item, next, }) => {
-//                     output.push(item.key.key_bytes[0]);
-//                     next.proceed()
-//                 },
-//                 Kont::Finished =>
-//                     break,
-//             };
-//         }
+        let iters_merger = ItersMergerCps::new(&mut iters);
+        let mut await_set = vec![];
+        let mut kont = iters_merger.step();
+        let mut output = vec![];
+        loop {
+            kont = match kont {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
+                    await_set.push(await_iter);
+                    next.proceed()
+                },
+                Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
+                    let mut await_iter = await_set.pop().unwrap();
+                    if await_iter.is_empty() {
+                        next.no_more()
+                    } else {
+                        let byte = await_iter.remove(0);
+                        next.item_arrived(
+                            await_iter,
+                            kv::KeyValuePair {
+                                key: kv::Key { key_bytes: BytesMut::new_detached(vec![byte]).freeze(), },
+                                value_cell: kv::ValueCell { version: 1, cell: kv::Cell::Tombstone, },
+                            },
+                        )
+                    }
+                },
+                Kont::EmitDeprecated(KontEmitDeprecated { .. }) => {
+                    unreachable!();
+                },
+                Kont::EmitItem(KontEmitItem { item, next, }) => {
+                    output.push(item.key.key_bytes[0]);
+                    next.proceed()
+                },
+                Kont::Finished =>
+                    break,
+            };
+        }
 
-//         assert_eq!(output, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-//     }
+        assert_eq!(output, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    }
 
-//     #[test]
-//     fn merge_deprecated_different_iters() {
-//         let mut iters = vec![
-//             vec![(0, 0), (1, 3), (2, 0)],
-//             vec![(0, 1), (1, 1), (2, 1)],
-//             vec![(1, 0), (1, 2), (1, 4), (3, 0)],
-//             vec![],
-//             vec![(0, 2)],
-//         ];
-//         let (output, deprecated) = perform_merge(&mut iters);
+    #[test]
+    fn merge_deprecated_different_iters() {
+        let mut iters = vec![
+            vec![(0, 0), (1, 3), (2, 0)],
+            vec![(0, 1), (1, 1), (2, 1)],
+            vec![(1, 0), (1, 2), (1, 4), (3, 0)],
+            vec![],
+            vec![(0, 2)],
+        ];
+        let (output, deprecated) = perform_merge(&mut iters);
 
-//         assert_eq!(output, vec![(0, 2), (1, 4), (2, 1), (3, 0)]);
-//         assert_eq!(deprecated, vec![(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
-//     }
+        assert_eq!(output, vec![(0, 2), (1, 4), (2, 1), (3, 0)]);
+        assert_eq!(deprecated, vec![(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
+    }
 
-//     #[test]
-//     fn merge_deprecated_same_iter() {
-//         let mut iters = vec![
-//             vec![(0, 0), (2, 0)],
-//             vec![(2, 1)],
-//             vec![(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)],
-//             vec![],
-//         ];
-//         let (output, deprecated) = perform_merge(&mut iters);
+    #[test]
+    fn merge_deprecated_same_iter() {
+        let mut iters = vec![
+            vec![(0, 0), (2, 0)],
+            vec![(2, 1)],
+            vec![(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)],
+            vec![],
+        ];
+        let (output, deprecated) = perform_merge(&mut iters);
 
-//         assert_eq!(output, vec![(0, 0), (1, 4), (2, 1)]);
-//         assert_eq!(deprecated, vec![(1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
-//     }
+        assert_eq!(output, vec![(0, 0), (1, 4), (2, 1)]);
+        assert_eq!(deprecated, vec![(1, 0), (1, 1), (1, 2), (1, 3), (2, 0)]);
+    }
 
-//     #[test]
-//     fn stress_10_derived_00() {
-//         let mut iters = vec![
-//             vec![(17556261672556393688, 1)],
-//             vec![(8093639385199525262, 3)],
-//             vec![(8093639385199525262, 0), (16107956337732637054, 1)],
-//             vec![(3144521344682756311, 7), (3144521344682756311, 8)],
-//             vec![(3144521344682756311, 0), (16010932765423118261, 3)],
-//             vec![(3144521344682756311, 6)],
-//             vec![(16122783848902096046, 2)],
-//             vec![(6956425666106740206, 5), (17556261672556393688, 2)],
-//             vec![(16748507097280151939, 0)],
-//             vec![(6991660086521729989, 0)],
-//             vec![(6956425666106740206, 1)],
-//             vec![(3144521344682756311, 4), (6956425666106740206, 4)],
-//             vec![(8093639385199525262, 1), (16010932765423118261, 0)],
-//             vec![(11486697784006332595, 1), (16010932765423118261, 4)],
-//             vec![(6956425666106740206, 3), (8093639385199525262, 4)],
-//             vec![(3144521344682756311, 2), (16010932765423118261, 5)],
-//             vec![(3144521344682756311, 1)],
-//             vec![(6991660086521729989, 2)],
-//             vec![(16010932765423118261, 7)],
-//             vec![(8093639385199525262, 6), (16010932765423118261, 6)],
-//             vec![(17556261672556393688, 0)],
-//             vec![(16122783848902096046, 0)],
-//             vec![(3144521344682756311, 5), (6956425666106740206, 0)],
-//             vec![(8093639385199525262, 5)],
-//             vec![(3144521344682756311, 9)],
-//             vec![(11486697784006332595, 0)],
-//             vec![(16010932765423118261, 8)],
-//             vec![(6956425666106740206, 2)],
-//             vec![(3144521344682756311, 3), (11486697784006332595, 2)],
-//             vec![(16010932765423118261, 1)],
-//             vec![(16107956337732637054, 0)],
-//             vec![(8093639385199525262, 2), (16010932765423118261, 2)],
-//             vec![(11486697784006332595, 3)],
-//             vec![(6991660086521729989, 1), (16122783848902096046, 1)],
-//         ];
-//         let sample_output = vec![
-//             (3144521344682756311, 9),
-//             (6956425666106740206, 5),
-//             (6991660086521729989, 2),
-//             (8093639385199525262, 6),
-//             (11486697784006332595, 3),
-//             (16010932765423118261, 8),
-//             (16107956337732637054, 1),
-//             (16122783848902096046, 2),
-//             (16748507097280151939, 0),
-//             (17556261672556393688, 2),
-//         ];
-//         let sample_deprecated = vec![
-//             (3144521344682756311, 0),
-//             (3144521344682756311, 1),
-//             (3144521344682756311, 2),
-//             (3144521344682756311, 3),
-//             (3144521344682756311, 4),
-//             (3144521344682756311, 5),
-//             (3144521344682756311, 6),
-//             (3144521344682756311, 7),
-//             (3144521344682756311, 8),
-//             (6956425666106740206, 0),
-//             (6956425666106740206, 1),
-//             (6956425666106740206, 2),
-//             (6956425666106740206, 3),
-//             (6956425666106740206, 4),
-//             (6991660086521729989, 0),
-//             (6991660086521729989, 1),
-//             (8093639385199525262, 0),
-//             (8093639385199525262, 1),
-//             (8093639385199525262, 2),
-//             (8093639385199525262, 3),
-//             (8093639385199525262, 4),
-//             (8093639385199525262, 5),
-//             (11486697784006332595, 0),
-//             (11486697784006332595, 1),
-//             (11486697784006332595, 2),
-//             (16010932765423118261, 0),
-//             (16010932765423118261, 1),
-//             (16010932765423118261, 2),
-//             (16010932765423118261, 3),
-//             (16010932765423118261, 4),
-//             (16010932765423118261, 5),
-//             (16010932765423118261, 6),
-//             (16010932765423118261, 7),
-//             (16107956337732637054, 0),
-//             (16122783848902096046, 0),
-//             (16122783848902096046, 1),
-//             (17556261672556393688, 0),
-//             (17556261672556393688, 1),
-//         ];
+    #[test]
+    fn stress_10_derived_00() {
+        let mut iters = vec![
+            vec![(17556261672556393688, 1)],
+            vec![(8093639385199525262, 3)],
+            vec![(8093639385199525262, 0), (16107956337732637054, 1)],
+            vec![(3144521344682756311, 7), (3144521344682756311, 8)],
+            vec![(3144521344682756311, 0), (16010932765423118261, 3)],
+            vec![(3144521344682756311, 6)],
+            vec![(16122783848902096046, 2)],
+            vec![(6956425666106740206, 5), (17556261672556393688, 2)],
+            vec![(16748507097280151939, 0)],
+            vec![(6991660086521729989, 0)],
+            vec![(6956425666106740206, 1)],
+            vec![(3144521344682756311, 4), (6956425666106740206, 4)],
+            vec![(8093639385199525262, 1), (16010932765423118261, 0)],
+            vec![(11486697784006332595, 1), (16010932765423118261, 4)],
+            vec![(6956425666106740206, 3), (8093639385199525262, 4)],
+            vec![(3144521344682756311, 2), (16010932765423118261, 5)],
+            vec![(3144521344682756311, 1)],
+            vec![(6991660086521729989, 2)],
+            vec![(16010932765423118261, 7)],
+            vec![(8093639385199525262, 6), (16010932765423118261, 6)],
+            vec![(17556261672556393688, 0)],
+            vec![(16122783848902096046, 0)],
+            vec![(3144521344682756311, 5), (6956425666106740206, 0)],
+            vec![(8093639385199525262, 5)],
+            vec![(3144521344682756311, 9)],
+            vec![(11486697784006332595, 0)],
+            vec![(16010932765423118261, 8)],
+            vec![(6956425666106740206, 2)],
+            vec![(3144521344682756311, 3), (11486697784006332595, 2)],
+            vec![(16010932765423118261, 1)],
+            vec![(16107956337732637054, 0)],
+            vec![(8093639385199525262, 2), (16010932765423118261, 2)],
+            vec![(11486697784006332595, 3)],
+            vec![(6991660086521729989, 1), (16122783848902096046, 1)],
+        ];
+        let sample_output = vec![
+            (3144521344682756311, 9),
+            (6956425666106740206, 5),
+            (6991660086521729989, 2),
+            (8093639385199525262, 6),
+            (11486697784006332595, 3),
+            (16010932765423118261, 8),
+            (16107956337732637054, 1),
+            (16122783848902096046, 2),
+            (16748507097280151939, 0),
+            (17556261672556393688, 2),
+        ];
+        let sample_deprecated = vec![
+            (3144521344682756311, 0),
+            (3144521344682756311, 1),
+            (3144521344682756311, 2),
+            (3144521344682756311, 3),
+            (3144521344682756311, 4),
+            (3144521344682756311, 5),
+            (3144521344682756311, 6),
+            (3144521344682756311, 7),
+            (3144521344682756311, 8),
+            (6956425666106740206, 0),
+            (6956425666106740206, 1),
+            (6956425666106740206, 2),
+            (6956425666106740206, 3),
+            (6956425666106740206, 4),
+            (6991660086521729989, 0),
+            (6991660086521729989, 1),
+            (8093639385199525262, 0),
+            (8093639385199525262, 1),
+            (8093639385199525262, 2),
+            (8093639385199525262, 3),
+            (8093639385199525262, 4),
+            (8093639385199525262, 5),
+            (11486697784006332595, 0),
+            (11486697784006332595, 1),
+            (11486697784006332595, 2),
+            (16010932765423118261, 0),
+            (16010932765423118261, 1),
+            (16010932765423118261, 2),
+            (16010932765423118261, 3),
+            (16010932765423118261, 4),
+            (16010932765423118261, 5),
+            (16010932765423118261, 6),
+            (16010932765423118261, 7),
+            (16107956337732637054, 0),
+            (16122783848902096046, 0),
+            (16122783848902096046, 1),
+            (17556261672556393688, 0),
+            (17556261672556393688, 1),
+        ];
 
-//         let (output, deprecated) = perform_merge(&mut iters);
+        let (output, deprecated) = perform_merge(&mut iters);
 
-//         assert_eq!(output, sample_output);
-//         assert_eq!(deprecated, sample_deprecated);
-//     }
+        assert_eq!(output, sample_output);
+        assert_eq!(deprecated, sample_deprecated);
+    }
 
-//     #[test]
-//     fn stress() {
-//         use std::collections::{
-//             HashMap,
-//         };
+    #[test]
+    fn stress() {
+        use std::collections::{
+            HashMap,
+        };
 
-//         use rand::{
-//             Rng,
-//         };
+        use rand::{
+            Rng,
+        };
 
-//         let total_items = 32764;
-//         let mut items = Vec::with_capacity(total_items);
-//         let mut rng = rand::thread_rng();
-//         for _ in 0 .. total_items {
-//             let item: u64 = rng.gen();
-//             let versions_count = rng.gen_range(1 ..= 10);
-//             for version in 0 .. versions_count {
-//                 items.push((item, version));
-//             }
-//         }
+        let total_items = 32764;
+        let mut items = Vec::with_capacity(total_items);
+        let mut rng = rand::thread_rng();
+        for _ in 0 .. total_items {
+            let item: u64 = rng.gen();
+            let versions_count = rng.gen_range(1 ..= 10);
+            for version in 0 .. versions_count {
+                items.push((item, version));
+            }
+        }
 
-//         let mut sample_output_map = HashMap::new();
-//         let mut sample_deprecated = Vec::new();
+        let mut sample_output_map = HashMap::new();
+        let mut sample_deprecated = Vec::new();
 
-//         let mut iters = Vec::new();
-//         while !items.is_empty() {
-//             let lo = total_items / 100;
-//             let hi = total_items / 3;
-//             let iter_items_count = rng.gen_range(lo .. hi);
-//             let mut iter = Vec::with_capacity(iter_items_count);
-//             for _ in 0 .. iter_items_count {
-//                 if items.is_empty() {
-//                     break;
-//                 }
-//                 let index = rng.gen_range(0 .. items.len());
-//                 let item = items.swap_remove(index);
-//                 iter.push(item);
+        let mut iters = Vec::new();
+        while !items.is_empty() {
+            let lo = total_items / 100;
+            let hi = total_items / 3;
+            let iter_items_count = rng.gen_range(lo .. hi);
+            let mut iter = Vec::with_capacity(iter_items_count);
+            for _ in 0 .. iter_items_count {
+                if items.is_empty() {
+                    break;
+                }
+                let index = rng.gen_range(0 .. items.len());
+                let item = items.swap_remove(index);
+                iter.push(item);
 
-//                 match sample_output_map.get(&item.0) {
-//                     None => {
-//                         sample_output_map.insert(item.0, item.1);
-//                     },
-//                     Some(&version) if version < item.1 => {
-//                         sample_deprecated.push((item.0, version));
-//                         sample_output_map.insert(item.0, item.1);
-//                     },
-//                     Some(..) => {
-//                         sample_deprecated.push(item);
-//                     },
-//                 }
-//             }
-//             iter.sort();
-//             iters.push(iter);
-//         }
+                match sample_output_map.get(&item.0) {
+                    None => {
+                        sample_output_map.insert(item.0, item.1);
+                    },
+                    Some(&version) if version < item.1 => {
+                        sample_deprecated.push((item.0, version));
+                        sample_output_map.insert(item.0, item.1);
+                    },
+                    Some(..) => {
+                        sample_deprecated.push(item);
+                    },
+                }
+            }
+            iter.sort();
+            iters.push(iter);
+        }
 
-//         let mut sample_output: Vec<_> = sample_output_map.into_iter().collect();
-//         sample_output.sort();
-//         sample_deprecated.sort();
+        let mut sample_output: Vec<_> = sample_output_map.into_iter().collect();
+        sample_output.sort();
+        sample_deprecated.sort();
 
-//         let (output, deprecated) = perform_merge(&mut iters);
+        let (output, deprecated) = perform_merge(&mut iters);
 
-//         assert_eq!(output, sample_output);
-//         assert_eq!(deprecated, sample_deprecated);
-//     }
+        assert_eq!(output, sample_output);
+        assert_eq!(deprecated, sample_deprecated);
+    }
 
-//     fn perform_merge(iters: &mut Vec<Vec<(u64, u64)>>) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
-//         let iters_merger = ItersMergerCps::new(iters);
-//         let mut await_set = vec![];
-//         let mut kont = iters_merger.step();
-//         let mut output = vec![];
-//         let mut deprecated = vec![];
-//         loop {
-//             kont = match kont {
-//                 Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
-//                     await_set.push(await_iter);
-//                     next.proceed()
-//                 },
-//                 Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
-//                     let mut await_iter = await_set.pop().unwrap();
-//                     if await_iter.is_empty() {
-//                         next.no_more()
-//                     } else {
-//                         let (key_u64, version) = await_iter.remove(0);
-//                         next.item_arrived(
-//                             await_iter,
-//                             kv::KeyValuePair {
-//                                 key: kv::Key { key_bytes: BytesMut::new_detached(key_u64.to_be_bytes().to_vec()).freeze(), },
-//                                 value_cell: kv::ValueCell { version: version.try_into().unwrap(), cell: kv::Cell::Tombstone, },
-//                             },
-//                         )
-//                     }
-//                 },
-//                 Kont::EmitDeprecated(KontEmitDeprecated { item, next, }) => {
-//                     deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
-//                     next.proceed()
-//                 },
-//                 Kont::EmitItem(KontEmitItem { item, next, }) => {
-//                     output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
-//                     next.proceed()
-//                 },
-//                 Kont::Finished =>
-//                     break,
-//             };
-//         }
+    #[allow(clippy::type_complexity)]
+    fn perform_merge(iters: &mut Vec<Vec<(u64, u64)>>) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        let iters_merger = ItersMergerCps::new(iters);
+        let mut await_set = vec![];
+        let mut kont = iters_merger.step();
+        let mut output = vec![];
+        let mut deprecated = vec![];
+        loop {
+            kont = match kont {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
+                    await_set.push(await_iter);
+                    next.proceed()
+                },
+                Kont::AwaitScheduled(KontAwaitScheduled { next, }) => {
+                    let mut await_iter = await_set.pop().unwrap();
+                    if await_iter.is_empty() {
+                        next.no_more()
+                    } else {
+                        let (key_u64, version) = await_iter.remove(0);
+                        next.item_arrived(
+                            await_iter,
+                            kv::KeyValuePair {
+                                key: kv::Key { key_bytes: BytesMut::new_detached(key_u64.to_be_bytes().to_vec()).freeze(), },
+                                value_cell: kv::ValueCell { version, cell: kv::Cell::Tombstone, },
+                            },
+                        )
+                    }
+                },
+                Kont::EmitDeprecated(KontEmitDeprecated { item, next, }) => {
+                    deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
+                    next.proceed()
+                },
+                Kont::EmitItem(KontEmitItem { item, next, }) => {
+                    output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
+                    next.proceed()
+                },
+                Kont::Finished =>
+                    break,
+            };
+        }
 
-//         deprecated.sort();
-//         (output, deprecated)
-//     }
-// }
+        deprecated.sort();
+        (output, deprecated)
+    }
+}

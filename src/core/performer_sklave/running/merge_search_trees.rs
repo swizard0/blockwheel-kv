@@ -41,6 +41,7 @@ use crate::{
     AccessPolicy,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum Order {
     ReadBlock(OrderReadBlock),
     WriteBlock(OrderWriteBlock),
@@ -91,6 +92,7 @@ pub struct Welt<A> where A: AccessPolicy {
 }
 
 impl<A> Welt<A> where A: AccessPolicy {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source_count_items: SearchRangesMergeCps,
         source_build: SearchRangesMergeCps,
@@ -130,6 +132,7 @@ impl<A> Welt<A> where A: AccessPolicy {
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
 
+#[allow(clippy::large_enum_variant)]
 enum Kont {
     Busy {
         merge_kont: MergeKont,
@@ -587,7 +590,8 @@ where A: AccessPolicy,
                             break block_bytes.freeze(),
                         storage::BlockSerializerContinue::More(serializer) => {
                             let block_entry = block_entries_iter.next().unwrap();
-                            let ref value_ref_cell = block_entry.item.value_cell
+                            let value_ref_cell = &block_entry.item
+                                .value_cell
                                 .into_owned_value_ref(&wheel_ref.blockwheel_filename);
                             let entry = storage::Entry {
                                 jump_ref: storage::JumpRef::from_maybe_block_ref(

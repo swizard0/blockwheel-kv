@@ -103,6 +103,12 @@ pub struct Freie<A> where A: AccessPolicy {
     performer_sklave_freie: arbeitssklave::Freie<core::performer_sklave::Welt<A>, core::performer_sklave::Order<A>>,
 }
 
+impl<A> Default for Freie<A> where A: AccessPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<A> Freie<A> where A: AccessPolicy {
     pub fn new() -> Self {
         Self {

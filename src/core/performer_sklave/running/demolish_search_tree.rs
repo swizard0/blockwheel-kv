@@ -31,6 +31,7 @@ use crate::{
     AccessPolicy,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum Order {
     ReadBlock(OrderReadBlock),
     DeleteBlock(OrderDeleteBlock),
@@ -252,6 +253,7 @@ where A: AccessPolicy,
                             .map_err(Error::SearchRangesMerge)?;
                     },
                     search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) => {
+                        #[allow(clippy::single_match)]
                         match item {
                             kv::KeyValuePair {
                                 value_cell: kv::ValueCell {

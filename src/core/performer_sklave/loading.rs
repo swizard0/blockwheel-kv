@@ -41,6 +41,7 @@ impl WeltState {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome<A> where A: AccessPolicy {
     Rasten {
         loading: WeltState,

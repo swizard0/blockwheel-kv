@@ -113,6 +113,7 @@ struct Inner<V, S> where V: DerefMut<Target = Vec<S>> {
     block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum Source {
     Butcher(SourceButcher),
     SearchTree(SourceSearchTree),
@@ -329,7 +330,7 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                                         await_iter,
                                                         kv::KeyValuePair {
                                                             key: kont_item_found.item.key,
-                                                            value_cell: kont_item_found.item.value_cell.into(),
+                                                            value_cell: kont_item_found.item.value_cell,
                                                         },
                                                     ),
                                                 };

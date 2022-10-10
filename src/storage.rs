@@ -186,10 +186,10 @@ pub struct BlockDeserializeIter<'a, R, O> where O: Options {
     _marker: PhantomData<&'a ()>,
 }
 
-pub fn block_deserialize_iter<'a>(
-    block_bytes: &'a Bytes,
+pub fn block_deserialize_iter(
+    block_bytes: &Bytes,
 )
-    -> Result<BlockDeserializeIter<'a, impl bincode::BincodeRead<'a>, impl Options>, Error>
+    -> Result<BlockDeserializeIter<'_, impl bincode::BincodeRead<'_>, impl Options>, Error>
 {
     let mut deserializer = bincode::Deserializer::from_slice(block_bytes, bincode_options());
     let magic: u64 = serde::Deserialize::deserialize(&mut deserializer)
@@ -225,7 +225,7 @@ impl OwnedEntry {
         OwnedEntry {
             jump_ref: OwnedJumpRef::from_jump_ref(&entry.jump_ref, block_bytes),
             key: kv::Key {
-                key_bytes: block_bytes.clone_subslice(&entry.key),
+                key_bytes: block_bytes.clone_subslice(entry.key),
             },
             value_cell: kv::ValueCell {
                 version: entry.value_cell.version,
@@ -292,7 +292,7 @@ impl<'a> From<&'a OwnedJumpRef> for JumpRef<'a> {
                 JumpRef::Local(local_ref.clone()),
             OwnedJumpRef::External(BlockRef { blockwheel_filename, block_id, }) =>
                 JumpRef::External(ExternalRef {
-                    filename: &*blockwheel_filename,
+                    filename: blockwheel_filename,
                     block_id: block_id.clone(),
                 }),
         }

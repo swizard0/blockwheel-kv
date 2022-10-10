@@ -49,6 +49,7 @@ pub struct OrderItemNext<A> where A: AccessPolicy {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ReadBlockTarget {
     LoadValue,
     LoadBlock(ReadBlockTargetLoadBlock),

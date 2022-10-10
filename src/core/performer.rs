@@ -287,7 +287,7 @@ impl<C> Inner<C> where C: Context {
         let ord_key = OrdKey::new(key);
         let version = self.version_provider.obtain();
         let value_cell = kv::ValueCell { version, cell, };
-        let maybe_prev = self.butcher.insert(ord_key.clone(), value_cell);
+        let maybe_prev = self.butcher.insert(ord_key, value_cell);
         (version, maybe_prev)
     }
 
@@ -566,7 +566,7 @@ impl<C> Inner<C> where C: Context {
     fn poll(mut self) -> Kont<C> {
         // force delayed replies if possible
         if !self.delayed_replies.is_empty() && self.forest.butcher_flushes_count < self.params.search_tree_bootstrap_search_trees_limit {
-            self.pending_events.extend(self.delayed_replies.drain(..));
+            self.pending_events.append(&mut self.delayed_replies);
         }
         // time to flush butcher
         if let Some(event) = self.maybe_flush(false) {

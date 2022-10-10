@@ -145,6 +145,12 @@ pub enum BuilderError {
     NoWheelRefs,
 }
 
+impl<A> Default for WheelsBuilder<A> where A: AccessPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<A> WheelsBuilder<A> where A: AccessPolicy {
     pub fn new() -> Self {
         Self {
@@ -158,7 +164,7 @@ impl<A> WheelsBuilder<A> where A: AccessPolicy {
     pub fn add_wheel_ref(mut self, wheel_ref: WheelRef<A>) -> Self {
         let offset = self.inner.wheels.len();
         let filename = wheel_ref.blockwheel_filename.clone();
-        match self.inner.index.entry(filename.clone()) {
+        match self.inner.index.entry(filename) {
             hash_map::Entry::Vacant(ve) => {
                 ve.insert(offset);
                 self.inner.wheels.push(wheel_ref);

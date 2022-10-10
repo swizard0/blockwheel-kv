@@ -46,7 +46,7 @@ fn basic() {
         ("8 eighthz", "data 8z", 1),
     ]);
     let source_b = Source::Butcher(SourceButcher::new(
-        search_range.clone(),
+        search_range,
         frozen_memcache,
     ));
 

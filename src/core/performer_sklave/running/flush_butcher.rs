@@ -83,6 +83,7 @@ pub struct Welt<A> where A: AccessPolicy {
 }
 
 impl<A> Welt<A> where A: AccessPolicy {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
@@ -99,7 +100,7 @@ impl<A> Welt<A> where A: AccessPolicy {
         Welt {
             search_tree_builder_params: search_tree_builder::Params {
                 tree_items_count: frozen_memcache.len(),
-                tree_block_size: tree_block_size,
+                tree_block_size,
             },
             values_inline_size_limit,
             kont: Some(Kont::Start { frozen_memcache, }),
@@ -124,6 +125,7 @@ struct ValueWritePending {
 pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
 pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
 
+#[allow(clippy::large_enum_variant)]
 enum Kont {
     Start { frozen_memcache: Arc<MemCache>, },
     Continue { next: SearchTreeBuilderBlockNext, },
@@ -434,7 +436,8 @@ where A: AccessPolicy,
             storage::BlockSerializerContinue::More(serializer) =>
                 match block_entries_iter.next() {
                     Some(block_entry) => {
-                        let ref value_ref_cell = block_entry.item.value_cell
+                        let value_ref_cell = &block_entry
+                            .item.value_cell
                             .into_owned_value_ref(&wheel_ref.blockwheel_filename);
                         let entry = storage::Entry {
                             jump_ref: storage::JumpRef::from_maybe_block_ref(
