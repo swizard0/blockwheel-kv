@@ -157,11 +157,12 @@ impl<V, S> ItersMergerCps<V, S> where V: DerefMut<Target = Vec<S>> {
                                         let should_swap = front_item.value_cell.version < candidate_item.value_cell.version;
                                         let Front { front_item: next_front_item, iter, } =
                                             self.env.fronts.pop().unwrap();
-                                        let (deprecated_item, next_candidate_item) = if should_swap {
-                                            (next_front_item, candidate_item)
-                                        } else {
-                                            (candidate_item, next_front_item)
-                                        };
+                                        let (deprecated_item, next_candidate_item) =
+                                            if should_swap {
+                                                (next_front_item, candidate_item)
+                                            } else {
+                                                (candidate_item, next_front_item)
+                                            };
                                         self.env.candidate = Some(next_candidate_item);
                                         self.env.iters.push(iter);
                                         return Kont::EmitDeprecated(KontEmitDeprecated {
@@ -319,7 +320,10 @@ mod tests {
         let mut output = vec![];
         loop {
             kont = match kont {
-                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait {
+                    await_iter,
+                    next,
+                }) => {
                     await_set.push(await_iter);
                     next.proceed()
                 },
@@ -341,7 +345,10 @@ mod tests {
                 Kont::EmitDeprecated(KontEmitDeprecated { .. }) => {
                     unreachable!();
                 },
-                Kont::EmitItem(KontEmitItem { item, next, }) => {
+                Kont::EmitItem(KontEmitItem {
+                    item,
+                    next,
+                }) => {
                     output.push(item.key.key_bytes[0]);
                     next.proceed()
                 },
@@ -553,7 +560,10 @@ mod tests {
         let mut deprecated = vec![];
         loop {
             kont = match kont {
-                Kont::ScheduleIterAwait(KontScheduleIterAwait { await_iter, next, }) => {
+                Kont::ScheduleIterAwait(KontScheduleIterAwait {
+                    await_iter,
+                    next,
+                }) => {
                     await_set.push(await_iter);
                     next.proceed()
                 },
@@ -572,11 +582,17 @@ mod tests {
                         )
                     }
                 },
-                Kont::EmitDeprecated(KontEmitDeprecated { item, next, }) => {
+                Kont::EmitDeprecated(KontEmitDeprecated {
+                    item,
+                    next,
+                }) => {
                     deprecated.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
-                Kont::EmitItem(KontEmitItem { item, next, }) => {
+                Kont::EmitItem(KontEmitItem {
+                    item,
+                    next,
+                }) => {
                     output.push((u64::from_be_bytes(item.key.key_bytes.to_vec().try_into().unwrap()), item.value_cell.version));
                     next.proceed()
                 },
