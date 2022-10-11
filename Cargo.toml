@@ -1,6 +1,6 @@
 [package]
 name = "blockwheel-kv"
-version = "0.26.6"
+version = "0.26.7"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 description = "Key/value persistent store based on `blockwheel-fs` framework."
 edition = "2021"
@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 o1 = { git = "https://github.com/swizard0/o1.git" }
 bntree = { git = "https://github.com/swizard0/bntree" }
+kont-utils = { git = "https://github.com/swizard0/kont-utils.git" }
 alloc-pool = { git = "https://github.com/swizard0/alloc-pool.git" }
 edeltraud = { git = "https://github.com/swizard0/edeltraud.git" }
 arbeitssklave = { git = "https://github.com/swizard0/arbeitssklave.git" }
