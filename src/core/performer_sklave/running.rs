@@ -193,7 +193,7 @@ where A: AccessPolicy,
                             }
                         },
                         Some(Order::LookupRangeStreamNext(komm::Umschlag {
-                            payload: LookupRangeStreamNext { rueckkopplung, },
+                            inhalt: LookupRangeStreamNext { rueckkopplung, },
                             stamp: LookupRangeRoute { meister_ref, },
                         })) => {
                             let maybe_meister = sklavenwelt.env
@@ -279,7 +279,7 @@ where A: AccessPolicy,
                             return Err(Error::DemolishSearchTreeSklaveCrashed);
                         },
                         Some(Order::FlushButcherDone(komm::Umschlag {
-                            payload: FlushButcherDone { root_block, },
+                            inhalt: FlushButcherDone { root_block, },
                             stamp: FlushButcherDrop {
                                 search_tree_id,
                                 route: FlushButcherRoute { meister_ref, },
@@ -295,7 +295,7 @@ where A: AccessPolicy,
                             break next.butcher_flushed(search_tree_id, root_block);
                         },
                         Some(Order::MergeSearchTreesDone(komm::Umschlag {
-                            payload: MergeSearchTreesDone {
+                            inhalt: MergeSearchTreesDone {
                                 merged_search_tree_ref,
                                 merged_search_tree_items_count,
                             },
@@ -322,7 +322,7 @@ where A: AccessPolicy,
                             );
                         },
                         Some(Order::DemolishSearchTreeDone(komm::Umschlag {
-                            payload: DemolishSearchTreeDone,
+                            inhalt: DemolishSearchTreeDone,
                             stamp: DemolishSearchTreeDrop {
                                 demolish_group_ref,
                                 route: DemolishSearchTreeRoute { meister_ref, },
@@ -340,7 +340,7 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
                             return Err(Error::WheelIsGoneDuringInfo { route, }),
                         Some(Order::Wheel(OrderWheel::Info(komm::Umschlag {
-                            payload: info,
+                            inhalt: info,
                             stamp: WheelRouteInfo {
                                 route: InfoRoute { info_ref, },
                                 blockwheel_filename,
@@ -368,7 +368,7 @@ where A: AccessPolicy,
                         },
                         Some(Order::Wheel(OrderWheel::FlushCancel(komm::UmschlagAbbrechen { stamp: WheelRouteFlush, }))) =>
                             return Err(Error::WheelIsGoneDuringFlush),
-                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { payload: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) =>
+                        Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { inhalt: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) =>
                             match welt_state.active_flush {
                                 Some(ActiveFlush::Wheels { wheels_left, rueckkopplung, }) if wheels_left > 1 => {
                                     log::debug!("wheel flush is done, {} wheels is left", wheels_left - 1);
@@ -397,7 +397,7 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringWriteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
-                            payload: write_block_result,
+                            inhalt: write_block_result,
                             stamp: WheelRouteWriteBlock::FlushButcher {
                                 route: FlushButcherRoute { meister_ref, },
                                 target,
@@ -427,7 +427,7 @@ where A: AccessPolicy,
                             }
                         },
                         Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
-                            payload: write_block_result,
+                            inhalt: write_block_result,
                             stamp: WheelRouteWriteBlock::MergeSearchTrees {
                                 route: MergeSearchTreesRoute { meister_ref, },
                                 target,
@@ -459,7 +459,7 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::ReadBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringReadBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
-                            payload: read_block_result,
+                            inhalt: read_block_result,
                             stamp: WheelRouteReadBlock::LookupRangeMerge {
                                 route: LookupRangeRoute { meister_ref, },
                                 target,
@@ -489,7 +489,7 @@ where A: AccessPolicy,
                             }
                         },
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
-                            payload: read_block_result,
+                            inhalt: read_block_result,
                             stamp: WheelRouteReadBlock::MergeSearchTrees {
                                 route: MergeSearchTreesRoute { meister_ref, },
                                 target,
@@ -519,7 +519,7 @@ where A: AccessPolicy,
                             }
                         },
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
-                            payload: read_block_result,
+                            inhalt: read_block_result,
                             stamp: WheelRouteReadBlock::DemolishSearchTree {
                                 route: DemolishSearchTreeRoute { meister_ref, },
                                 target,
@@ -551,7 +551,7 @@ where A: AccessPolicy,
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringDeleteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
-                            payload: delete_block_result,
+                            inhalt: delete_block_result,
                             stamp: WheelRouteDeleteBlock::DemolishSearchTree {
                                 route: DemolishSearchTreeRoute { meister_ref, },
                             },

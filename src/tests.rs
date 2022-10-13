@@ -654,7 +654,7 @@ fn stress_loop(
     meister.flush(ftd_sendegeraet.rueckkopplung(ReplyFlush), &edeltraud::ThreadPoolMap::new(&thread_pool))
         .map_err(Error::RequestFlush)?;
     match ftd_rx.recv() {
-        Ok(ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, })) =>
+        Ok(ReplyOrder::Flush(komm::Umschlag { inhalt: blockwheel_kv::Flushed, stamp: ReplyFlush, })) =>
             (),
         other_order =>
             return Err(Error::UnexpectedFtdOrder(format!("expecting flush, but got {other_order:?}"))),
@@ -663,7 +663,7 @@ fn stress_loop(
     meister.info(ftd_sendegeraet.rueckkopplung(ReplyInfo), &edeltraud::ThreadPoolMap::new(&thread_pool))
         .map_err(Error::RequestInfo)?;
     let info = match ftd_rx.recv() {
-        Ok(ReplyOrder::Info(komm::Umschlag { payload: info, stamp: ReplyInfo, })) =>
+        Ok(ReplyOrder::Info(komm::Umschlag { inhalt: info, stamp: ReplyInfo, })) =>
             info,
         other_order =>
             return Err(Error::UnexpectedFtdOrder(format!("expecting info, but go {other_order:?}"))),
@@ -698,9 +698,9 @@ where P: edeltraud::ThreadPool<Job>,
     match recv_order {
         order @ ReplyOrder::Info(komm::Umschlag { stamp: ReplyInfo, .. }) =>
             Err(Error::UnexpectedFtdOrder(format!("unexpected info in process, got {order:?}"))),
-        order @ ReplyOrder::Flush(komm::Umschlag { payload: blockwheel_kv::Flushed, stamp: ReplyFlush, }) =>
+        order @ ReplyOrder::Flush(komm::Umschlag { inhalt: blockwheel_kv::Flushed, stamp: ReplyFlush, }) =>
             Err(Error::UnexpectedFtdOrder(format!("unexpected flush in process, got {order:?}"))),
-        ReplyOrder::Insert(komm::Umschlag { payload: blockwheel_kv::Inserted { version, }, stamp: ReplyInsert { key, value_crc }, }) => {
+        ReplyOrder::Insert(komm::Umschlag { inhalt: blockwheel_kv::Inserted { version, }, stamp: ReplyInsert { key, value_crc }, }) => {
             let data_cell = kv::KeyValuePair {
                 key: key.clone(),
                 value_cell: kv::ValueCell {
@@ -726,12 +726,12 @@ where P: edeltraud::ThreadPool<Job>,
             active_tasks_counter.inserts -= 1;
             Ok(())
         },
-        ReplyOrder::InsertJob(komm::Umschlag { payload: output, stamp: InsertJob, }) => {
+        ReplyOrder::InsertJob(komm::Umschlag { inhalt: output, stamp: InsertJob, }) => {
             counter.insert_jobs += 1;
             active_tasks_counter.insert_jobs -= 1;
             output
         },
-        ReplyOrder::Remove(komm::Umschlag { payload: blockwheel_kv::Removed { version, }, stamp: ReplyRemove { key, }, }) => {
+        ReplyOrder::Remove(komm::Umschlag { inhalt: blockwheel_kv::Removed { version, }, stamp: ReplyRemove { key, }, }) => {
             log::debug!(" ;; removed: {:?}", key);
 
             let data_cell = kv::KeyValuePair {
@@ -752,7 +752,7 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            payload: blockwheel_kv::KeyValueStreamItem::KeyValue {
+            inhalt: blockwheel_kv::KeyValueStreamItem::KeyValue {
                 key_value_pair: kv::KeyValuePair { value_cell: found_value_cell, .. },
                 ..
             },
@@ -801,7 +801,7 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            payload: blockwheel_kv::KeyValueStreamItem::NoMore,
+            inhalt: blockwheel_kv::KeyValueStreamItem::NoMore,
             stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: _version_snapshot, .. }, },
         }) => {
             let &offset = data.index.get(&key).unwrap();

@@ -150,7 +150,7 @@ where A: AccessPolicy,
                         },
 
                         Some(Order::Wheel(OrderWheel::IterBlocksInit(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocks { iterator_next, blocks_total_count, blocks_total_size, },
+                            inhalt: blockwheel_fs::IterBlocks { iterator_next, blocks_total_count, blocks_total_size, },
                             stamp: WheelRouteIterBlocksInit { blockwheel_filename, },
                         }))) => {
                             log::debug!(
@@ -181,7 +181,7 @@ where A: AccessPolicy,
                                 })?;
                         },
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
+                            inhalt: blockwheel_fs::IterBlocksItem::Block { block_id, block_bytes, iterator_next, },
                             stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
                         }))) => {
                             let block_ref = wheels::BlockRef {
@@ -228,7 +228,7 @@ where A: AccessPolicy,
                                 })?;
                         },
                         Some(Order::Wheel(OrderWheel::IterBlocksNext(komm::Umschlag {
-                            payload: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
+                            inhalt: blockwheel_fs::IterBlocksItem::NoMoreBlocks,
                             stamp: WheelRouteIterBlocksNext { blockwheel_filename, },
                         }))) => {
                             log::debug!("iter blocks done on {blockwheel_filename:?}");
