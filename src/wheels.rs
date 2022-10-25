@@ -28,11 +28,15 @@ use alloc_pool::{
     },
 };
 
+use arbeitssklave::{
+    komm,
+};
+
 use crate::{
     core::{
         performer_sklave,
     },
-    AccessPolicy,
+    EchoPolicy,
 };
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -86,12 +90,12 @@ impl AsRef<[u8]> for WheelFilename {
     }
 }
 
-pub struct WheelRef<A> where A: AccessPolicy {
+pub struct WheelRef<E> where E: EchoPolicy {
     pub blockwheel_filename: WheelFilename,
-    pub meister: WheelMeister<A>,
+    pub meister: WheelMeister<E>,
 }
 
-impl<A> Clone for WheelRef<A> where A: AccessPolicy {
+impl<E> Clone for WheelRef<E> where E: EchoPolicy {
     fn clone(&self) -> Self {
         WheelRef {
             blockwheel_filename: self.blockwheel_filename.clone(),
@@ -106,38 +110,37 @@ pub struct BlockRef {
     pub block_id: blockwheel_fs::block::Id,
 }
 
-pub struct Wheels<A> where A: AccessPolicy {
-    inner: Arc<Inner<A>>,
+pub struct Wheels<E> where E: EchoPolicy {
+    inner: Arc<Inner<E>>,
 }
 
-impl<A> Clone for Wheels<A> where A: AccessPolicy {
+impl<E> Clone for Wheels<E> where E: EchoPolicy {
     fn clone(&self) -> Self {
         Wheels { inner: self.inner.clone(), }
     }
 }
 
-pub struct WheelAccessPolicy<A>(PhantomData<A>);
+pub struct WheelEchoPolicy<E>(PhantomData<E>);
 
-impl<A> blockwheel_fs::AccessPolicy for WheelAccessPolicy<A> where A: AccessPolicy {
-    type Order = performer_sklave::Order<A>;
-    type Info = performer_sklave::WheelRouteInfo;
-    type Flush = performer_sklave::WheelRouteFlush;
-    type WriteBlock = performer_sklave::WheelRouteWriteBlock;
-    type ReadBlock = performer_sklave::WheelRouteReadBlock;
-    type DeleteBlock = performer_sklave::WheelRouteDeleteBlock;
-    type IterBlocksInit = performer_sklave::WheelRouteIterBlocksInit;
-    type IterBlocksNext = performer_sklave::WheelRouteIterBlocksNext;
+impl<E> blockwheel_fs::EchoPolicy for WheelEchoPolicy<E> where E: EchoPolicy {
+    type Info = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteInfo>;
+    type Flush = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteFlush>;
+    type WriteBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteWriteBlock>;
+    type ReadBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteReadBlock>;
+    type DeleteBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteDeleteBlock>;
+    type IterBlocksInit = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksInit>;
+    type IterBlocksNext = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksNext>;
 }
 
-pub type WheelMeister<A> = blockwheel_fs::Meister<WheelAccessPolicy<A>>;
+pub type WheelMeister<E> = blockwheel_fs::Meister<WheelEchoPolicy<E>>;
 
-struct Inner<A> where A: AccessPolicy {
-    wheels: Vec<WheelRef<A>>,
+struct Inner<E> where E: EchoPolicy {
+    wheels: Vec<WheelRef<E>>,
     index: HashMap<WheelFilename, usize>,
 }
 
-pub struct WheelsBuilder<A> where A: AccessPolicy {
-    inner: Inner<A>,
+pub struct WheelsBuilder<E> where E: EchoPolicy {
+    inner: Inner<E>,
 }
 
 #[derive(Debug)]
@@ -145,13 +148,13 @@ pub enum BuilderError {
     NoWheelRefs,
 }
 
-impl<A> Default for WheelsBuilder<A> where A: AccessPolicy {
+impl<E> Default for WheelsBuilder<E> where E: EchoPolicy {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A> WheelsBuilder<A> where A: AccessPolicy {
+impl<E> WheelsBuilder<E> where E: EchoPolicy {
     pub fn new() -> Self {
         Self {
             inner: Inner {
@@ -161,7 +164,7 @@ impl<A> WheelsBuilder<A> where A: AccessPolicy {
         }
     }
 
-    pub fn add_wheel_ref(mut self, wheel_ref: WheelRef<A>) -> Self {
+    pub fn add_wheel_ref(mut self, wheel_ref: WheelRef<E>) -> Self {
         let offset = self.inner.wheels.len();
         let filename = wheel_ref.blockwheel_filename.clone();
         match self.inner.index.entry(filename) {
@@ -175,7 +178,7 @@ impl<A> WheelsBuilder<A> where A: AccessPolicy {
         self
     }
 
-    pub fn build(self) -> Result<Wheels<A>, BuilderError> {
+    pub fn build(self) -> Result<Wheels<E>, BuilderError> {
         if self.inner.wheels.is_empty() {
             return Err(BuilderError::NoWheelRefs);
         }
@@ -219,20 +222,20 @@ pub enum IterBlocksItemError {
     },
 }
 
-impl<A> Wheels<A> where A: AccessPolicy {
-    pub fn acquire(&self) -> WheelRef<A> {
+impl<E> Wheels<E> where E: EchoPolicy {
+    pub fn acquire(&self) -> WheelRef<E> {
         let mut rng = rand::thread_rng();
         let offset = rng.gen_range(0 .. self.inner.wheels.len());
         self.inner.wheels[offset].clone()
     }
 
-    pub fn get(&self, blockwheel_filename: &WheelFilename) -> Option<WheelRef<A>> {
+    pub fn get(&self, blockwheel_filename: &WheelFilename) -> Option<WheelRef<E>> {
         self.inner.index.get(blockwheel_filename)
             .and_then(|&offset| self.inner.wheels.get(offset))
             .map(Clone::clone)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &'_ WheelRef<A>> {
+    pub fn iter(&self) -> impl Iterator<Item = &'_ WheelRef<E>> {
         self.inner.wheels.iter()
     }
 }

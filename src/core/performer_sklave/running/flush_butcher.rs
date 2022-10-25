@@ -43,7 +43,7 @@ use crate::{
         SearchTreeBuilderBlockNext,
         SearchTreeBuilderBlockEntry,
     },
-    AccessPolicy,
+    EchoPolicy,
 };
 
 pub enum Order {
@@ -68,32 +68,32 @@ pub enum WriteBlockTarget {
     },
 }
 
-pub struct Welt<A> where A: AccessPolicy {
+pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-    wheels: wheels::Wheels<A>,
+    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     search_tree_builder_params: search_tree_builder::Params,
     values_inline_size_limit: usize,
     incoming_orders: Vec<Order>,
     value_writes_pending: HashMap<Ref, ValueWritePending>,
-    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::FlushButcherDrop>>,
+    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::FlushButcherDrop>>,
 }
 
-impl<A> Welt<A> where A: AccessPolicy {
+impl<E> Welt<E> where E: EchoPolicy {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
         values_inline_size_limit: usize,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-        wheels: wheels::Wheels<A>,
+        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
         block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
-        feedback: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::FlushButcherDrop>,
+        feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::FlushButcherDrop>,
     )
         -> Self
     {
@@ -122,8 +122,8 @@ struct ValueWritePending {
     pending_count: usize,
 }
 
-pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
-pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]
 enum Kont {
@@ -144,18 +144,18 @@ pub enum Error {
     FeedbackCommit(komm::Error),
 }
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -270,15 +270,15 @@ where A: AccessPolicy,
     }
 }
 
-fn init_build<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn init_build<E, P>(
+    sklavenwelt: &mut Welt<E>,
     frozen_memcache: Arc<MemCache>,
     builder: SearchTreeBuilderCps,
     thread_pool: &P,
 )
     -> Result<Kont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let mut memcache_iter = frozen_memcache.iter();
 
@@ -316,14 +316,14 @@ where A: AccessPolicy,
     }
 }
 
-fn proceed_build<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn proceed_build<E, P>(
+    sklavenwelt: &mut Welt<E>,
     mut builder_kont: SearchTreeBuilderKont,
     thread_pool: &P,
 )
     -> Result<Kont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match builder_kont {
@@ -346,16 +346,16 @@ where A: AccessPolicy,
     }
 }
 
-fn process_ready_block<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn process_ready_block<E, P>(
+    sklavenwelt: &mut Welt<E>,
     node_type: storage::NodeType,
     block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
     async_ref: Ref,
     thread_pool: &P,
 )
     -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let mut values_write_pending = 0;
     for (block_entry_index, block_entry) in block_entries.iter().enumerate() {
@@ -413,16 +413,16 @@ where A: AccessPolicy,
     }
 }
 
-fn serialize_block<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn serialize_block<E, P>(
+    sklavenwelt: &mut Welt<E>,
     node_type: storage::NodeType,
     async_ref: Ref,
     mut block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
     thread_pool: &P,
 )
     -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let wheel_ref = sklavenwelt.wheels.acquire();
     let block_bytes = sklavenwelt.blocks_pool.lend();

@@ -22,7 +22,6 @@ use crate::{
     },
 };
 
-// pub mod manager;
 pub mod performer_sklave;
 
 mod merger;

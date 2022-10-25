@@ -42,16 +42,16 @@ use crate::{
         SearchTreeBuilderBlockEntry,
     },
     Params,
-    AccessPolicy,
+    EchoPolicy,
 };
 
 pub mod loading;
 pub mod running;
 
-pub enum Order<A> where A: AccessPolicy {
-    Request(OrderRequest<A>),
+pub enum Order<E> where E: EchoPolicy {
+    Request(OrderRequest<E>),
     LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
-    LookupRangeStreamNext(komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>),
+    LookupRangeStreamNext(komm::Umschlag<E::LookupRange, LookupRangeRoute>),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
     MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
     DemolishSearchTreeDone(komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>),
@@ -62,12 +62,12 @@ pub enum Order<A> where A: AccessPolicy {
     Wheel(OrderWheel),
 }
 
-pub enum OrderRequest<A> where A: AccessPolicy {
-    Info(OrderRequestInfo<A>),
-    Insert(OrderRequestInsert<A>),
-    LookupRange(OrderRequestLookupRange<A>),
-    Remove(OrderRequestRemove<A>),
-    Flush(OrderRequestFlush<A>),
+pub enum OrderRequest<E> where E: EchoPolicy {
+    Info(OrderRequestInfo<E>),
+    Insert(OrderRequestInsert<E>),
+    LookupRange(OrderRequestLookupRange<E>),
+    Remove(OrderRequestRemove<E>),
+    Flush(OrderRequestFlush<E>),
 }
 
 pub enum OrderWheel {
@@ -87,13 +87,13 @@ pub enum OrderWheel {
     IterBlocksNext(komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>),
 }
 
-pub struct Welt<A> where A: AccessPolicy {
-    env: Env<A>,
-    state: WeltState<A>,
+pub struct Welt<E> where E: EchoPolicy {
+    env: Env<E>,
+    state: WeltState<E>,
 }
 
-impl<A> Welt<A> where A: AccessPolicy {
-    pub fn new(env: Env<A>) -> Self {
+impl<E> Welt<E> where E: EchoPolicy {
+    pub fn new(env: Env<E>) -> Self {
         Welt {
             env,
             state: WeltState::Init,
@@ -101,30 +101,30 @@ impl<A> Welt<A> where A: AccessPolicy {
     }
 }
 
-pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order<A>>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
 
-pub struct Env<A> where A: AccessPolicy {
+pub struct Env<E> where E: EchoPolicy {
     params: Params,
     blocks_pool: BytesPool,
     version_provider: version::Provider,
-    wheels: wheels::Wheels<A>,
-    sendegeraet: komm::Sendegeraet<Order<A>>,
-    incoming_orders: Vec<Order<A>>,
-    delayed_orders: Vec<Order<A>>,
-    pending_info_requests: Set<running::PendingInfo<A>>,
-    lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<A>>,
-    flush_butcher_sklaven: Set<running::flush_butcher::Meister<A>>,
-    merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<A>>,
-    demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<A>>,
+    wheels: wheels::Wheels<E>,
+    sendegeraet: komm::Sendegeraet<Order<E>>,
+    incoming_orders: Vec<Order<E>>,
+    delayed_orders: Vec<Order<E>>,
+    pending_info_requests: Set<running::PendingInfo<E>>,
+    lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<E>>,
+    flush_butcher_sklaven: Set<running::flush_butcher::Meister<E>>,
+    merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<E>>,
+    demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
 }
 
-impl<A> Env<A> where A: AccessPolicy {
+impl<E> Env<E> where E: EchoPolicy {
     pub fn new(
         params: Params,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
-        wheels: wheels::Wheels<A>,
-        sendegeraet: komm::Sendegeraet<Order<A>>,
+        wheels: wheels::Wheels<E>,
+        sendegeraet: komm::Sendegeraet<Order<E>>,
     )
         -> Self
     {
@@ -145,10 +145,10 @@ impl<A> Env<A> where A: AccessPolicy {
     }
 }
 
-enum WeltState<A> where A: AccessPolicy {
+enum WeltState<E> where E: EchoPolicy {
     Init,
     Loading(loading::WeltState),
-    Running(running::WeltState<A>),
+    Running(running::WeltState<E>),
 }
 
 #[derive(Debug)]
@@ -207,32 +207,28 @@ pub struct InfoRoute {
 
 pub struct DemolishSearchTreeDone;
 
-pub struct LookupRangeStreamNext<A> where A: AccessPolicy {
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+pub struct OrderRequestInfo<E> where E: EchoPolicy {
+    pub echo: E::Info,
 }
 
-pub struct OrderRequestInfo<A> where A: AccessPolicy {
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
-}
-
-pub struct OrderRequestInsert<A> where A: AccessPolicy {
+pub struct OrderRequestInsert<E> where E: EchoPolicy {
     pub key: kv::Key,
     pub value: kv::Value,
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Insert>,
+    pub echo: E::Insert,
 }
 
-pub struct OrderRequestLookupRange<A> where A: AccessPolicy {
+pub struct OrderRequestLookupRange<E> where E: EchoPolicy {
     pub search_range: SearchRangeBounds,
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+    pub stream: E::LookupRange,
 }
 
-pub struct OrderRequestRemove<A> where A: AccessPolicy {
+pub struct OrderRequestRemove<E> where E: EchoPolicy {
     pub key: kv::Key,
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Remove>,
+    pub echo: E::Remove,
 }
 
-pub struct OrderRequestFlush<A> where A: AccessPolicy {
-    pub rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
+pub struct OrderRequestFlush<E> where E: EchoPolicy {
+    pub echo: E::Flush,
 }
 
 #[derive(Debug)]
@@ -294,18 +290,18 @@ pub enum Error {
     OrphanSklave(arbeitssklave::Error),
 }
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         // first retrieve all orders available
@@ -388,152 +384,152 @@ impl Pools {
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<LookupRangeRoute>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<LookupRangeRoute>) -> Order<E> {
         Order::LookupRangeStreamCancel(v)
     }
 }
 
-impl<A> From<komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<LookupRangeStreamNext<A>, LookupRangeRoute>) -> Order<A> {
+impl<E> From<komm::Umschlag<E::LookupRange, LookupRangeRoute>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<E::LookupRange, LookupRangeRoute>) -> Order<E> {
         Order::LookupRangeStreamNext(v)
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<LookupRangeMergeDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<LookupRangeMergeDrop>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<LookupRangeMergeDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<LookupRangeMergeDrop>) -> Order<E> {
         Order::UnregisterLookupRangeMerge(v)
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<FlushButcherDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<FlushButcherDrop>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<FlushButcherDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<FlushButcherDrop>) -> Order<E> {
         Order::UnregisterFlushButcher(v)
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<MergeSearchTreesDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<MergeSearchTreesDrop>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<MergeSearchTreesDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<MergeSearchTreesDrop>) -> Order<E> {
         Order::UnregisterMergeSearchTrees(v)
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<DemolishSearchTreeDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<DemolishSearchTreeDrop>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<DemolishSearchTreeDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<DemolishSearchTreeDrop>) -> Order<E> {
         Order::UnregisterDemolishSearchTree(v)
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteInfo>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteInfo>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteInfo>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteInfo>) -> Order<E> {
         Order::Wheel(OrderWheel::InfoCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>) -> Order<A> {
+impl<E> From<komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>) -> Order<E> {
         Order::Wheel(OrderWheel::Info(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteFlush>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteFlush>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteFlush>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteFlush>) -> Order<E> {
         Order::Wheel(OrderWheel::FlushCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>) -> Order<A> {
+impl<E> From<komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>) -> Order<E> {
         Order::Wheel(OrderWheel::Flush(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteWriteBlock>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteWriteBlock>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteWriteBlock>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteWriteBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::WriteBlockCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>) -> Order<A> {
+impl<E> From<komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::WriteBlock(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteReadBlock>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteReadBlock>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteReadBlock>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteReadBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::ReadBlockCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>) -> Order<A> {
+impl<E> From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::ReadBlock(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteDeleteBlock>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteDeleteBlock>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteDeleteBlock>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteDeleteBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::DeleteBlockCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>> for Order<A>
-where A: AccessPolicy
+impl<E> From<komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>> for Order<E>
+where E: EchoPolicy
 {
-    fn from(v: komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>) -> Order<A> {
+    fn from(v: komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>) -> Order<E> {
         Order::Wheel(OrderWheel::DeleteBlock(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>) -> Order<E> {
         Order::Wheel(OrderWheel::IterBlocksInitCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocks, WheelRouteIterBlocksInit>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<blockwheel_fs::IterBlocks, WheelRouteIterBlocksInit>) -> Order<A> {
+impl<E> From<komm::Umschlag<blockwheel_fs::IterBlocks, WheelRouteIterBlocksInit>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<blockwheel_fs::IterBlocks, WheelRouteIterBlocksInit>) -> Order<E> {
         Order::Wheel(OrderWheel::IterBlocksInit(v))
     }
 }
 
-impl<A> From<komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>) -> Order<A> {
+impl<E> From<komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>) -> Order<E> {
         Order::Wheel(OrderWheel::IterBlocksNextCancel(v))
     }
 }
 
-impl<A> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>) -> Order<A> {
+impl<E> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksNext>) -> Order<E> {
         Order::Wheel(OrderWheel::IterBlocksNext(v))
     }
 }
 
-impl<A> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<FlushButcherDone, FlushButcherDrop>) -> Order<A> {
+impl<E> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<FlushButcherDone, FlushButcherDrop>) -> Order<E> {
         Order::FlushButcherDone(v)
     }
 }
 
-impl<A> From<komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>) -> Order<A> {
+impl<E> From<komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>) -> Order<E> {
         Order::MergeSearchTreesDone(v)
     }
 }
 
-impl<A> From<komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>> for Order<A> where A: AccessPolicy {
-    fn from(v: komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>) -> Order<A> {
+impl<E> From<komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>) -> Order<E> {
         Order::DemolishSearchTreeDone(v)
     }
 }
 
-pub struct Context<A>(PhantomData<A>);
+pub struct Context<E>(PhantomData<E>);
 
-impl<A> context::Context for Context<A> where A: AccessPolicy {
-    type Info = komm::Rueckkopplung<A::Order, A::Info>;
-    type Insert = komm::Rueckkopplung<A::Order, A::Insert>;
-    type Lookup = komm::Rueckkopplung<A::Order, A::LookupRange>;
-    type Remove = komm::Rueckkopplung<A::Order, A::Remove>;
-    type Flush = komm::Rueckkopplung<A::Order, A::Flush>;
+impl<E> context::Context for Context<E> where E: EchoPolicy {
+    type Info = E::Info;
+    type Insert = E::Insert;
+    type Lookup = E::LookupRange;
+    type Remove = E::Remove;
+    type Flush = E::Flush;
 }

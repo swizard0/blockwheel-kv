@@ -38,7 +38,7 @@ use crate::{
         SearchRangesMergeItemNext,
     },
     HideDebug,
-    AccessPolicy,
+    EchoPolicy,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -78,31 +78,31 @@ pub struct WriteBlockTargetStoreBlock {
     blockwheel_filename: wheels::WheelFilename,
 }
 
-pub struct Welt<A> where A: AccessPolicy {
+pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-    wheels: wheels::Wheels<A>,
+    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     tree_block_size: usize,
-    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::MergeSearchTreesDrop>>,
+    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::MergeSearchTreesDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
     written_block_tasks: Vec<WrittenBlockTask>,
 }
 
-impl<A> Welt<A> where A: AccessPolicy {
+impl<E> Welt<E> where E: EchoPolicy {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         source_count_items: SearchRangesMergeCps,
         source_build: SearchRangesMergeCps,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-        wheels: wheels::Wheels<A>,
+        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
         block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
         tree_block_size: usize,
-        feedback: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::MergeSearchTreesDrop>,
+        feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::MergeSearchTreesDrop>,
     )
         -> Self
     {
@@ -129,8 +129,8 @@ impl<A> Welt<A> where A: AccessPolicy {
     }
 }
 
-pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
-pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]
 enum Kont {
@@ -158,18 +158,18 @@ pub enum Error {
     SerializeBlockStorage(storage::Error),
 }
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -495,14 +495,14 @@ where A: AccessPolicy,
     }
 }
 
-fn job_step_merger<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn job_step_merger<E, P>(
+    sklavenwelt: &mut Welt<E>,
     mut merger_kont: SearchRangesMergeKont,
     thread_pool: &P,
 )
     -> Result<MergeKont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match merger_kont {
@@ -553,15 +553,15 @@ where A: AccessPolicy,
     }
 }
 
-fn job_step_builder<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn job_step_builder<E, P>(
+    sklavenwelt: &mut Welt<E>,
     item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
     mut builder_kont: SearchTreeBuilderKont,
     thread_pool: &P,
 )
     -> Result<BuildKont, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match builder_kont {

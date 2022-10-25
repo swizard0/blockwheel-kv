@@ -11,7 +11,10 @@ use o1::{
 };
 
 use arbeitssklave::{
-    komm,
+    komm::{
+        self,
+        Echo,
+    },
 };
 
 use crate::{
@@ -28,15 +31,14 @@ use crate::{
         SearchRangesMergeItemNext,
     },
     HideDebug,
-    AccessPolicy,
+    EchoPolicy,
     LookupRangeStream,
-    KeyValueStreamItem,
 };
 
-pub enum Order<A> where A: AccessPolicy {
+pub enum Order<E> where E: EchoPolicy {
     Terminate,
     ReadBlock(OrderReadBlock),
-    ItemNext(OrderItemNext<A>),
+    ItemNext(OrderItemNext<E>),
 }
 
 pub struct OrderReadBlock {
@@ -44,8 +46,8 @@ pub struct OrderReadBlock {
     pub target: ReadBlockTarget,
 }
 
-pub struct OrderItemNext<A> where A: AccessPolicy {
-    pub lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+pub struct OrderItemNext<E> where E: EchoPolicy {
+    pub lookup_context: E::LookupRange,
 }
 
 #[derive(Debug)]
@@ -60,25 +62,25 @@ pub struct ReadBlockTargetLoadBlock {
     async_token: HideDebug<search_ranges_merge::AsyncToken<performer::LookupRangeSource>>,
 }
 
-pub struct Welt<A> where A: AccessPolicy {
-    kont: Option<Kont<A>>,
+pub struct Welt<E> where E: EchoPolicy {
+    kont: Option<Kont<E>>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-    wheels: wheels::Wheels<A>,
-    _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::LookupRangeMergeDrop>,
+    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    wheels: wheels::Wheels<E>,
+    _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
     received_block_tasks: Vec<ReceivedBlockTask>,
-    received_order_item_next: Option<OrderItemNext<A>>,
+    received_order_item_next: Option<OrderItemNext<E>>,
     received_value_bytes: Option<Bytes>,
 }
 
-impl<A> Welt<A> where A: AccessPolicy {
+impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
-        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        lookup_context: E::LookupRange,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-        wheels: wheels::Wheels<A>,
-        drop_bomb: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::LookupRangeMergeDrop>,
+        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        wheels: wheels::Wheels<E>,
+        drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
     )
         -> Self
     {
@@ -95,21 +97,21 @@ impl<A> Welt<A> where A: AccessPolicy {
     }
 }
 
-pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order<A>>;
-pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order<A>>;
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order<E>>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
 
-enum Kont<A> where A: AccessPolicy {
+enum Kont<E> where E: EchoPolicy {
     Start {
         merger: SearchRangesMergeCps,
-        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        lookup_context: E::LookupRange,
     },
     AwaitBlocks {
-        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        lookup_context: E::LookupRange,
         next: SearchRangesMergeBlockNext,
     },
     ReadyItem {
         key_value_pair: kv::KeyValuePair<kv::Value>,
-        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        lookup_context: E::LookupRange,
         next: SearchRangesMergeItemNext,
     },
     AwaitItemNext {
@@ -118,7 +120,7 @@ enum Kont<A> where A: AccessPolicy {
     AwaitItemValue {
         key: kv::Key,
         version: u64,
-        lookup_context: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        lookup_context: E::LookupRange,
         next: SearchRangesMergeItemNext,
     },
 }
@@ -127,7 +129,7 @@ enum Kont<A> where A: AccessPolicy {
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchRangesMerge(search_ranges_merge::Error),
-    SendegeraetGone(komm::Error),
+    SendegeraetGone(komm::EchoError),
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
     },
@@ -138,18 +140,18 @@ pub enum Error {
     ValueDeserialize(storage::Error),
 }
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -241,9 +243,9 @@ where A: AccessPolicy,
                             meister_ref: sklavenwelt.meister_ref,
                         });
                     lookup_context
-                        .commit(KeyValueStreamItem::KeyValue {
-                            key_value_pair,
-                            next: LookupRangeStream {
+                        .commit_echo(komm::Streamzeug::Zeug {
+                            zeug: key_value_pair,
+                            mehr_stream: LookupRangeStream {
                                 next: HideDebug(next_rueckkopplung),
                             },
                         })
@@ -396,7 +398,7 @@ where A: AccessPolicy,
                     },
                     search_ranges_merge::Kont::Finished => {
                         lookup_context
-                            .commit(KeyValueStreamItem::NoMore)
+                            .commit_echo(komm::Streamzeug::NichtMehr)
                             .map_err(Error::SendegeraetGone)?;
                         return Ok(());
                     },

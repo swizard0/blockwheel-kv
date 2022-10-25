@@ -47,25 +47,14 @@ impl Default for Params {
     }
 }
 
-pub trait AccessPolicy: Sized + Send + 'static
-where Self::Order: From<komm::UmschlagAbbrechen<Self::Info>>,
-      Self::Order: From<komm::Umschlag<Info, Self::Info>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::Insert>>,
-      Self::Order: From<komm::Umschlag<Inserted, Self::Insert>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::LookupRange>>,
-      Self::Order: From<komm::Umschlag<KeyValueStreamItem<Self>, Self::LookupRange>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::Remove>>,
-      Self::Order: From<komm::Umschlag<Removed, Self::Remove>>,
-      Self::Order: From<komm::UmschlagAbbrechen<Self::Flush>>,
-      Self::Order: From<komm::Umschlag<Flushed, Self::Flush>>,
-      Self::Order: Send + 'static,
-      Self::Info: Send + 'static,
-      Self::Insert: Send + 'static,
-      Self::LookupRange: Send + 'static,
-      Self::Remove: Send + 'static,
-      Self::Flush: Send + 'static,
+pub trait EchoPolicy
+where Self: Sized + Send + 'static,
+      Self::Info: komm::Echo<Info> + Send + 'static,
+      Self::Insert: komm::Echo<Inserted> + Send + 'static,
+      Self::LookupRange: komm::Stream<kv::KeyValuePair<kv::Value>, LookupRangeStream<Self>> + Send + 'static,
+      Self::Remove: komm::Echo<Removed> + Send + 'static,
+      Self::Flush: komm::Echo<Flushed> + Send + 'static,
 {
-    type Order;
     type Info;
     type Insert;
     type LookupRange;
@@ -74,22 +63,13 @@ where Self::Order: From<komm::UmschlagAbbrechen<Self::Info>>,
 }
 
 #[derive(Debug)]
-pub enum KeyValueStreamItem<A> where A: AccessPolicy {
-    KeyValue {
-        key_value_pair: kv::KeyValuePair<kv::Value>,
-        next: LookupRangeStream<A>,
-    },
-    NoMore,
+pub struct LookupRangeStream<E> where E: EchoPolicy {
+    next: HideDebug<komm::Rueckkopplung<core::performer_sklave::Order<E>, core::performer_sklave::LookupRangeRoute>>,
 }
 
-#[derive(Debug)]
-pub struct LookupRangeStream<A> where A: AccessPolicy {
-    next: HideDebug<komm::Rueckkopplung<core::performer_sklave::Order<A>, core::performer_sklave::LookupRangeRoute>>,
-}
-
-impl<A> LookupRangeStream<A> where A: AccessPolicy {
-    pub fn demand(self, rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>) -> Result<(), komm::Error> {
-        self.next.0.commit(core::performer_sklave::LookupRangeStreamNext { rueckkopplung, })
+impl<E> komm::Echo<E::LookupRange> for LookupRangeStream<E> where E: EchoPolicy {
+    fn commit_echo(self, inhalt: E::LookupRange) -> Result<(), komm::EchoError> {
+        self.next.0.commit_echo(inhalt)
     }
 }
 
@@ -99,17 +79,17 @@ pub enum Error {
     PerformerSendegeraet(komm::Error),
 }
 
-pub struct Freie<A> where A: AccessPolicy {
-    performer_sklave_freie: arbeitssklave::Freie<core::performer_sklave::Welt<A>, core::performer_sklave::Order<A>>,
+pub struct Freie<E> where E: EchoPolicy {
+    performer_sklave_freie: arbeitssklave::Freie<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
 }
 
-impl<A> Default for Freie<A> where A: AccessPolicy {
+impl<E> Default for Freie<E> where E: EchoPolicy {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A> Freie<A> where A: AccessPolicy {
+impl<E> Freie<E> where E: EchoPolicy {
     pub fn new() -> Self {
         Self {
             performer_sklave_freie: arbeitssklave::Freie::new(),
@@ -121,11 +101,11 @@ impl<A> Freie<A> where A: AccessPolicy {
         params: Params,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
-        wheels: wheels::Wheels<A>,
+        wheels: wheels::Wheels<E>,
         thread_pool: &P,
     )
-        -> Result<Meister<A>, Error>
-    where P: edeltraud::ThreadPool<job::Job<A>> + Clone + Send + 'static,
+        -> Result<Meister<E>, Error>
+    where P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + 'static,
     {
         let performer_sklave_sendegeraet =
             komm::Sendegeraet::starten(
@@ -155,11 +135,11 @@ impl<A> Freie<A> where A: AccessPolicy {
     }
 }
 
-pub struct Meister<A> where A: AccessPolicy {
-    performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<A>, core::performer_sklave::Order<A>>,
+pub struct Meister<E> where E: EchoPolicy {
+    performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
 }
 
-impl<A> Clone for Meister<A> where A: AccessPolicy {
+impl<E> Clone for Meister<E> where E: EchoPolicy {
     fn clone(&self) -> Self {
         Meister {
             performer_sklave_meister: self.performer_sklave_meister.clone(),
@@ -193,21 +173,21 @@ pub struct WheelInfo {
     pub info: blockwheel_fs::Info,
 }
 
-impl<A> Meister<A> where A: AccessPolicy {
+impl<E> Meister<E> where E: EchoPolicy {
     pub fn info<P>(
         &self,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
+        echo: E::Info,
         thread_pool: &P,
     )
         -> Result<(), arbeitssklave::Error>
-    where P: edeltraud::ThreadPool<job::Job<A>>
+    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
                 core::performer_sklave::Order::Request(
                     core::performer_sklave::OrderRequest::Info(
                         core::performer_sklave::OrderRequestInfo {
-                            rueckkopplung,
+                            echo,
                         },
                     ),
                 ),
@@ -219,18 +199,18 @@ impl<A> Meister<A> where A: AccessPolicy {
         &self,
         key: kv::Key,
         value: kv::Value,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::Insert>,
+        echo: E::Insert,
         thread_pool: &P,
     )
         -> Result<(), arbeitssklave::Error>
-    where P: edeltraud::ThreadPool<job::Job<A>>
+    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
                 core::performer_sklave::Order::Request(
                     core::performer_sklave::OrderRequest::Insert(
                         core::performer_sklave::OrderRequestInsert{
-                            key, value, rueckkopplung,
+                            key, value, echo,
                         },
                     ),
                 ),
@@ -241,12 +221,12 @@ impl<A> Meister<A> where A: AccessPolicy {
     pub fn lookup_range<R, P>(
         &self,
         range: R,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::LookupRange>,
+        stream: E::LookupRange,
         thread_pool: &P,
     )
         -> Result<(), arbeitssklave::Error>
     where R: RangeBounds<kv::Key>,
-          P: edeltraud::ThreadPool<job::Job<A>>,
+          P: edeltraud::ThreadPool<job::Job<E>>,
     {
         self.performer_sklave_meister
             .befehl(
@@ -254,7 +234,7 @@ impl<A> Meister<A> where A: AccessPolicy {
                     core::performer_sklave::OrderRequest::LookupRange(
                         core::performer_sklave::OrderRequestLookupRange{
                             search_range: range.into(),
-                            rueckkopplung,
+                            stream,
                         },
                     ),
                 ),
@@ -265,18 +245,18 @@ impl<A> Meister<A> where A: AccessPolicy {
     pub fn remove<P>(
         &self,
         key: kv::Key,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::Remove>,
+        echo: E::Remove,
         thread_pool: &P,
     )
         -> Result<(), arbeitssklave::Error>
-    where P: edeltraud::ThreadPool<job::Job<A>>
+    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
                 core::performer_sklave::Order::Request(
                     core::performer_sklave::OrderRequest::Remove(
                         core::performer_sklave::OrderRequestRemove{
-                            key, rueckkopplung,
+                            key, echo,
                         },
                     ),
                 ),
@@ -286,18 +266,18 @@ impl<A> Meister<A> where A: AccessPolicy {
 
     pub fn flush<P>(
         &self,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
+        echo: E::Flush,
         thread_pool: &P,
     )
         -> Result<(), arbeitssklave::Error>
-    where P: edeltraud::ThreadPool<job::Job<A>>
+    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
                 core::performer_sklave::Order::Request(
                     core::performer_sklave::OrderRequest::Flush(
                         core::performer_sklave::OrderRequestFlush {
-                            rueckkopplung,
+                            echo,
                         },
                     ),
                 ),

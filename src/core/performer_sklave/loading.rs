@@ -18,7 +18,7 @@ use crate::{
             WheelRouteIterBlocksNext,
         },
     },
-    AccessPolicy,
+    EchoPolicy,
 };
 
 use arbeitssklave::{
@@ -42,12 +42,12 @@ impl WeltState {
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum Outcome<A> where A: AccessPolicy {
+pub enum Outcome<E> where E: EchoPolicy {
     Rasten {
         loading: WeltState,
     },
     Done {
-        performer: performer::Performer<Context<A>>,
+        performer: performer::Performer<Context<E>>,
         pools: Pools,
     },
 }
@@ -82,14 +82,14 @@ pub enum Error {
     },
 }
 
-pub fn job<A, P>(
+pub fn job<E, P>(
     mut welt_state: WeltState,
-    sklavenwelt: &mut Welt<A>,
+    sklavenwelt: &mut Welt<E>,
     thread_pool: &P,
 )
-    -> Result<Outcome<A>, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+    -> Result<Outcome<E>, Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match mem::replace(&mut welt_state.mode, WeltStateMode::NeedIterBlocksRequest) {

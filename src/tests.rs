@@ -1,5 +1,6 @@
 use std::{
     fs,
+    fmt,
     sync::{
         mpsc,
     },
@@ -193,7 +194,7 @@ fn make_wheel_ref(
     blocks_pool: &BytesPool,
     thread_pool: &edeltraud::Edeltraud<Job>,
 )
-    -> Result<wheels::WheelRef<AccessPolicy>, Error>
+    -> Result<wheels::WheelRef<EchoPolicy>, Error>
 {
     let blockwheel_filename = match &params.interpreter {
         blockwheel_fs::InterpreterParams::FixedFile(interpreter_params) =>
@@ -205,7 +206,7 @@ fn make_wheel_ref(
         },
     };
 
-    let freie: blockwheel_fs::Freie<wheels::WheelAccessPolicy<AccessPolicy>> =
+    let freie: blockwheel_fs::Freie<wheels::WheelEchoPolicy<EchoPolicy>> =
         blockwheel_fs::Freie::new();
     let meister = freie
         .versklaven(
@@ -219,25 +220,25 @@ fn make_wheel_ref(
 }
 
 #[derive(Debug)]
-struct AccessPolicy;
+struct EchoPolicy;
 
-impl blockwheel_kv::AccessPolicy for AccessPolicy {
-    type Order = ReplyOrder;
-    type Info = ReplyInfo;
-    type Insert = ReplyInsert;
-    type LookupRange = ReplyLookupRange;
-    type Remove = ReplyRemove;
-    type Flush = ReplyFlush;
+impl blockwheel_kv::EchoPolicy for EchoPolicy {
+    type Info = komm::Rueckkopplung<ReplyOrder, ReplyInfo>;
+    type Insert = komm::Rueckkopplung<ReplyOrder, ReplyInsert>;
+    type LookupRange = komm::Rueckkopplung<ReplyOrder, ReplyLookupRange>;
+    type Remove = komm::Rueckkopplung<ReplyOrder, ReplyRemove>;
+    type Flush = komm::Rueckkopplung<ReplyOrder, ReplyFlush>;
 }
 
-#[derive(Debug)]
+type Streamzeug = komm::Streamzeug<kv::KeyValuePair<kv::Value>, blockwheel_kv::LookupRangeStream<EchoPolicy>>;
+
 enum ReplyOrder {
     InfoCancel(komm::UmschlagAbbrechen<ReplyInfo>),
     Info(komm::Umschlag<blockwheel_kv::Info, ReplyInfo>),
     InsertCancel(komm::UmschlagAbbrechen<ReplyInsert>),
     Insert(komm::Umschlag<blockwheel_kv::Inserted, ReplyInsert>),
     LookupRangeCancel(komm::UmschlagAbbrechen<ReplyLookupRange>),
-    LookupRange(komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>),
+    LookupRange(komm::Umschlag<Streamzeug, ReplyLookupRange>),
     RemoveCancel(komm::UmschlagAbbrechen<ReplyRemove>),
     Remove(komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>),
     FlushCancel(komm::UmschlagAbbrechen<ReplyFlush>),
@@ -245,6 +246,20 @@ enum ReplyOrder {
 
     InsertJobCancel(komm::UmschlagAbbrechen<InsertJob>),
     InsertJob(komm::Umschlag<Result<(), Error>, InsertJob>),
+}
+
+impl fmt::Debug for ReplyOrder {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReplyOrder::LookupRange(..) => {
+                fmt.debug_tuple("ReplyOrder::LookupRange")
+                    .field(&"<contents>")
+                    .finish()
+            },
+            other =>
+                other.fmt(fmt),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -300,8 +315,8 @@ impl From<komm::UmschlagAbbrechen<ReplyLookupRange>> for ReplyOrder {
     }
 }
 
-impl From<komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>> for ReplyOrder {
-    fn from(v: komm::Umschlag<blockwheel_kv::KeyValueStreamItem<AccessPolicy>, ReplyLookupRange>) -> ReplyOrder {
+impl From<komm::Umschlag<Streamzeug, ReplyLookupRange>> for ReplyOrder {
+    fn from(v: komm::Umschlag<Streamzeug, ReplyLookupRange>) -> ReplyOrder {
         ReplyOrder::LookupRange(v)
     }
 }
@@ -347,20 +362,20 @@ struct Welt {
 }
 
 enum Job {
-    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>),
-    BlockwheelKv(blockwheel_kv::job::Job<AccessPolicy>),
+    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>),
+    BlockwheelKv(blockwheel_kv::job::Job<EchoPolicy>),
     FtdSklave(arbeitssklave::SklaveJob<Welt, ReplyOrder>),
     Insert(JobInsertArgs),
 }
 
-impl From<blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>> for Job {
-    fn from(job: blockwheel_fs::job::Job<wheels::WheelAccessPolicy<AccessPolicy>>) -> Job {
+impl From<blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>) -> Job {
         Job::BlockwheelFs(job)
     }
 }
 
-impl From<blockwheel_kv::job::Job<AccessPolicy>> for Job {
-    fn from(job: blockwheel_kv::job::Job<AccessPolicy>) -> Job {
+impl From<blockwheel_kv::job::Job<EchoPolicy>> for Job {
+    fn from(job: blockwheel_kv::job::Job<EchoPolicy>) -> Job {
         Job::BlockwheelKv(job)
     }
 }
@@ -427,7 +442,7 @@ struct JobInsertArgsMain {
     blocks_pool: BytesPool,
     key_amount: usize,
     value_amount: usize,
-    blockwheel_kv_meister: blockwheel_kv::Meister<AccessPolicy>,
+    blockwheel_kv_meister: blockwheel_kv::Meister<EchoPolicy>,
     ftd_sendegeraet: komm::Sendegeraet<ReplyOrder>,
 }
 
@@ -489,7 +504,7 @@ fn stress_loop(
         .build()
         .map_err(Error::WheelsBuilder)?;
 
-    let freie: blockwheel_kv::Freie<AccessPolicy> = blockwheel_kv::Freie::new();
+    let freie: blockwheel_kv::Freie<EchoPolicy> = blockwheel_kv::Freie::new();
     let meister = freie
         .versklaven(
             params.kv,
@@ -752,8 +767,8 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            inhalt: blockwheel_kv::KeyValueStreamItem::KeyValue {
-                key_value_pair: kv::KeyValuePair { value_cell: found_value_cell, .. },
+            inhalt: komm::Streamzeug::Zeug {
+                zeug: kv::KeyValuePair { value_cell: found_value_cell, .. },
                 ..
             },
             stamp: ReplyLookupRange {
@@ -801,7 +816,7 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            inhalt: blockwheel_kv::KeyValueStreamItem::NoMore,
+            inhalt: komm::Streamzeug::NichtMehr,
             stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: _version_snapshot, .. }, },
         }) => {
             let &offset = data.index.get(&key).unwrap();

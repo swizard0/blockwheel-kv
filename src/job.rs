@@ -10,50 +10,50 @@ use std::{
 use crate::{
     core,
     wheels,
-    AccessPolicy,
+    EchoPolicy,
 };
 
-pub enum Job<A> where A: AccessPolicy {
-    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>),
-    PerformerSklave(core::performer_sklave::SklaveJob<A>),
-    LookupRangeMergeSklave(core::performer_sklave::running::lookup_range_merge::SklaveJob<A>),
-    FlushButcherSklave(core::performer_sklave::running::flush_butcher::SklaveJob<A>),
-    MergeSearchTreesSklave(core::performer_sklave::running::merge_search_trees::SklaveJob<A>),
-    DemolishSearchTreeSklave(core::performer_sklave::running::demolish_search_tree::SklaveJob<A>),
+pub enum Job<E> where E: EchoPolicy {
+    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>),
+    PerformerSklave(core::performer_sklave::SklaveJob<E>),
+    LookupRangeMergeSklave(core::performer_sklave::running::lookup_range_merge::SklaveJob<E>),
+    FlushButcherSklave(core::performer_sklave::running::flush_butcher::SklaveJob<E>),
+    MergeSearchTreesSklave(core::performer_sklave::running::merge_search_trees::SklaveJob<E>),
+    DemolishSearchTreeSklave(core::performer_sklave::running::demolish_search_tree::SklaveJob<E>),
 }
 
-impl<A> From<blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>> for Job<A> where A: AccessPolicy {
-    fn from(job: blockwheel_fs::job::Job<wheels::WheelAccessPolicy<A>>) -> Job<A> {
+impl<E> From<blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>> for Job<E> where E: EchoPolicy {
+    fn from(job: blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>) -> Job<E> {
         Job::BlockwheelFs(job)
     }
 }
 
-impl<A> From<core::performer_sklave::SklaveJob<A>> for Job<A> where A: AccessPolicy {
-    fn from(sklave_job: core::performer_sklave::SklaveJob<A>) -> Job<A> {
+impl<E> From<core::performer_sklave::SklaveJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(sklave_job: core::performer_sklave::SklaveJob<E>) -> Job<E> {
         Job::PerformerSklave(sklave_job)
     }
 }
 
-impl<A> From<core::performer_sklave::running::lookup_range_merge::SklaveJob<A>> for Job<A> where A: AccessPolicy {
-    fn from(sklave_job: core::performer_sklave::running::lookup_range_merge::SklaveJob<A>) -> Job<A> {
+impl<E> From<core::performer_sklave::running::lookup_range_merge::SklaveJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(sklave_job: core::performer_sklave::running::lookup_range_merge::SklaveJob<E>) -> Job<E> {
         Job::LookupRangeMergeSklave(sklave_job)
     }
 }
 
-impl<A> From<core::performer_sklave::running::flush_butcher::SklaveJob<A>> for Job<A> where A: AccessPolicy {
-    fn from(sklave_job: core::performer_sklave::running::flush_butcher::SklaveJob<A>) -> Job<A> {
+impl<E> From<core::performer_sklave::running::flush_butcher::SklaveJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(sklave_job: core::performer_sklave::running::flush_butcher::SklaveJob<E>) -> Job<E> {
         Job::FlushButcherSklave(sklave_job)
     }
 }
 
-impl<A> From<core::performer_sklave::running::merge_search_trees::SklaveJob<A>> for Job<A> where A: AccessPolicy {
-    fn from(sklave_job: core::performer_sklave::running::merge_search_trees::SklaveJob<A>) -> Job<A> {
+impl<E> From<core::performer_sklave::running::merge_search_trees::SklaveJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(sklave_job: core::performer_sklave::running::merge_search_trees::SklaveJob<E>) -> Job<E> {
         Job::MergeSearchTreesSklave(sklave_job)
     }
 }
 
-impl<A> From<core::performer_sklave::running::demolish_search_tree::SklaveJob<A>> for Job<A> where A: AccessPolicy {
-    fn from(sklave_job: core::performer_sklave::running::demolish_search_tree::SklaveJob<A>) -> Job<A> {
+impl<E> From<core::performer_sklave::running::demolish_search_tree::SklaveJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(sklave_job: core::performer_sklave::running::demolish_search_tree::SklaveJob<E>) -> Job<E> {
         Job::DemolishSearchTreeSklave(sklave_job)
     }
 }
@@ -65,7 +65,7 @@ pub static JOB_FLUSH_BUTCHER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MERGE_SEARCH_TREES_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_DEMOLISH_SEARCH_TREE_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 
-impl<A> edeltraud::Job for Job<A> where A: AccessPolicy {
+impl<E> edeltraud::Job for Job<E> where E: EchoPolicy {
     fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
         match self {
             Job::BlockwheelFs(job) => {

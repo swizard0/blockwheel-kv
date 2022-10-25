@@ -1,5 +1,8 @@
 use arbeitssklave::{
-    komm,
+    komm::{
+        self,
+        Echo,
+    },
 };
 
 use crate::{
@@ -22,7 +25,6 @@ use crate::{
             InfoRoute,
             LookupRangeRoute,
             LookupRangeMergeDrop,
-            LookupRangeStreamNext,
             FlushButcherDone,
             FlushButcherDrop,
             FlushButcherRoute,
@@ -44,7 +46,7 @@ use crate::{
     Removed,
     Inserted,
     WheelInfo,
-    AccessPolicy,
+    EchoPolicy,
 };
 
 pub mod flush_butcher;
@@ -52,14 +54,14 @@ pub mod lookup_range_merge;
 pub mod merge_search_trees;
 pub mod demolish_search_tree;
 
-pub struct WeltState<A> where A: AccessPolicy {
-    kont: Kont<A>,
+pub struct WeltState<E> where E: EchoPolicy {
+    kont: Kont<E>,
     pools: Pools,
-    active_flush: Option<ActiveFlush<A>>,
+    active_flush: Option<ActiveFlush<E>>,
 }
 
-impl<A> WeltState<A> where A: AccessPolicy {
-    pub fn new(performer: performer::Performer<Context<A>>, pools: Pools) -> Self {
+impl<E> WeltState<E> where E: EchoPolicy {
+    pub fn new(performer: performer::Performer<Context<E>>, pools: Pools) -> Self {
         WeltState {
             kont: Kont::Start { performer, },
             pools,
@@ -68,30 +70,30 @@ impl<A> WeltState<A> where A: AccessPolicy {
     }
 }
 
-enum ActiveFlush<A> where A: AccessPolicy {
+enum ActiveFlush<E> where E: EchoPolicy {
     Kv,
     Wheels {
         wheels_left: usize,
-        rueckkopplung: komm::Rueckkopplung<A::Order, A::Flush>,
+        echo: E::Flush,
     },
 }
 
-pub struct PendingInfo<A> where A: AccessPolicy {
+pub struct PendingInfo<E> where E: EchoPolicy {
     info: Info,
-    rueckkopplung: komm::Rueckkopplung<A::Order, A::Info>,
+    echo: E::Info,
     wheels_left: usize,
 }
 
-pub enum Outcome<A> where A: AccessPolicy {
-    Rasten { running: WeltState<A>, },
+pub enum Outcome<E> where E: EchoPolicy {
+    Rasten { running: WeltState<E>, },
 }
 
-enum Kont<A> where A: AccessPolicy {
+enum Kont<E> where E: EchoPolicy {
     Start {
-        performer: performer::Performer<Context<A>>,
+        performer: performer::Performer<Context<E>>,
     },
     StepPoll {
-        next: performer::KontPollNext<Context<A>>,
+        next: performer::KontPollNext<Context<E>>,
     },
 }
 
@@ -99,10 +101,10 @@ enum Kont<A> where A: AccessPolicy {
 #[allow(clippy::large_enum_variant)]
 pub enum Error {
     UnexpectedIterBlocksReplyInRunningMode,
-    CommitInfo(komm::Error),
-    CommitInserted(komm::Error),
-    CommitRemoved(komm::Error),
-    CommitFlushed(komm::Error),
+    CommitInfo(komm::EchoError),
+    CommitInserted(komm::EchoError),
+    CommitRemoved(komm::EchoError),
+    CommitFlushed(komm::EchoError),
     LookupRangeMergerVersklaven(arbeitssklave::Error),
     FlushButcherVersklaven(arbeitssklave::Error),
     MergeSearchTreesVersklaven(arbeitssklave::Error),
@@ -133,14 +135,14 @@ pub enum Error {
     },
 }
 
-pub fn job<A, P>(
-    mut welt_state: WeltState<A>,
-    sklavenwelt: &mut Welt<A>,
+pub fn job<E, P>(
+    mut welt_state: WeltState<E>,
+    sklavenwelt: &mut Welt<E>,
     thread_pool: &P,
 )
-    -> Result<Outcome<A>, Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+    -> Result<Outcome<E>, Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         let mut performer_kont = match welt_state.kont {
@@ -159,17 +161,17 @@ where A: AccessPolicy,
                             match welt_state.active_flush {
                                 None =>
                                     match request {
-                                        OrderRequest::Info(OrderRequestInfo { rueckkopplung, }) =>
-                                            break next.incoming_info(rueckkopplung),
-                                        OrderRequest::Insert(OrderRequestInsert { key, value, rueckkopplung, }) =>
-                                            break next.incoming_insert(key, value, rueckkopplung),
-                                        OrderRequest::LookupRange(OrderRequestLookupRange { search_range, rueckkopplung, }) =>
-                                            break next.begin_lookup_range(search_range, rueckkopplung),
-                                        OrderRequest::Remove(OrderRequestRemove { key, rueckkopplung, }) =>
-                                            break next.incoming_remove(key, rueckkopplung),
-                                        OrderRequest::Flush(OrderRequestFlush { rueckkopplung, }) => {
+                                        OrderRequest::Info(OrderRequestInfo { echo, }) =>
+                                            break next.incoming_info(echo),
+                                        OrderRequest::Insert(OrderRequestInsert { key, value, echo, }) =>
+                                            break next.incoming_insert(key, value, echo),
+                                        OrderRequest::LookupRange(OrderRequestLookupRange { search_range, stream, }) =>
+                                            break next.begin_lookup_range(search_range, stream),
+                                        OrderRequest::Remove(OrderRequestRemove { key, echo, }) =>
+                                            break next.incoming_remove(key, echo),
+                                        OrderRequest::Flush(OrderRequestFlush { echo, }) => {
                                             welt_state.active_flush = Some(ActiveFlush::Kv);
-                                            break next.incoming_flush(rueckkopplung)
+                                            break next.incoming_flush(echo)
                                         },
                                     },
                                 Some(ActiveFlush::Kv | ActiveFlush::Wheels { .. }) =>
@@ -193,7 +195,7 @@ where A: AccessPolicy,
                             }
                         },
                         Some(Order::LookupRangeStreamNext(komm::Umschlag {
-                            inhalt: LookupRangeStreamNext { rueckkopplung, },
+                            inhalt: stream,
                             stamp: LookupRangeRoute { meister_ref, },
                         })) => {
                             let maybe_meister = sklavenwelt.env
@@ -204,7 +206,7 @@ where A: AccessPolicy,
                                     let send_result = meister.befehl(
                                         lookup_range_merge::Order::ItemNext(
                                             lookup_range_merge::OrderItemNext {
-                                                lookup_context: rueckkopplung,
+                                                lookup_context: stream,
                                             },
                                         ),
                                         thread_pool,
@@ -354,11 +356,11 @@ where A: AccessPolicy,
                                     pending_info.info.wheels.push(WheelInfo { info, blockwheel_filename, });
                                     pending_info.wheels_left -= 1;
                                     if pending_info.wheels_left == 0 {
-                                        let PendingInfo { info, rueckkopplung, .. } = sklavenwelt.env
+                                        let PendingInfo { info, echo, .. } = sklavenwelt.env
                                             .pending_info_requests
                                             .remove(info_ref)
                                             .unwrap();
-                                        rueckkopplung.commit(info)
+                                        echo.commit_echo(info)
                                             .map_err(Error::CommitInfo)?;
                                     }
                                 },
@@ -370,16 +372,16 @@ where A: AccessPolicy,
                             return Err(Error::WheelIsGoneDuringFlush),
                         Some(Order::Wheel(OrderWheel::Flush(komm::Umschlag { inhalt: blockwheel_fs::Flushed, stamp: WheelRouteFlush, }))) =>
                             match welt_state.active_flush {
-                                Some(ActiveFlush::Wheels { wheels_left, rueckkopplung, }) if wheels_left > 1 => {
+                                Some(ActiveFlush::Wheels { wheels_left, echo, }) if wheels_left > 1 => {
                                     log::debug!("wheel flush is done, {} wheels is left", wheels_left - 1);
                                     welt_state.active_flush = Some(ActiveFlush::Wheels {
                                         wheels_left: wheels_left - 1,
-                                        rueckkopplung,
+                                        echo,
                                     });
                                 },
-                                Some(ActiveFlush::Wheels { rueckkopplung, .. }) => {
+                                Some(ActiveFlush::Wheels { echo, .. }) => {
                                     log::debug!("wheels flush is done, reporting");
-                                    rueckkopplung.commit(Flushed)
+                                    echo.commit_echo(Flushed)
                                         .map_err(Error::CommitFlushed)?;
                                     welt_state.active_flush = None;
                                     sklavenwelt.env.incoming_orders.append(
@@ -593,10 +595,10 @@ where A: AccessPolicy,
                     welt_state.kont = Kont::StepPoll { next, };
                     break;
                 },
-                performer::Kont::InfoReady(performer::KontInfoReady { info, info_context: rueckkopplung, next, }) => {
+                performer::Kont::InfoReady(performer::KontInfoReady { info, info_context: echo, next, }) => {
                     let info_ref = sklavenwelt.env
                         .pending_info_requests
-                        .insert(PendingInfo { info, rueckkopplung, wheels_left: 0, });
+                        .insert(PendingInfo { info, echo, wheels_left: 0, });
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
                         let info_rueckkopplung = sklavenwelt.env
                             .sendegeraet
@@ -617,17 +619,17 @@ where A: AccessPolicy,
                     }
                     next.got_it()
                 },
-                performer::Kont::Inserted(performer::KontInserted { version, insert_context: rueckkopplung, next, }) => {
-                    rueckkopplung.commit(Inserted { version, })
+                performer::Kont::Inserted(performer::KontInserted { version, insert_context: echo, next, }) => {
+                    echo.commit_echo(Inserted { version, })
                         .map_err(Error::CommitInserted)?;
                     next.got_it()
                 },
-                performer::Kont::Removed(performer::KontRemoved { version, remove_context: rueckkopplung, next, }) => {
-                    rueckkopplung.commit(Removed { version, })
+                performer::Kont::Removed(performer::KontRemoved { version, remove_context: echo, next, }) => {
+                    echo.commit_echo(Removed { version, })
                         .map_err(Error::CommitRemoved)?;
                     next.got_it()
                 },
-                performer::Kont::Flushed(performer::KontFlushed { flush_context: rueckkopplung, next, }) => {
+                performer::Kont::Flushed(performer::KontFlushed { flush_context: echo, next, }) => {
                     log::debug!("kv flush is done, performing flush for wheels");
                     let mut wheels_left = 0;
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
@@ -646,7 +648,7 @@ where A: AccessPolicy,
 
                     welt_state.active_flush = match welt_state.active_flush {
                         Some(ActiveFlush::Kv) =>
-                            Some(ActiveFlush::Wheels { wheels_left, rueckkopplung, }),
+                            Some(ActiveFlush::Wheels { wheels_left, echo, }),
                         None | Some(ActiveFlush::Wheels { .. }) =>
                             unreachable!(),
                     };
@@ -754,7 +756,7 @@ where A: AccessPolicy,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env
                                     .sendegeraet
-                                    .rueckkopplung(DemolishSearchTreeDrop {
+                                     .rueckkopplung(DemolishSearchTreeDrop {
                                         demolish_group_ref: order.demolish_group_ref,
                                         route: DemolishSearchTreeRoute { meister_ref, },
                                     }),

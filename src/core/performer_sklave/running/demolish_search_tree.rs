@@ -28,7 +28,7 @@ use crate::{
         SearchRangesMergeBlockNext,
     },
     HideDebug,
-    AccessPolicy,
+    EchoPolicy,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -56,25 +56,25 @@ pub struct OrderDeleteBlock {
     pub delete_block_result: Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>,
 }
 
-pub struct Welt<A> where A: AccessPolicy {
+pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-    wheels: wheels::Wheels<A>,
-    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::DemolishSearchTreeDrop>>,
+    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    wheels: wheels::Wheels<E>,
+    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
     pending_delete_tasks: usize,
     total_search_tree_blocks_removed: usize,
     total_external_value_blocks_removed: usize,
 }
 
-impl<A> Welt<A> where A: AccessPolicy {
+impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<A>>,
-        wheels: wheels::Wheels<A>,
-        feedback: komm::Rueckkopplung<performer_sklave::Order<A>, performer_sklave::DemolishSearchTreeDrop>,
+        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        wheels: wheels::Wheels<E>,
+        feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>,
     )
         -> Self
     {
@@ -92,8 +92,8 @@ impl<A> Welt<A> where A: AccessPolicy {
     }
 }
 
-pub type Meister<A> = arbeitssklave::Meister<Welt<A>, Order>;
-pub type SklaveJob<A> = arbeitssklave::SklaveJob<Welt<A>, Order>;
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 enum Kont {
     Start {
@@ -117,18 +117,18 @@ pub enum Error {
     DeleteBlockRequest(arbeitssklave::Error),
 }
 
-pub fn run_job<A, P>(sklave_job: SklaveJob<A>, thread_pool: &P)
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<A, P>(mut sklave_job: SklaveJob<A>, thread_pool: &P) -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
  {
     'outer: loop {
         // first retrieve all orders available
@@ -290,14 +290,14 @@ struct ReceivedBlockTask {
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
 }
 
-fn schedule_delete_block<A, P>(
-    sklavenwelt: &mut Welt<A>,
+fn schedule_delete_block<E, P>(
+    sklavenwelt: &mut Welt<E>,
     block_ref: BlockRef,
     thread_pool: &P,
 )
     -> Result<(), Error>
-where A: AccessPolicy,
-      P: edeltraud::ThreadPool<job::Job<A>>,
+where E: EchoPolicy,
+      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
         .ok_or_else(|| Error::WheelNotFound {
