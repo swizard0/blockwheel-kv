@@ -13,7 +13,7 @@ use o1::{
 use arbeitssklave::{
     komm::{
         self,
-        Echo,
+        Stream,
     },
 };
 
@@ -129,7 +129,7 @@ enum Kont<E> where E: EchoPolicy {
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchRangesMerge(search_ranges_merge::Error),
-    SendegeraetGone(komm::EchoError),
+    SendegeraetGone(komm::StreamError),
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
     },
@@ -243,7 +243,7 @@ where E: EchoPolicy,
                             meister_ref: sklavenwelt.meister_ref,
                         });
                     lookup_context
-                        .commit_echo(komm::Streamzeug::Zeug {
+                        .commit_stream(komm::Streamzeug::Zeug {
                             zeug: key_value_pair,
                             mehr_stream: LookupRangeStream {
                                 next: HideDebug(next_rueckkopplung),
@@ -398,7 +398,7 @@ where E: EchoPolicy,
                     },
                     search_ranges_merge::Kont::Finished => {
                         lookup_context
-                            .commit_echo(komm::Streamzeug::NichtMehr)
+                            .commit_stream(komm::Streamzeug::NichtMehr)
                             .map_err(Error::SendegeraetGone)?;
                         return Ok(());
                     },
