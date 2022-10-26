@@ -68,7 +68,7 @@ pub struct LookupRangeStream<E> where E: EchoPolicy {
 }
 
 impl<E> komm::Echo<E::LookupRange> for LookupRangeStream<E> where E: EchoPolicy {
-    fn commit_echo<T>(self, inhalt: T) -> Result<(), komm::EchoError> where komm::EchoInhalt<E::LookupRange>: From<T> {
+    fn commit_echo(self, inhalt: E::LookupRange) -> Result<(), komm::EchoError> {
         self.next.0.commit_echo(inhalt)
     }
 }
