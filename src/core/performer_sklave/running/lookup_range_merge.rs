@@ -4,16 +4,10 @@ use alloc_pool::{
     },
 };
 
-use o1::{
-    set::{
-        Ref,
-    },
-};
-
 use arbeitssklave::{
     komm::{
         self,
-        Stream,
+        Echo,
     },
 };
 
@@ -32,7 +26,6 @@ use crate::{
     },
     HideDebug,
     EchoPolicy,
-    LookupRangeStream,
 };
 
 pub enum Order<E> where E: EchoPolicy {
@@ -47,7 +40,7 @@ pub struct OrderReadBlock {
 }
 
 pub struct OrderItemNext<E> where E: EchoPolicy {
-    pub lookup_context: E::LookupRange,
+    pub lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
 }
 
 #[derive(Debug)]
@@ -64,7 +57,7 @@ pub struct ReadBlockTargetLoadBlock {
 
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont<E>>,
-    meister_ref: Ref,
+    stream_id: komm::StreamId,
     sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
     wheels: wheels::Wheels<E>,
     _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
@@ -76,8 +69,8 @@ pub struct Welt<E> where E: EchoPolicy {
 impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
-        lookup_context: E::LookupRange,
-        meister_ref: Ref,
+        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
+        stream_id: komm::StreamId,
         sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
         wheels: wheels::Wheels<E>,
         drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
@@ -86,7 +79,7 @@ impl<E> Welt<E> where E: EchoPolicy {
     {
         Welt {
             kont: Some(Kont::Start { merger, lookup_context, }),
-            meister_ref,
+            stream_id,
             sendegeraet,
             wheels,
             _drop_bomb: drop_bomb,
@@ -103,15 +96,15 @@ pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
 enum Kont<E> where E: EchoPolicy {
     Start {
         merger: SearchRangesMergeCps,
-        lookup_context: E::LookupRange,
+        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
     },
     AwaitBlocks {
-        lookup_context: E::LookupRange,
+        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
         next: SearchRangesMergeBlockNext,
     },
     ReadyItem {
         key_value_pair: kv::KeyValuePair<kv::Value>,
-        lookup_context: E::LookupRange,
+        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
         next: SearchRangesMergeItemNext,
     },
     AwaitItemNext {
@@ -120,7 +113,7 @@ enum Kont<E> where E: EchoPolicy {
     AwaitItemValue {
         key: kv::Key,
         version: u64,
-        lookup_context: E::LookupRange,
+        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
         next: SearchRangesMergeItemNext,
     },
 }
@@ -129,7 +122,7 @@ enum Kont<E> where E: EchoPolicy {
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchRangesMerge(search_ranges_merge::Error),
-    SendegeraetGone(komm::StreamError),
+    SendegeraetGone(komm::EchoError),
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
     },
@@ -218,14 +211,26 @@ where E: EchoPolicy,
         let sklavenwelt = sklave_job.sklavenwelt_mut();
 
         'kont: loop {
-            let (mut merger_kont, lookup_context) = match sklavenwelt.kont.take().unwrap() {
-                Kont::Start { merger, lookup_context, } => (
+            let (
+                mut merger_kont,
+                lookup_context,
+            ) = match sklavenwelt.kont.take().unwrap() {
+                Kont::Start {
+                    merger,
+                    lookup_context,
+                } => (
                     merger.step()
                         .map_err(Error::SearchRangesMerge)?,
                     lookup_context,
                 ),
-                Kont::AwaitBlocks { lookup_context, next, } =>
-                    if let Some(ReceivedBlockTask { async_token, block_bytes, }) = sklavenwelt.received_block_tasks.pop() {
+                Kont::AwaitBlocks {
+                    lookup_context,
+                    next,
+                } =>
+                    if let Some(ReceivedBlockTask {
+                        async_token,
+                        block_bytes,
+                    }) = sklavenwelt.received_block_tasks.pop() {
                         (
                             next.block_arrived(async_token, block_bytes)
                                 .map_err(Error::SearchRangesMerge)?,
@@ -236,26 +241,25 @@ where E: EchoPolicy,
                             Some(Kont::AwaitBlocks { lookup_context, next, });
                         continue 'outer;
                     },
-                Kont::ReadyItem { key_value_pair, lookup_context, next, } => {
-                    let next_rueckkopplung = sklavenwelt
-                        .sendegeraet
-                        .rueckkopplung(performer_sklave::LookupRangeRoute {
-                            meister_ref: sklavenwelt.meister_ref,
-                        });
-                    lookup_context
-                        .commit_stream(komm::Streamzeug::Zeug {
-                            zeug: key_value_pair,
-                            mehr_stream: LookupRangeStream {
-                                next: HideDebug(next_rueckkopplung),
-                            },
-                        })
+                Kont::ReadyItem {
+                    key_value_pair,
+                    lookup_context: performer_sklave::LookupRangeStream {
+                        stream_echo,
+                        stream_token,
+                    },
+                    next,
+                } => {
+                    let streamzeug = stream_token.streamzeug_zeug(key_value_pair);
+                    stream_echo.commit_echo(streamzeug)
                         .map_err(Error::SendegeraetGone)?;
                     sklavenwelt.kont =
                         Some(Kont::AwaitItemNext { next, });
                     continue 'kont;
                 },
                 Kont::AwaitItemNext { next, } =>
-                    if let Some(OrderItemNext { lookup_context, }) = sklavenwelt.received_order_item_next.take() {
+                    if let Some(OrderItemNext {
+                        lookup_context,
+                    }) = sklavenwelt.received_order_item_next.take() {
                         let merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                         (merger_kont, lookup_context)
@@ -263,7 +267,12 @@ where E: EchoPolicy,
                         sklavenwelt.kont = Some(Kont::AwaitItemNext { next, });
                         continue 'outer;
                     },
-                Kont::AwaitItemValue { key, version, lookup_context, next, } =>
+                Kont::AwaitItemValue {
+                    key,
+                    version,
+                    lookup_context,
+                    next,
+                } =>
                     if let Some(value_bytes) = sklavenwelt.received_value_bytes.take() {
                         sklavenwelt.kont =
                             Some(Kont::ReadyItem {
@@ -287,7 +296,11 @@ where E: EchoPolicy,
             loop {
                 match merger_kont {
                     search_ranges_merge::Kont::RequireBlockAsync(
-                        search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                        search_ranges_merge::KontRequireBlockAsync {
+                            block_ref,
+                            async_token,
+                            next,
+                        },
                     ) => {
                         let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
                             .ok_or_else(|| Error::WheelNotFound {
@@ -298,9 +311,11 @@ where E: EchoPolicy,
                             .rueckkopplung(
                                 performer_sklave::WheelRouteReadBlock::LookupRangeMerge {
                                     route: performer_sklave::LookupRangeRoute {
-                                        meister_ref: sklavenwelt.meister_ref,
+                                        stream_id: sklavenwelt.stream_id.clone(),
                                     },
-                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
+                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                        async_token: HideDebug(async_token),
+                                    }),
                                 },
                             );
                         wheel_ref.meister
@@ -313,21 +328,32 @@ where E: EchoPolicy,
                         merger_kont = next.scheduled()
                             .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
+                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks {
+                        next,
+                    }) => {
                         sklavenwelt.kont =
                             Some(Kont::AwaitBlocks { lookup_context, next, });
                         break;
                     },
-                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
+                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished {
+                        next,
+                        ..
+                    }) => {
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated {
+                        next,
+                        ..
+                    }) => {
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                     },
                     search_ranges_merge::Kont::EmitItem(
-                        search_ranges_merge::KontEmitItem { item, next, },
+                        search_ranges_merge::KontEmitItem {
+                            item,
+                            next,
+                        },
                     ) => {
                         match item {
                             kv::KeyValuePair {
@@ -378,7 +404,7 @@ where E: EchoPolicy,
                                     .rueckkopplung(
                                         performer_sklave::WheelRouteReadBlock::LookupRangeMerge {
                                             route: performer_sklave::LookupRangeRoute {
-                                                meister_ref: sklavenwelt.meister_ref,
+                                                stream_id: sklavenwelt.stream_id.clone(),
                                             },
                                             target: ReadBlockTarget::LoadValue,
                                         },
@@ -397,8 +423,10 @@ where E: EchoPolicy,
                         break;
                     },
                     search_ranges_merge::Kont::Finished => {
-                        lookup_context
-                            .commit_stream(komm::Streamzeug::NichtMehr)
+                        let streamzeug = lookup_context
+                            .stream_token
+                            .streamzeug_nicht_mehr();
+                        lookup_context.stream_echo.commit_echo(streamzeug)
                             .map_err(Error::SendegeraetGone)?;
                         return Ok(());
                     },

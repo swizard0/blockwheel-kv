@@ -20,11 +20,13 @@ use crate::{
             OrderRequestInfo,
             OrderRequestInsert,
             OrderRequestLookupRange,
+            OrderRequestLookupRangeNext,
             OrderRequestRemove,
             OrderRequestFlush,
             InfoRoute,
             LookupRangeRoute,
             LookupRangeMergeDrop,
+            LookupRangeStream,
             FlushButcherDone,
             FlushButcherDrop,
             FlushButcherRoute,
@@ -165,8 +167,14 @@ where E: EchoPolicy,
                                             break next.incoming_info(echo),
                                         OrderRequest::Insert(OrderRequestInsert { key, value, echo, }) =>
                                             break next.incoming_insert(key, value, echo),
-                                        OrderRequest::LookupRange(OrderRequestLookupRange { search_range, stream, }) =>
-                                            break next.begin_lookup_range(search_range, stream),
+                                        OrderRequest::LookupRange(komm::StreamStarten {
+                                            inhalt: OrderRequestLookupRange {
+                                                search_range,
+                                                stream_echo,
+                                            },
+                                            stream_token,
+                                        }) =>
+                                            break next.begin_lookup_range(search_range, LookupRangeStream { stream_echo, stream_token, }),
                                         OrderRequest::Remove(OrderRequestRemove { key, echo, }) =>
                                             break next.incoming_remove(key, echo),
                                         OrderRequest::Flush(OrderRequestFlush { echo, }) => {
@@ -177,43 +185,49 @@ where E: EchoPolicy,
                                 Some(ActiveFlush::Kv | ActiveFlush::Wheels { .. }) =>
                                     sklavenwelt.env.delayed_orders.push(Order::Request(request)),
                             },
-                        Some(Order::LookupRangeStreamCancel(komm::UmschlagAbbrechen {
-                            stamp: LookupRangeRoute { meister_ref, },
+                        Some(Order::LookupRangeCancel(komm::StreamAbbrechen {
+                            stream_id,
                         })) => {
-                            log::debug!(" ;; lookup range merge sklave cancel initiated for: {meister_ref:?}");
+                            log::debug!(" ;; lookup range merge sklave cancel initiated for: {stream_id:?}");
                             let maybe_meister = sklavenwelt.env
                                 .lookup_range_merge_sklaven
-                                .get(meister_ref);
+                                .get(&stream_id);
                             match maybe_meister {
                                 Some(meister) =>
                                     if let Err(error) = meister.befehl(lookup_range_merge::Order::Terminate, thread_pool) {
                                         log::warn!("lookup range merge sklave terminate order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(&stream_id);
                                     },
                                 None =>
                                     log::debug!("lookup range merge sklave entry has already unregistered before cancel"),
                             }
                         },
-                        Some(Order::LookupRangeStreamNext(komm::Umschlag {
-                            inhalt: stream,
-                            stamp: LookupRangeRoute { meister_ref, },
+                        Some(Order::LookupRangeNext(komm::StreamMehr {
+                            inhalt: OrderRequestLookupRangeNext {
+                                stream_echo,
+                            },
+                            stream_token,
                         })) => {
+                            let stream_id = stream_token.stream_id().clone();
                             let maybe_meister = sklavenwelt.env
                                 .lookup_range_merge_sklaven
-                                .get(meister_ref);
+                                .get(&stream_id);
                             match maybe_meister {
                                 Some(meister) => {
                                     let send_result = meister.befehl(
                                         lookup_range_merge::Order::ItemNext(
                                             lookup_range_merge::OrderItemNext {
-                                                lookup_context: stream,
+                                                lookup_context: LookupRangeStream {
+                                                    stream_echo,
+                                                    stream_token,
+                                                },
                                             },
                                         ),
                                         thread_pool,
                                     );
                                     if let Err(error) = send_result {
                                         log::warn!("lookup range merge sklave item next order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(&stream_id);
                                     }
                                 },
                                 None =>
@@ -223,13 +237,13 @@ where E: EchoPolicy,
                         Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
                             stamp: LookupRangeMergeDrop {
                                 access_token,
-                                route: LookupRangeRoute { meister_ref, },
+                                route: LookupRangeRoute { stream_id, },
                             },
                         })) => {
-                            log::debug!(" ;; unregistering lookup range merge sklave: {meister_ref:?}");
+                            log::debug!(" ;; unregistering lookup range merge sklave: {stream_id:?}");
                             let maybe_removed = sklavenwelt.env
                                 .lookup_range_merge_sklaven
-                                .remove(meister_ref);
+                                .remove(&stream_id);
                             if maybe_removed.is_none() {
                                 log::debug!("lookup range merge sklave entry has already unregistered");
                             }
@@ -463,13 +477,13 @@ where E: EchoPolicy,
                         Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
                             inhalt: read_block_result,
                             stamp: WheelRouteReadBlock::LookupRangeMerge {
-                                route: LookupRangeRoute { meister_ref, },
+                                route: LookupRangeRoute { stream_id, },
                                 target,
                             },
                         }))) => {
                             let maybe_meister = sklavenwelt.env
                                 .lookup_range_merge_sklaven
-                                .get(meister_ref);
+                                .get(&stream_id);
                             match maybe_meister {
                                 Some(meister) => {
                                     let send_result = meister.befehl(
@@ -483,7 +497,7 @@ where E: EchoPolicy,
                                     );
                                     if let Err(error) = send_result {
                                         log::warn!("lookup range merge sklave read block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(meister_ref);
+                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(&stream_id);
                                     }
                                 },
                                 None =>
@@ -595,7 +609,11 @@ where E: EchoPolicy,
                     welt_state.kont = Kont::StepPoll { next, };
                     break;
                 },
-                performer::Kont::InfoReady(performer::KontInfoReady { info, info_context: echo, next, }) => {
+                performer::Kont::InfoReady(performer::KontInfoReady {
+                    info,
+                    info_context: echo,
+                    next,
+                }) => {
                     let info_ref = sklavenwelt.env
                         .pending_info_requests
                         .insert(PendingInfo { info, echo, wheels_left: 0, });
@@ -619,17 +637,28 @@ where E: EchoPolicy,
                     }
                     next.got_it()
                 },
-                performer::Kont::Inserted(performer::KontInserted { version, insert_context: echo, next, }) => {
+                performer::Kont::Inserted(performer::KontInserted {
+                    version,
+                    insert_context: echo,
+                    next,
+                }) => {
                     echo.commit_echo(Inserted { version, })
                         .map_err(Error::CommitInserted)?;
                     next.got_it()
                 },
-                performer::Kont::Removed(performer::KontRemoved { version, remove_context: echo, next, }) => {
+                performer::Kont::Removed(performer::KontRemoved {
+                    version,
+                    remove_context: echo,
+                    next,
+                }) => {
                     echo.commit_echo(Removed { version, })
                         .map_err(Error::CommitRemoved)?;
                     next.got_it()
                 },
-                performer::Kont::Flushed(performer::KontFlushed { flush_context: echo, next, }) => {
+                performer::Kont::Flushed(performer::KontFlushed {
+                    flush_context: echo,
+                    next,
+                }) => {
                     log::debug!("kv flush is done, performing flush for wheels");
                     let mut wheels_left = 0;
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
@@ -654,7 +683,11 @@ where E: EchoPolicy,
                     };
                     next.commit_flush()
                 },
-                performer::Kont::FlushButcher(performer::KontFlushButcher { search_tree_id, frozen_memcache, next, }) => {
+                performer::Kont::FlushButcher(performer::KontFlushButcher {
+                    search_tree_id,
+                    frozen_memcache,
+                    next,
+                }) => {
                     let flush_butcher_freie = arbeitssklave::Freie::new();
                     let flush_butcher_meister = flush_butcher_freie.meister();
                     let meister_ref = sklavenwelt.env
@@ -686,25 +719,33 @@ where E: EchoPolicy,
                         .map_err(Error::FlushButcherVersklaven)?;
                     next.scheduled()
                 },
-                performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady { ranges_merger, lookup_context, next, }) => {
+                performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady {
+                    ranges_merger,
+                    lookup_context,
+                    next, }) =>
+                {
+                    let stream_id = lookup_context
+                        .stream_token
+                        .stream_id()
+                        .clone();
                     let merger_freie = arbeitssklave::Freie::new();
                     let merger_meister = merger_freie.meister();
-                    let meister_ref = sklavenwelt.env
+                    sklavenwelt.env
                         .lookup_range_merge_sklaven
-                        .insert(merger_meister);
+                        .insert(stream_id.clone(), merger_meister);
                     merger_freie
                         .versklaven(
                             lookup_range_merge::Welt::new(
                                 ranges_merger.source,
                                 lookup_context,
-                                meister_ref,
+                                stream_id.clone(),
                                 sklavenwelt.env.sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env
                                     .sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
                                         access_token: ranges_merger.token,
-                                        route: LookupRangeRoute { meister_ref, },
+                                        route: LookupRangeRoute { stream_id, },
                                     }),
                             ),
                             thread_pool,
@@ -712,7 +753,10 @@ where E: EchoPolicy,
                         .map_err(Error::LookupRangeMergerVersklaven)?;
                     next.got_it()
                 },
-                performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees { ranges_merger, next, }) => {
+                performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees {
+                    ranges_merger,
+                    next,
+                }) => {
                     let merge_freie = arbeitssklave::Freie::new();
                     let merge_meister = merge_freie.meister();
                     let meister_ref = sklavenwelt.env
@@ -741,7 +785,10 @@ where E: EchoPolicy,
                         .map_err(Error::MergeSearchTreesVersklaven)?;
                     next.scheduled()
                 },
-                performer::Kont::DemolishSearchTree(performer::KontDemolishSearchTree { order, next, }) => {
+                performer::Kont::DemolishSearchTree(performer::KontDemolishSearchTree {
+                    order,
+                    next,
+                }) => {
                     let demolish_freie = arbeitssklave::Freie::new();
                     let demolish_meister = demolish_freie.meister();
                     let meister_ref = sklavenwelt.env

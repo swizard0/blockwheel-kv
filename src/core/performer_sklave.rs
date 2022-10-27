@@ -3,6 +3,9 @@ use std::{
     marker::{
         PhantomData,
     },
+    collections::{
+        HashMap,
+    },
 };
 
 use o1::{
@@ -50,8 +53,8 @@ pub mod running;
 
 pub enum Order<E> where E: EchoPolicy {
     Request(OrderRequest<E>),
-    LookupRangeStreamCancel(komm::UmschlagAbbrechen<LookupRangeRoute>),
-    LookupRangeStreamNext(komm::Umschlag<E::LookupRange, LookupRangeRoute>),
+    LookupRangeNext(komm::StreamMehr<OrderRequestLookupRangeNext<E>>),
+    LookupRangeCancel(komm::StreamAbbrechen),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
     MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
     DemolishSearchTreeDone(komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>),
@@ -65,7 +68,7 @@ pub enum Order<E> where E: EchoPolicy {
 pub enum OrderRequest<E> where E: EchoPolicy {
     Info(OrderRequestInfo<E>),
     Insert(OrderRequestInsert<E>),
-    LookupRange(OrderRequestLookupRange<E>),
+    LookupRange(komm::StreamStarten<OrderRequestLookupRange<E>>),
     Remove(OrderRequestRemove<E>),
     Flush(OrderRequestFlush<E>),
 }
@@ -112,7 +115,7 @@ pub struct Env<E> where E: EchoPolicy {
     incoming_orders: Vec<Order<E>>,
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
-    lookup_range_merge_sklaven: Set<running::lookup_range_merge::Meister<E>>,
+    lookup_range_merge_sklaven: HashMap<komm::StreamId, running::lookup_range_merge::Meister<E>>,
     flush_butcher_sklaven: Set<running::flush_butcher::Meister<E>>,
     merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<E>>,
     demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
@@ -137,7 +140,7 @@ impl<E> Env<E> where E: EchoPolicy {
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
-            lookup_range_merge_sklaven: Set::new(),
+            lookup_range_merge_sklaven: HashMap::new(),
             flush_butcher_sklaven: Set::new(),
             merge_search_trees_sklaven: Set::new(),
             demolish_search_tree_sklaven: Set::new(),
@@ -153,7 +156,7 @@ enum WeltState<E> where E: EchoPolicy {
 
 #[derive(Debug)]
 pub struct LookupRangeRoute {
-    meister_ref: Ref,
+    stream_id: komm::StreamId,
 }
 
 pub struct LookupRangeMergeDrop {
@@ -219,7 +222,11 @@ pub struct OrderRequestInsert<E> where E: EchoPolicy {
 
 pub struct OrderRequestLookupRange<E> where E: EchoPolicy {
     pub search_range: SearchRangeBounds,
-    pub stream: E::LookupRange,
+    pub stream_echo: E::LookupRange,
+}
+
+pub struct OrderRequestLookupRangeNext<E> where E: EchoPolicy {
+    pub stream_echo: E::LookupRange,
 }
 
 pub struct OrderRequestRemove<E> where E: EchoPolicy {
@@ -384,15 +391,21 @@ impl Pools {
     }
 }
 
-impl<E> From<komm::UmschlagAbbrechen<LookupRangeRoute>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::UmschlagAbbrechen<LookupRangeRoute>) -> Order<E> {
-        Order::LookupRangeStreamCancel(v)
+impl<E> From<komm::StreamStarten<OrderRequestLookupRange<E>>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamStarten<OrderRequestLookupRange<E>>) -> Order<E> {
+        Order::Request(OrderRequest::LookupRange(v))
     }
 }
 
-impl<E> From<komm::Umschlag<E::LookupRange, LookupRangeRoute>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::Umschlag<E::LookupRange, LookupRangeRoute>) -> Order<E> {
-        Order::LookupRangeStreamNext(v)
+impl<E> From<komm::StreamMehr<OrderRequestLookupRangeNext<E>>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamMehr<OrderRequestLookupRangeNext<E>>) -> Order<E> {
+        Order::LookupRangeNext(v)
+    }
+}
+
+impl<E> From<komm::StreamAbbrechen> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamAbbrechen) -> Order<E> {
+        Order::LookupRangeCancel(v)
     }
 }
 
@@ -526,10 +539,15 @@ impl<E> From<komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>> for
 
 pub struct Context<E>(PhantomData<E>);
 
+pub struct LookupRangeStream<E> {
+    pub stream_echo: E,
+    pub stream_token: komm::StreamToken,
+}
+
 impl<E> context::Context for Context<E> where E: EchoPolicy {
     type Info = E::Info;
     type Insert = E::Insert;
-    type Lookup = E::LookupRange;
+    type Lookup = LookupRangeStream<E::LookupRange>;
     type Remove = E::Remove;
     type Flush = E::Flush;
 }
