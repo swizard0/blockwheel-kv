@@ -688,6 +688,7 @@ fn stress_loop(
             return Err(Error::UnexpectedFtdOrder(format!("expecting info, but go {other_order:?}"))),
     };
 
+    assert!(data.streams.is_empty());
     log::info!("FINAL INFO: {info:#?}");
 
     use std::sync::atomic::Ordering;
