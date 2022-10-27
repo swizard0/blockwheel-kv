@@ -3,6 +3,7 @@ use std::{
     fmt,
     sync::{
         mpsc,
+        Mutex,
     },
     path::{
         PathBuf,
@@ -95,6 +96,7 @@ fn stress() {
         index: HashMap::new(),
         alive: HashMap::new(),
         data: Vec::new(),
+        streams: HashMap::new(),
     };
     let mut counter = Counter::default();
 
@@ -161,6 +163,7 @@ struct DataIndex {
     index: HashMap<kv::Key, usize>,
     alive: HashMap<kv::Key, usize>,
     data: Vec<kv::KeyValuePair<u64>>,
+    streams: HashMap<komm::StreamId, blockwheel_kv::LookupRangeStream<EchoPolicy>>,
 }
 
 #[derive(Debug)]
@@ -181,11 +184,11 @@ pub enum Error {
     },
     WheelsBuilder(wheels::BuilderError),
     FtdProcessIsLost,
-    RequestInfo(arbeitssklave::Error),
-    RequestFlush(arbeitssklave::Error),
-    RequestInsert(arbeitssklave::Error),
-    RequestRemove(arbeitssklave::Error),
-    RequestLookupRange(arbeitssklave::Error),
+    RequestInfo(blockwheel_kv::Error),
+    RequestFlush(blockwheel_kv::Error),
+    RequestInsert(blockwheel_kv::Error),
+    RequestRemove(blockwheel_kv::Error),
+    RequestLookupRange(blockwheel_kv::Error),
     InsertJobCanceled,
 }
 
@@ -230,15 +233,13 @@ impl blockwheel_kv::EchoPolicy for EchoPolicy {
     type Flush = komm::Rueckkopplung<ReplyOrder, ReplyFlush>;
 }
 
-type Streamzeug = komm::Streamzeug<kv::KeyValuePair<kv::Value>, blockwheel_kv::LookupRangeStream<EchoPolicy>>;
-
 enum ReplyOrder {
     InfoCancel(komm::UmschlagAbbrechen<ReplyInfo>),
     Info(komm::Umschlag<blockwheel_kv::Info, ReplyInfo>),
     InsertCancel(komm::UmschlagAbbrechen<ReplyInsert>),
     Insert(komm::Umschlag<blockwheel_kv::Inserted, ReplyInsert>),
     LookupRangeCancel(komm::UmschlagAbbrechen<ReplyLookupRange>),
-    LookupRange(komm::Umschlag<Streamzeug, ReplyLookupRange>),
+    LookupRange(komm::Umschlag<komm::Streamzeug<kv::KeyValuePair<kv::Value>>, ReplyLookupRange>),
     RemoveCancel(komm::UmschlagAbbrechen<ReplyRemove>),
     Remove(komm::Umschlag<blockwheel_kv::Removed, ReplyRemove>),
     FlushCancel(komm::UmschlagAbbrechen<ReplyFlush>),
@@ -315,8 +316,8 @@ impl From<komm::UmschlagAbbrechen<ReplyLookupRange>> for ReplyOrder {
     }
 }
 
-impl From<komm::Umschlag<Streamzeug, ReplyLookupRange>> for ReplyOrder {
-    fn from(v: komm::Umschlag<Streamzeug, ReplyLookupRange>) -> ReplyOrder {
+impl From<komm::Umschlag<komm::Streamzeug<kv::KeyValuePair<kv::Value>>, ReplyLookupRange>> for ReplyOrder {
+    fn from(v: komm::Umschlag<komm::Streamzeug<kv::KeyValuePair<kv::Value>>, ReplyLookupRange>) -> ReplyOrder {
         ReplyOrder::LookupRange(v)
     }
 }
@@ -358,7 +359,7 @@ impl From<komm::Umschlag<Result<(), Error>, InsertJob>> for ReplyOrder {
 }
 
 struct Welt {
-    ftd_tx: mpsc::Sender<ReplyOrder>,
+    ftd_tx: Mutex<mpsc::Sender<ReplyOrder>>,
 }
 
 enum Job {
@@ -407,11 +408,12 @@ impl edeltraud::Job for Job {
                             loop {
                                 match befehle.befehl() {
                                     arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
-                                        if let Err(_send_error) = mehr_befehle.sklavenwelt().ftd_tx.send(befehl) {
+                                        befehle = mehr_befehle;
+                                        let tx_lock = befehle.sklavenwelt().ftd_tx.lock().unwrap();
+                                        if let Err(_send_error) = tx_lock.send(befehl) {
                                             log::warn!("frontend tx lost, terminatong FtdSklave job");
                                             return;
                                         }
-                                        befehle = mehr_befehle;
                                     },
                                     arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
                                         sklave_job = next_sklave_job;
@@ -520,7 +522,7 @@ fn stress_loop(
     let ftd_sendegeraet = komm::Sendegeraet::starten(&ftd_sklave_freie, thread_pool.clone())
         .unwrap();
     let _ftd_sklave_meister = ftd_sklave_freie
-        .versklaven(Welt { ftd_tx, }, &thread_pool)
+        .versklaven(Welt { ftd_tx: Mutex::new(ftd_tx), }, &thread_pool)
         .unwrap();
 
     let mut rng = SmallRng::from_entropy();
@@ -655,10 +657,12 @@ fn stress_loop(
             let key = key.clone();
             let value_cell = value_cell.clone();
 
-            let rueckkopplung = ftd_sendegeraet.rueckkopplung(ReplyLookupRange { key: key.clone(), value_cell: value_cell.clone(), });
-            meister
+            let rueckkopplung =
+                ftd_sendegeraet.rueckkopplung(ReplyLookupRange { key: key.clone(), value_cell: value_cell.clone(), });
+            let stream = meister
                 .lookup_range(key.clone() ..= key.clone(), rueckkopplung, &edeltraud::ThreadPoolMap::new(&thread_pool))
                 .map_err(Error::RequestLookupRange)?;
+            data.streams.insert(stream.stream_id().clone(), stream);
             active_tasks_counter.lookups_range += 1;
         }
         actions_counter += 1;
@@ -769,15 +773,20 @@ where P: edeltraud::ThreadPool<Job>,
         ReplyOrder::LookupRange(komm::Umschlag {
             inhalt: komm::Streamzeug::Zeug {
                 zeug: kv::KeyValuePair { value_cell: found_value_cell, .. },
-                ..
+                mehr,
             },
             stamp: ReplyLookupRange {
                 key,
                 value_cell: kv::ValueCell { version: version_snapshot, .. },
             },
         }) => {
+            let stream_id = mehr.stream_id();
+            let maybe_stream = data.streams.remove(stream_id);
+            assert!(maybe_stream.is_some());
+
             let &offset = data.index.get(&key).unwrap();
-            let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } = data.data[offset];
+            let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } =
+                data.data[offset];
             let kv::ValueCell { version: version_found, cell: ref cell_found, } = found_value_cell;
             if version_found == version_current {
                 let is_equal = match (&cell_found, &cell_current) {
@@ -816,7 +825,7 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            inhalt: komm::Streamzeug::NichtMehr,
+            inhalt: komm::Streamzeug::NichtMehr(..),
             stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: _version_snapshot, .. }, },
         }) => {
             let &offset = data.index.get(&key).unwrap();

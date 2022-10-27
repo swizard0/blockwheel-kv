@@ -171,11 +171,16 @@ pub struct WheelInfo {
     pub info: blockwheel_fs::Info,
 }
 
+#[must_use = "stream is automatically cancelled after drop"]
 pub struct LookupRangeStream<E> where E: EchoPolicy {
     stream: komm::Stream<core::performer_sklave::Order<E>>,
 }
 
 impl<E> LookupRangeStream<E> where E: EchoPolicy {
+    pub fn stream_id(&self) -> &komm::StreamId {
+        self.stream.stream_id()
+    }
+
     pub fn next(&self, stream_echo: E::LookupRange, stream_token: komm::StreamToken) -> Result<(), Error> {
         self.stream
             .mehr(
