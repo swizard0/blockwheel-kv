@@ -826,9 +826,13 @@ where P: edeltraud::ThreadPool<Job>,
             Ok(())
         },
         ReplyOrder::LookupRange(komm::Umschlag {
-            inhalt: komm::Streamzeug::NichtMehr(..),
+            inhalt: komm::Streamzeug::NichtMehr(mehr),
             stamp: ReplyLookupRange { key, value_cell: kv::ValueCell { version: _version_snapshot, .. }, },
         }) => {
+            let stream_id = mehr.stream_id();
+            let maybe_stream = data.streams.remove(stream_id);
+            assert!(maybe_stream.is_some());
+
             let &offset = data.index.get(&key).unwrap();
             let kv::KeyValuePair { value_cell: kv::ValueCell { version: _version_current, cell: ref cell_current, }, .. } =
                 data.data[offset];

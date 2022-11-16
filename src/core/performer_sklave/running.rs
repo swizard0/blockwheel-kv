@@ -188,7 +188,6 @@ where E: EchoPolicy,
                         Some(Order::LookupRangeCancel(komm::StreamAbbrechen {
                             stream_id,
                         })) => {
-                            log::debug!(" ;; lookup range merge sklave cancel initiated for: {stream_id:?}");
                             let maybe_meister = sklavenwelt.env
                                 .lookup_range_merge_sklaven
                                 .get(&stream_id);
@@ -240,7 +239,6 @@ where E: EchoPolicy,
                                 route: LookupRangeRoute { stream_id, },
                             },
                         })) => {
-                            log::debug!(" ;; unregistering lookup range merge sklave: {stream_id:?}");
                             let maybe_removed = sklavenwelt.env
                                 .lookup_range_merge_sklaven
                                 .remove(&stream_id);
@@ -255,7 +253,6 @@ where E: EchoPolicy,
                                 ..
                             },
                         })) => {
-                            log::debug!(" ;; unregistering flush butcher sklave: {meister_ref:?}");
                             let maybe_removed = sklavenwelt.env
                                 .flush_butcher_sklaven
                                 .remove(meister_ref);
@@ -270,7 +267,6 @@ where E: EchoPolicy,
                                 ..
                             },
                         })) => {
-                            log::debug!(" ;; unregistering merge search trees sklave: {meister_ref:?}");
                             let maybe_removed = sklavenwelt.env
                                 .merge_search_trees_sklaven
                                 .remove(meister_ref);
@@ -285,7 +281,6 @@ where E: EchoPolicy,
                                 ..
                             },
                         })) => {
-                            log::debug!(" ;; unregistering demolish search tree sklave: {meister_ref:?}");
                             let maybe_removed = sklavenwelt.env
                                 .demolish_search_tree_sklaven
                                 .remove(meister_ref);
@@ -301,7 +296,6 @@ where E: EchoPolicy,
                                 route: FlushButcherRoute { meister_ref, },
                             },
                         })) => {
-                            log::debug!(" ;; flush butcher process {meister_ref:?} done, root block = {root_block:?}");
                             let maybe_removed = sklavenwelt.env
                                 .flush_butcher_sklaven
                                 .remove(meister_ref);
@@ -320,11 +314,6 @@ where E: EchoPolicy,
                                 route: MergeSearchTreesRoute { meister_ref, },
                             },
                         })) => {
-                            log::debug!(
-                                " ;; merge search trees process {meister_ref:?} done, tree ref: {:?}, items_count: {:?}",
-                                merged_search_tree_ref,
-                                merged_search_tree_items_count,
-                            );
                             let maybe_removed = sklavenwelt.env
                                 .merge_search_trees_sklaven
                                 .remove(meister_ref);
@@ -344,7 +333,6 @@ where E: EchoPolicy,
                                 route: DemolishSearchTreeRoute { meister_ref, },
                             },
                         })) => {
-                            log::debug!(" ;; demolish search tree process {meister_ref:?} done");
                             let maybe_removed = sklavenwelt.env
                                 .demolish_search_tree_sklaven
                                 .remove(meister_ref);
