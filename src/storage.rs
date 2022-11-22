@@ -4,19 +4,18 @@ use std::{
     },
 };
 
-use serde::{
-    Serialize,
-    Deserialize,
-};
-
-use bincode::{
-    Options,
-};
-
 use alloc_pool::{
     bytes::{
         Bytes,
+        BytesMut,
     },
+};
+
+use alloc_pool_pack::{
+    integer,
+    Source,
+    ReadFromSource,
+    WriteToBytesMut,
 };
 
 use blockwheel_fs::{
@@ -31,21 +30,131 @@ use crate::{
     },
 };
 
-pub const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
+// NodeType
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct BlockHeader {
-    pub node_type: NodeType,
-    pub entries_count: usize,
-}
+const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
 
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum NodeType {
     Root { tree_entries_count: usize, },
     Leaf,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+const TAG_NODE_TYPE_ROOT: u8 = 1;
+const TAG_NODE_TYPE_LEAF: u8 = 2;
+
+impl WriteToBytesMut for NodeType {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        match self {
+            NodeType::Root { tree_entries_count, } => {
+                TAG_NODE_TYPE_ROOT.write_to_bytes_mut(bytes_mut);
+                let value = tree_entries_count as u64;
+                value.write_to_bytes_mut(bytes_mut);
+            },
+            NodeType::Leaf =>
+                TAG_NODE_TYPE_LEAF.write_to_bytes_mut(bytes_mut),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadNodeTypeError {
+    Tag(integer::ReadIntegerError),
+    InvalidTag(u8),
+    TreeEntriesCount(integer::ReadIntegerError),
+}
+
+impl ReadFromSource for NodeType {
+    type Error = ReadNodeTypeError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let tag = u8::read_from_source(source)
+            .map_err(Self::Error::Tag)?;
+        match tag {
+            TAG_NODE_TYPE_ROOT => {
+                let value = u64::read_from_source(source)
+                    .map_err(Self::Error::TreeEntriesCount)?;
+                Ok(NodeType::Root { tree_entries_count: value as usize, })
+            },
+            TAG_NODE_TYPE_LEAF =>
+                Ok(NodeType::Leaf),
+        }
+    }
+}
+
+// BlockHeader
+
+#[derive(Clone, Debug)]
+pub struct BlockHeader {
+    pub node_type: NodeType,
+    pub entries_count: usize,
+}
+
+impl WriteToBytesMut for BlockHeader {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.node_type.write_to_bytes_mut(bytes_mut);
+        (self.entries_count as u32).write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadBlockHeaderError {
+    NodeType(ReadNodeTypeError),
+    EntriesCount(integer::ReadIntegerError),
+}
+
+impl ReadFromSource for BlockHeader {
+    type Error = ReadBlockHeaderError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let node_type = NodeType::read_from_source(source)
+            .map_err(ReadBlockHeaderError::NodeType)?;
+        let entries_count = u32::read_from_source(source)
+            .map_err(ReadBlockHeaderError::EntriesCount)?
+            .into();
+        Ok(BlockHeader { node_type, entries_count, })
+    }
+}
+
+// LocalRef
+
+#[derive(Clone, Debug)]
+pub struct LocalRef {
+    pub block_id: block::Id,
+}
+
+impl WriteToBytesMut for LocalRef {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.block_id.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadLocalRefError {
+    BlockId(block::ReadIdError),
+}
+
+impl ReadFromSource for LocalRef {
+    type Error = ReadLocalRefError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let block_id = block::Id::read_from_source(source)
+            .map_err(ReadLocalRefError::BlockId)?;
+        Ok(LocalRef { block_id, })
+    }
+}
+
+// ExternalRef
+
+#[derive(Clone, Debug)]
+pub struct ExternalRef<'a> {
+    pub filename: &'a [u8],
+    pub block_id: block::Id,
+}
+
+
+
+#[derive(Clone, Debug)]
 pub struct Entry<'a> {
     #[serde(borrow)]
     pub jump_ref: JumpRef<'a>,
@@ -54,21 +163,21 @@ pub struct Entry<'a> {
     pub value_cell: ValueCell<'a>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct ValueCell<'a> {
     pub version: u64,
     #[serde(borrow)]
     pub cell: Cell<'a>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub enum Cell<'a> {
     #[serde(borrow)]
     Value(ValueRef<'a>),
     Tombstone,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub enum JumpRef<'a> {
     None,
     Local(LocalRef),
@@ -76,23 +185,11 @@ pub enum JumpRef<'a> {
     External(ExternalRef<'a>),
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub enum ValueRef<'a> {
     Inline(&'a [u8]),
     Local(LocalRef),
-    #[serde(borrow)]
     External(ExternalRef<'a>),
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct LocalRef {
-    pub block_id: block::Id,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ExternalRef<'a> {
-    pub filename: &'a [u8],
-    pub block_id: block::Id,
 }
 
 impl<'a> JumpRef<'a> {

@@ -24,8 +24,15 @@ use rand::{
 use alloc_pool::{
     bytes::{
         Bytes,
+        BytesMut,
         BytesPool,
     },
+};
+
+use alloc_pool_pack::{
+    Source,
+    ReadFromSource,
+    WriteToBytesMut,
 };
 
 use arbeitssklave::{
@@ -39,9 +46,32 @@ use crate::{
     EchoPolicy,
 };
 
+// WheelFilename
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WheelFilename {
     filename_bytes: Bytes,
+}
+
+impl WriteToBytesMut for WheelFilename {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.filename_bytes.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadWheelFilenameError {
+    FilenameBytes(alloc_pool_pack::bytes::ReadBytesError),
+}
+
+impl ReadFromSource for WheelFilename {
+    type Error = ReadWheelFilenameError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let filename_bytes = Bytes::read_from_source(source)
+            .map_err(ReadWheelFilenameError::FilenameBytes)?;
+        Ok(WheelFilename { filename_bytes, })
+    }
 }
 
 impl From<Bytes> for WheelFilename {
@@ -90,6 +120,8 @@ impl AsRef<[u8]> for WheelFilename {
     }
 }
 
+// WheelRef
+
 pub struct WheelRef<E> where E: EchoPolicy {
     pub blockwheel_filename: WheelFilename,
     pub meister: WheelMeister<E>,
@@ -104,11 +136,40 @@ impl<E> Clone for WheelRef<E> where E: EchoPolicy {
     }
 }
 
+// BlockRef
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BlockRef {
     pub blockwheel_filename: WheelFilename,
     pub block_id: blockwheel_fs::block::Id,
 }
+
+impl WriteToBytesMut for BlockRef {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.blockwheel_filename.write_to_bytes_mut(bytes_mut);
+        self.block_id.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadBlockRefError {
+    BlockwheelFilename(ReadWheelFilenameError),
+    BlockId(blockwheel_fs::block::ReadIdError),
+}
+
+impl ReadFromSource for BlockRef {
+    type Error = ReadBlockRefError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let blockwheel_filename = Bytes::read_from_source(source)
+            .map_err(ReadBlockRefError::BlockwheelFilename)?;
+        let block_id = Bytes::read_from_source(source)
+            .map_err(ReadBlockRefError::BlockId)?;
+        Ok(BlockRef { blockwheel_filename, block_id, })
+    }
+}
+
+// Wheels
 
 pub struct Wheels<E> where E: EchoPolicy {
     inner: Arc<Inner<E>>,
@@ -119,6 +180,8 @@ impl<E> Clone for Wheels<E> where E: EchoPolicy {
         Wheels { inner: self.inner.clone(), }
     }
 }
+
+// WheelEchoPolicy
 
 pub struct WheelEchoPolicy<E>(PhantomData<E>);
 
@@ -132,12 +195,18 @@ impl<E> blockwheel_fs::EchoPolicy for WheelEchoPolicy<E> where E: EchoPolicy {
     type IterBlocksNext = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksNext>;
 }
 
+// WheelMeister
+
 pub type WheelMeister<E> = blockwheel_fs::Meister<WheelEchoPolicy<E>>;
+
+// Inner
 
 struct Inner<E> where E: EchoPolicy {
     wheels: Vec<WheelRef<E>>,
     index: HashMap<WheelFilename, usize>,
 }
+
+// WheelsBuilder
 
 pub struct WheelsBuilder<E> where E: EchoPolicy {
     inner: Inner<E>,
