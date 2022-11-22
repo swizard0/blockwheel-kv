@@ -1,9 +1,3 @@
-use std::{
-    marker::{
-        PhantomData,
-    },
-};
-
 use alloc_pool::{
     bytes::{
         Bytes,
@@ -14,6 +8,7 @@ use alloc_pool::{
 use alloc_pool_pack::{
     integer,
     Source,
+    SourceBytes,
     ReadFromSource,
     WriteToBytesMut,
 };
@@ -23,16 +18,14 @@ use blockwheel_fs::{
 };
 
 use crate::{
-    kv,
     wheels::{
         BlockRef,
         WheelFilename,
+        ReadBlockRefError,
     },
 };
 
 // NodeType
-
-const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
 
 #[derive(Clone, Copy, Debug)]
 pub enum NodeType {
@@ -46,7 +39,7 @@ const TAG_NODE_TYPE_LEAF: u8 = 2;
 impl WriteToBytesMut for NodeType {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
         match self {
-            NodeType::Root { tree_entries_count, } => {
+            &NodeType::Root { tree_entries_count, } => {
                 TAG_NODE_TYPE_ROOT.write_to_bytes_mut(bytes_mut);
                 let value = tree_entries_count as u64;
                 value.write_to_bytes_mut(bytes_mut);
@@ -84,6 +77,8 @@ impl ReadFromSource for NodeType {
 
 // BlockHeader
 
+const BLOCK_MAGIC: u64 = 0xbde78ba3966ca503;
+
 #[derive(Clone, Debug)]
 pub struct BlockHeader {
     pub node_type: NodeType,
@@ -92,6 +87,7 @@ pub struct BlockHeader {
 
 impl WriteToBytesMut for BlockHeader {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        BLOCK_MAGIC.write_to_bytes_mut(bytes_mut);
         self.node_type.write_to_bytes_mut(bytes_mut);
         (self.entries_count as u32).write_to_bytes_mut(bytes_mut);
     }
@@ -99,19 +95,31 @@ impl WriteToBytesMut for BlockHeader {
 
 #[derive(Debug)]
 pub enum ReadBlockHeaderError {
+    Magic(integer::ReadIntegerError),
+    InvalidMagic { expected: u64, provided: u64, },
     NodeType(ReadNodeTypeError),
     EntriesCount(integer::ReadIntegerError),
+    EntriesCountInto(std::num::TryFromIntError),
 }
 
 impl ReadFromSource for BlockHeader {
     type Error = ReadBlockHeaderError;
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let magic = u64::read_from_source(source)
+            .map_err(Self::Error::Magic)?;
+        if magic != BLOCK_MAGIC {
+            return Err(Self::Error::InvalidMagic {
+                expected: BLOCK_MAGIC,
+                provided: magic,
+            });
+        }
         let node_type = NodeType::read_from_source(source)
-            .map_err(ReadBlockHeaderError::NodeType)?;
+            .map_err(Self::Error::NodeType)?;
         let entries_count = u32::read_from_source(source)
-            .map_err(ReadBlockHeaderError::EntriesCount)?
-            .into();
+            .map_err(Self::Error::EntriesCount)?
+            .try_into()
+            .map_err(Self::Error::EntriesCountInto)?;
         Ok(BlockHeader { node_type, entries_count, })
     }
 }
@@ -139,61 +147,74 @@ impl ReadFromSource for LocalRef {
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
         let block_id = block::Id::read_from_source(source)
-            .map_err(ReadLocalRefError::BlockId)?;
+            .map_err(Self::Error::BlockId)?;
         Ok(LocalRef { block_id, })
     }
 }
 
-// ExternalRef
+// JumpRef
 
 #[derive(Clone, Debug)]
-pub struct ExternalRef<'a> {
-    pub filename: &'a [u8],
-    pub block_id: block::Id,
-}
-
-
-
-#[derive(Clone, Debug)]
-pub struct Entry<'a> {
-    #[serde(borrow)]
-    pub jump_ref: JumpRef<'a>,
-    pub key: &'a [u8],
-    #[serde(borrow)]
-    pub value_cell: ValueCell<'a>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ValueCell<'a> {
-    pub version: u64,
-    #[serde(borrow)]
-    pub cell: Cell<'a>,
-}
-
-#[derive(Clone, Debug)]
-pub enum Cell<'a> {
-    #[serde(borrow)]
-    Value(ValueRef<'a>),
-    Tombstone,
-}
-
-#[derive(Clone, Debug)]
-pub enum JumpRef<'a> {
+pub enum JumpRef {
     None,
     Local(LocalRef),
-    #[serde(borrow)]
-    External(ExternalRef<'a>),
+    External(BlockRef),
 }
 
-#[derive(Clone, Debug)]
-pub enum ValueRef<'a> {
-    Inline(&'a [u8]),
-    Local(LocalRef),
-    External(ExternalRef<'a>),
+const TAG_JUMP_REF_NONE: u8 = 1;
+const TAG_JUMP_REF_LOCAL: u8 = 2;
+const TAG_JUMP_REF_EXTERNAL: u8 = 2;
+
+impl WriteToBytesMut for JumpRef {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        match self {
+            JumpRef::None =>
+                TAG_JUMP_REF_NONE.write_to_bytes_mut(bytes_mut),
+            JumpRef::Local(local_ref) => {
+                TAG_JUMP_REF_LOCAL.write_to_bytes_mut(bytes_mut);
+                local_ref.write_to_bytes_mut(bytes_mut);
+            },
+            JumpRef::External(block_ref) => {
+                TAG_JUMP_REF_EXTERNAL.write_to_bytes_mut(bytes_mut);
+                block_ref.write_to_bytes_mut(bytes_mut);
+            },
+        }
+    }
 }
 
-impl<'a> JumpRef<'a> {
-    pub fn from_maybe_block_ref(maybe_block_ref: &'a Option<BlockRef>, current_blockwheel_filename: &WheelFilename) -> JumpRef<'a> {
+#[derive(Debug)]
+pub enum ReadJumpRefError {
+    Tag(integer::ReadIntegerError),
+    InvalidTag(u8),
+    Local(ReadLocalRefError),
+    External(ReadBlockRefError),
+}
+
+impl ReadFromSource for JumpRef {
+    type Error = ReadJumpRefError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let tag = u8::read_from_source(source)
+            .map_err(Self::Error::Tag)?;
+        match tag {
+            TAG_JUMP_REF_NONE =>
+                Ok(JumpRef::None),
+            TAG_JUMP_REF_LOCAL => {
+                let local_ref = LocalRef::read_from_source(source)
+                    .map_err(Self::Error::Local)?;
+                Ok(JumpRef::Local(local_ref))
+            },
+            TAG_JUMP_REF_EXTERNAL => {
+                let block_ref = BlockRef::read_from_source(source)
+                    .map_err(Self::Error::External)?;
+                Ok(JumpRef::External(block_ref))
+            },
+        }
+    }
+}
+
+impl JumpRef {
+    pub fn from_maybe_block_ref(maybe_block_ref: &Option<BlockRef>, current_blockwheel_filename: &WheelFilename) -> JumpRef {
         match maybe_block_ref {
             None =>
                 JumpRef::None,
@@ -202,389 +223,317 @@ impl<'a> JumpRef<'a> {
                     block_id: block_ref.block_id.clone(),
                 }),
             Some(block_ref) =>
-                JumpRef::External(ExternalRef {
-                    filename: &block_ref.blockwheel_filename,
-                    block_id: block_ref.block_id.clone(),
-                }),
+                JumpRef::External(block_ref.clone()),
         }
     }
 }
 
-impl<'a> From<&'a kv::ValueCell<kv::Value>> for ValueCell<'a> {
-    fn from(value_cell: &'a kv::ValueCell<kv::Value>) -> ValueCell<'a> {
-        ValueCell {
-            version: value_cell.version,
-            cell: match value_cell.cell {
-                kv::Cell::Tombstone =>
-                    Cell::Tombstone,
-                kv::Cell::Value(kv::Value { ref value_bytes, }) =>
-                    Cell::Value(ValueRef::Inline(value_bytes)),
+// ValueRef
+
+#[derive(Clone, Debug)]
+pub enum ValueRef {
+    Inline(Bytes),
+    Local(LocalRef),
+    External(BlockRef),
+}
+
+const TAG_VALUE_REF_INLINE: u8 = 1;
+const TAG_VALUE_REF_LOCAL: u8 = 2;
+const TAG_VALUE_REF_EXTERNAL: u8 = 2;
+
+impl WriteToBytesMut for ValueRef {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        match self {
+            ValueRef::Inline(bytes) => {
+                TAG_VALUE_REF_INLINE.write_to_bytes_mut(bytes_mut);
+                bytes.write_to_bytes_mut(bytes_mut);
+            },
+            ValueRef::Local(local_ref) => {
+                TAG_VALUE_REF_LOCAL.write_to_bytes_mut(bytes_mut);
+                local_ref.write_to_bytes_mut(bytes_mut);
+            },
+            ValueRef::External(block_ref) => {
+                TAG_VALUE_REF_EXTERNAL.write_to_bytes_mut(bytes_mut);
+                block_ref.write_to_bytes_mut(bytes_mut);
             },
         }
     }
 }
 
 #[derive(Debug)]
-pub enum Error {
-    BlockMagicSerialize(bincode::Error),
-    BlockHeaderSerialize(bincode::Error),
-    EntrySerialize(bincode::Error),
-    ValueBlockSerialize(bincode::Error),
-    BlockMagicDeserialize(bincode::Error),
-    InvalidBlockMagic { expected: u64, provided: u64, },
-    BlockHeaderDeserialize(bincode::Error),
-    EntryDeserialize(bincode::Error),
-    ValueBlockDeserialize(bincode::Error),
+pub enum ReadValueRefError {
+    Tag(integer::ReadIntegerError),
+    InvalidTag(u8),
+    Inline(alloc_pool_pack::bytes::ReadBytesError),
+    Local(ReadLocalRefError),
+    External(ReadBlockRefError),
 }
 
-pub struct BlockSerializer<B> {
-    block_bytes: B,
+impl ReadFromSource for ValueRef {
+    type Error = ReadValueRefError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let tag = u8::read_from_source(source)
+            .map_err(Self::Error::Tag)?;
+        match tag {
+            TAG_VALUE_REF_INLINE => {
+                let bytes = Bytes::read_from_source(source)
+                    .map_err(Self::Error::Inline)?;
+                Ok(ValueRef::Inline(bytes))
+            },
+            TAG_VALUE_REF_LOCAL => {
+                let local_ref = LocalRef::read_from_source(source)
+                    .map_err(Self::Error::Local)?;
+                Ok(ValueRef::Local(local_ref))
+            },
+            TAG_VALUE_REF_EXTERNAL => {
+                let block_ref = BlockRef::read_from_source(source)
+                    .map_err(Self::Error::External)?;
+                Ok(ValueRef::External(block_ref))
+            },
+        }
+    }
+}
+
+// Cell
+
+#[derive(Clone, Debug)]
+pub enum Cell {
+    Value(ValueRef),
+    Tombstone,
+}
+
+const TAG_CELL_VALUE: u8 = 1;
+const TAG_CELL_TOMBSTONE: u8 = 2;
+
+impl WriteToBytesMut for Cell {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        match self {
+            Cell::Value(value_ref) => {
+                TAG_CELL_VALUE.write_to_bytes_mut(bytes_mut);
+                value_ref.write_to_bytes_mut(bytes_mut);
+            },
+            Cell::Tombstone =>
+                TAG_CELL_TOMBSTONE.write_to_bytes_mut(bytes_mut),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadCellError {
+    Tag(integer::ReadIntegerError),
+    InvalidTag(u8),
+    Value(ReadValueRefError),
+}
+
+impl ReadFromSource for Cell {
+    type Error = ReadCellError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let tag = u8::read_from_source(source)
+            .map_err(Self::Error::Tag)?;
+        match tag {
+            TAG_CELL_VALUE => {
+                let value_ref = ValueRef::read_from_source(source)
+                    .map_err(Self::Error::Value)?;
+                Ok(Cell::Value(value_ref))
+            },
+            TAG_CELL_TOMBSTONE =>
+                Ok(Cell::Tombstone),
+        }
+    }
+}
+
+// ValueCell
+
+#[derive(Clone, Debug)]
+pub struct ValueCell {
+    pub version: u64,
+    pub cell: Cell,
+}
+
+impl WriteToBytesMut for ValueCell {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.version.write_to_bytes_mut(bytes_mut);
+        self.cell.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadValueCellError {
+    Version(integer::ReadIntegerError),
+    Cell(ReadCellError),
+}
+
+impl ReadFromSource for ValueCell {
+    type Error = ReadValueCellError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let version = u64::read_from_source(source)
+            .map_err(Self::Error::Version)?;
+        let cell = Cell::read_from_source(source)
+            .map_err(Self::Error::Cell)?;
+        Ok(ValueCell { version, cell, })
+    }
+}
+
+// Entry
+
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub jump_ref: JumpRef,
+    pub key: Bytes,
+    pub value_cell: ValueCell,
+}
+
+impl WriteToBytesMut for Entry {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        self.jump_ref.write_to_bytes_mut(bytes_mut);
+        self.key.write_to_bytes_mut(bytes_mut);
+        self.value_cell.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadEntryError {
+    JumpRef(ReadJumpRefError),
+    Key(alloc_pool_pack::bytes::ReadBytesError),
+    ValueCell(ReadValueCellError),
+}
+
+impl ReadFromSource for Entry {
+    type Error = ReadEntryError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let jump_ref = JumpRef::read_from_source(source)
+            .map_err(Self::Error::JumpRef)?;
+        let key = Bytes::read_from_source(source)
+            .map_err(Self::Error::Key)?;
+        let value_cell = ValueCell::read_from_source(source)
+            .map_err(Self::Error::ValueCell)?;
+        Ok(Entry { jump_ref, key, value_cell, })
+    }
+}
+
+// ValueBlock
+
+const VALUE_BLOCK_MAGIC: u64 = 0x5df58182f2741b7a;
+
+#[derive(Clone, Debug)]
+struct ValueBlock {
+    value_block: Bytes,
+}
+
+impl WriteToBytesMut for ValueBlock {
+    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+        VALUE_BLOCK_MAGIC.write_to_bytes_mut(bytes_mut);
+        self.value_block.write_to_bytes_mut(bytes_mut);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadValueBlockError {
+    Magic(integer::ReadIntegerError),
+    InvalidMagic { expected: u64, provided: u64, },
+    ValueBlock(alloc_pool_pack::bytes::ReadBytesError),
+}
+
+impl ReadFromSource for ValueBlock {
+    type Error = ReadValueBlockError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let magic = u64::read_from_source(source)
+            .map_err(Self::Error::Magic)?;
+        if magic != VALUE_BLOCK_MAGIC {
+            return Err(Self::Error::InvalidMagic {
+                expected: VALUE_BLOCK_MAGIC,
+                provided: magic,
+            });
+        }
+        let value_block = Bytes::read_from_source(source)
+            .map_err(Self::Error::ValueBlock)?;
+        Ok(ValueBlock { value_block, })
+    }
+}
+
+// BlockSerializer
+
+pub struct BlockSerializer {
+    block_bytes: BytesMut,
     entries_left: usize,
 }
 
-impl<B> BlockSerializer<B> where B: AsMut<Vec<u8>> {
-    pub fn start(node_type: NodeType, entries_count: usize, mut block_bytes: B) -> Result<BlockSerializerContinue<B>, Error> {
-        block_bytes.as_mut().clear();
-        bincode_options()
-            .serialize_into(block_bytes.as_mut(), &BLOCK_MAGIC)
-            .map_err(Error::BlockMagicSerialize)?;
-        bincode_options()
-            .serialize_into(block_bytes.as_mut(), &BlockHeader { node_type, entries_count, })
-            .map_err(Error::BlockHeaderSerialize)?;
-        Ok(if entries_count == 0 {
+impl BlockSerializer {
+    pub fn start(node_type: NodeType, entries_count: usize, mut block_bytes: BytesMut) -> BlockSerializerContinue {
+        block_bytes.clear();
+        let block_header = BlockHeader { node_type, entries_count, };
+        block_header.write_to_bytes_mut(&mut block_bytes);
+        if entries_count == 0 {
             BlockSerializerContinue::Done(block_bytes)
         } else {
             BlockSerializerContinue::More(BlockSerializer { block_bytes, entries_left: entries_count, })
-        })
+        }
     }
 
-    pub fn entry(mut self, entry: Entry) -> Result<BlockSerializerContinue<B>, Error> {
-        bincode_options()
-            .serialize_into(self.block_bytes.as_mut(), &entry)
-            .map_err(Error::EntrySerialize)?;
+    pub fn entry(mut self, entry: Entry) -> BlockSerializerContinue {
+        entry.write_to_bytes_mut(&mut self.block_bytes);
         self.entries_left -= 1;
-        Ok(if self.entries_left == 0 {
+        if self.entries_left == 0 {
             BlockSerializerContinue::Done(self.block_bytes)
         } else {
             BlockSerializerContinue::More(self)
-        })
+        }
     }
 }
 
-pub enum BlockSerializerContinue<B> {
-    Done(B),
-    More(BlockSerializer<B>),
+pub enum BlockSerializerContinue {
+    Done(BytesMut),
+    More(BlockSerializer),
 }
 
-pub struct BlockDeserializeIter<'a, R, O> where O: Options {
-    deserializer: bincode::Deserializer<R, O>,
+// BlockDeserializeIter
+
+#[derive(Debug)]
+pub enum Error {
+    BlockHeader(ReadBlockHeaderError),
+    Entry(ReadEntryError),
+    ValueBlock(ReadValueBlockError),
+}
+
+pub struct BlockDeserializeIter {
+    source: SourceBytes,
     block_header: BlockHeader,
     entries_read: usize,
-    _marker: PhantomData<&'a ()>,
 }
 
-pub fn block_deserialize_iter(
-    block_bytes: &Bytes,
-)
-    -> Result<BlockDeserializeIter<'_, impl bincode::BincodeRead<'_>, impl Options>, Error>
-{
-    let mut deserializer = bincode::Deserializer::from_slice(block_bytes, bincode_options());
-    let magic: u64 = serde::Deserialize::deserialize(&mut deserializer)
-        .map_err(Error::BlockMagicDeserialize)?;
-    if magic != BLOCK_MAGIC {
-        return Err(Error::InvalidBlockMagic { expected: BLOCK_MAGIC, provided: magic, });
-    }
-    let block_header: BlockHeader = serde::Deserialize::deserialize(&mut deserializer)
-        .map_err(Error::BlockHeaderDeserialize)?;
+pub fn block_deserialize_iter(block_bytes: Bytes) -> Result<BlockDeserializeIter, Error> {
+    let mut source = SourceBytes::from(block_bytes);
+    let block_header = BlockHeader::read_from_source(&mut source)
+        .map_err(Error::BlockHeader)?;
     Ok(BlockDeserializeIter {
-        deserializer,
+        source,
         block_header,
         entries_read: 0,
-        _marker: PhantomData,
     })
 }
 
-impl<'a, R, O> BlockDeserializeIter<'a, R, O> where O: Options {
+impl BlockDeserializeIter {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct OwnedEntry {
-    pub jump_ref: OwnedJumpRef,
-    pub key: kv::Key,
-    pub value_cell: kv::ValueCell<OwnedValueRef>,
-}
-
-impl OwnedEntry {
-    pub fn from_entry<'a>(entry: &Entry<'a>, block_bytes: &'a Bytes) -> OwnedEntry {
-        OwnedEntry {
-            jump_ref: OwnedJumpRef::from_jump_ref(&entry.jump_ref, block_bytes),
-            key: kv::Key {
-                key_bytes: block_bytes.clone_subslice(entry.key),
-            },
-            value_cell: kv::ValueCell {
-                version: entry.value_cell.version,
-                cell: match &entry.value_cell.cell {
-                    Cell::Tombstone =>
-                        kv::Cell::Tombstone,
-                    Cell::Value(ValueRef::Inline(value)) => {
-                        kv::Cell::Value(OwnedValueRef::Inline(kv::Value {
-                            value_bytes: block_bytes.clone_subslice(value),
-                        }))
-                    },
-                    Cell::Value(ValueRef::Local(local_ref)) =>
-                        kv::Cell::Value(OwnedValueRef::Local(local_ref.clone())),
-                    Cell::Value(ValueRef::External(ExternalRef { filename, block_id, })) =>
-                        kv::Cell::Value(OwnedValueRef::External(BlockRef {
-                            blockwheel_filename: block_bytes.clone_subslice(filename).into(),
-                            block_id: block_id.clone(),
-                        })),
-                },
-            },
-        }
-    }
-}
-
-impl<'a> From<&'a OwnedEntry> for Entry<'a> {
-    fn from(entry: &'a OwnedEntry) -> Entry<'a> {
-        Entry {
-            jump_ref: (&entry.jump_ref).into(),
-            key: &entry.key.key_bytes,
-            value_cell: (&entry.value_cell).into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum OwnedJumpRef {
-    None,
-    Local(LocalRef),
-    External(BlockRef),
-}
-
-impl OwnedJumpRef {
-    pub fn from_jump_ref<'a>(jump_ref: &JumpRef<'a>, block_bytes: &'a Bytes) -> OwnedJumpRef {
-        match jump_ref {
-            JumpRef::None =>
-                OwnedJumpRef::None,
-            JumpRef::Local(local_ref) =>
-                OwnedJumpRef::Local(local_ref.clone()),
-            JumpRef::External(ExternalRef { filename, block_id, }) =>
-                OwnedJumpRef::External(BlockRef {
-                    blockwheel_filename: block_bytes.clone_subslice(filename).into(),
-                    block_id: block_id.clone(),
-                }),
-        }
-    }
-}
-
-impl<'a> From<&'a OwnedJumpRef> for JumpRef<'a> {
-    fn from(jump_ref: &'a OwnedJumpRef) -> JumpRef<'a> {
-        match jump_ref {
-            OwnedJumpRef::None =>
-                JumpRef::None,
-            OwnedJumpRef::Local(local_ref) =>
-                JumpRef::Local(local_ref.clone()),
-            OwnedJumpRef::External(BlockRef { blockwheel_filename, block_id, }) =>
-                JumpRef::External(ExternalRef {
-                    filename: blockwheel_filename,
-                    block_id: block_id.clone(),
-                }),
-        }
-    }
-}
-
-impl<'a> From<&'a kv::ValueCell<OwnedValueRef>> for ValueCell<'a> {
-    fn from(value_cell: &'a kv::ValueCell<OwnedValueRef>) -> ValueCell<'a> {
-        ValueCell {
-            version: value_cell.version,
-            cell: (&value_cell.cell).into(),
-        }
-    }
-}
-
-impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<OwnedValueRef> {
-    fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<OwnedValueRef> {
-        kv::ValueCell {
-            version: value_cell.version,
-            cell: value_cell.cell.into(),
-        }
-    }
-}
-
-impl<'a> From<&'a kv::Cell<OwnedValueRef>> for Cell<'a> {
-    fn from(cell: &'a kv::Cell<OwnedValueRef>) -> Cell<'a> {
-        match cell {
-            kv::Cell::Value(value_ref) =>
-                Cell::Value(value_ref.into()),
-            kv::Cell::Tombstone =>
-                Cell::Tombstone,
-        }
-    }
-}
-
-impl From<kv::Cell<kv::Value>> for kv::Cell<OwnedValueRef> {
-    fn from(cell: kv::Cell<kv::Value>) -> kv::Cell<OwnedValueRef> {
-        match cell {
-            kv::Cell::Value(value) =>
-                kv::Cell::Value(OwnedValueRef::Inline(value)),
-            kv::Cell::Tombstone =>
-                kv::Cell::Tombstone,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum OwnedValueRef {
-    Inline(kv::Value),
-    Local(LocalRef),
-    External(BlockRef),
-}
-
-impl<'a> From<&'a OwnedValueRef> for ValueRef<'a> {
-    fn from(value_ref: &'a OwnedValueRef) -> ValueRef<'a> {
-        match value_ref {
-            OwnedValueRef::Inline(value) =>
-                ValueRef::Inline(&value.value_bytes),
-            OwnedValueRef::Local(local_ref) =>
-                ValueRef::Local(local_ref.clone()),
-            OwnedValueRef::External(block_ref) =>
-                ValueRef::External(ExternalRef {
-                    filename: &block_ref.blockwheel_filename,
-                    block_id: block_ref.block_id.clone(),
-                }),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum OwnedValueBlockRef {
-    Inline(kv::Value),
-    Ref(BlockRef),
-}
-
-impl OwnedValueBlockRef {
-    pub fn from_owned_value_ref(value_ref: OwnedValueRef, current_blockwheel_filename: &WheelFilename) -> OwnedValueBlockRef {
-        match value_ref {
-            OwnedValueRef::Inline(value) =>
-                OwnedValueBlockRef::Inline(value),
-            OwnedValueRef::Local(LocalRef { block_id, }) =>
-                OwnedValueBlockRef::Ref(BlockRef {
-                    blockwheel_filename: current_blockwheel_filename.clone(),
-                    block_id,
-                }),
-            OwnedValueRef::External(block_ref) =>
-                OwnedValueBlockRef::Ref(block_ref),
-        }
-    }
-}
-
-impl kv::ValueCell<OwnedValueBlockRef> {
-    pub fn into_owned_value_ref(self, current_blockwheel_filename: &WheelFilename) -> kv::ValueCell<OwnedValueRef> {
-        kv::ValueCell {
-            version: self.version,
-            cell: match self.cell {
-                kv::Cell::Value(OwnedValueBlockRef::Inline(value)) =>
-                    kv::Cell::Value(OwnedValueRef::Inline(value)),
-                kv::Cell::Value(OwnedValueBlockRef::Ref(BlockRef { blockwheel_filename, block_id, }))
-                    if &blockwheel_filename == current_blockwheel_filename =>
-                    kv::Cell::Value(OwnedValueRef::Local(LocalRef { block_id, })),
-                kv::Cell::Value(OwnedValueBlockRef::Ref(block_ref)) =>
-                    kv::Cell::Value(OwnedValueRef::External(block_ref)),
-                kv::Cell::Tombstone =>
-                    kv::Cell::Tombstone,
-            },
-        }
-    }
-}
-
-impl From<kv::KeyValuePair<kv::Value>> for kv::KeyValuePair<OwnedValueBlockRef> {
-    fn from(kv_pair: kv::KeyValuePair<kv::Value>) -> kv::KeyValuePair<OwnedValueBlockRef> {
-        kv::KeyValuePair {
-            key: kv_pair.key,
-            value_cell: kv_pair.value_cell.into(),
-        }
-    }
-}
-
-impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<OwnedValueBlockRef> {
-    fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<OwnedValueBlockRef> {
-        kv::ValueCell {
-            version: value_cell.version,
-            cell: value_cell.cell.into(),
-        }
-    }
-}
-
-impl From<kv::Cell<kv::Value>> for kv::Cell<OwnedValueBlockRef> {
-    fn from(cell: kv::Cell<kv::Value>) -> kv::Cell<OwnedValueBlockRef> {
-        match cell {
-            kv::Cell::Value(value) =>
-                kv::Cell::Value(OwnedValueBlockRef::Inline(value)),
-            kv::Cell::Tombstone =>
-                kv::Cell::Tombstone,
-        }
-    }
-}
-
-impl<'a, R, O> Iterator for BlockDeserializeIter<'a, R, O> where R: bincode::BincodeRead<'a>, O: Options {
-    type Item = Result<Entry<'a>, Error>;
+impl Iterator for BlockDeserializeIter {
+    type Item = Result<Entry, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.entries_read >= self.block_header.entries_count {
             None
         } else {
+            let maybe_entry = Entry::read_from_source(&mut self.source)
+                .map_err(Error::Entry);
             self.entries_read += 1;
-            let maybe_entry: Result<Entry<'_>, Error> = serde::Deserialize::deserialize(&mut self.deserializer)
-                .map_err(Error::EntryDeserialize);
-            match maybe_entry {
-                Ok(entry) =>
-                    Some(Ok(entry)),
-                Err(error) =>
-                    Some(Err(error)),
-            }
+            Some(maybe_entry)
         }
     }
-}
-
-pub const VALUE_BLOCK_MAGIC: u64 = 0x5df58182f2741b7a;
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-struct ValueBlock<'a> {
-    value_block: &'a [u8],
-}
-
-pub fn value_block_serialize<B>(value_block: &[u8], mut block_bytes: B) -> Result<(), Error> where B: AsMut<Vec<u8>> {
-    block_bytes.as_mut().clear();
-    bincode_options()
-        .serialize_into(block_bytes.as_mut(), &VALUE_BLOCK_MAGIC)
-        .map_err(Error::BlockMagicSerialize)?;
-    bincode_options()
-        .serialize_into(block_bytes.as_mut(), &ValueBlock {
-            value_block,
-        })
-        .map_err(Error::ValueBlockSerialize)?;
-    Ok(())
-}
-
-pub fn value_block_deserialize(block_bytes: &Bytes) -> Result<Bytes, Error> {
-    let mut deserializer = bincode::Deserializer::from_slice(block_bytes, bincode_options());
-    let magic: u64 = serde::Deserialize::deserialize(&mut deserializer)
-        .map_err(Error::BlockMagicDeserialize)?;
-    if magic != VALUE_BLOCK_MAGIC {
-        return Err(Error::InvalidBlockMagic { expected: VALUE_BLOCK_MAGIC, provided: magic, });
-    }
-    let value_block: ValueBlock<'_> = serde::Deserialize::deserialize(&mut deserializer)
-        .map_err(Error::ValueBlockDeserialize)?;
-    Ok(block_bytes.clone_subslice(value_block.value_block))
-}
-
-fn bincode_options() -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_no_limit()
-        .with_big_endian()
-        .with_fixint_encoding()
-        .allow_trailing_bytes()
 }
