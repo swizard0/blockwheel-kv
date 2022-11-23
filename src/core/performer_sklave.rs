@@ -148,6 +148,7 @@ impl<E> Env<E> where E: EchoPolicy {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum WeltState<E> where E: EchoPolicy {
     Init,
     Loading(loading::WeltState),

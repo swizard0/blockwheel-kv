@@ -659,6 +659,7 @@ enum MergeKont {
     Finished,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum BuildKont {
     CountItems {
         items_count: usize,
