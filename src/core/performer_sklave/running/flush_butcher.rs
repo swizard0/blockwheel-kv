@@ -10,6 +10,7 @@ use std::{
     },
 };
 
+use alloc_pool_pack::WriteToBytesMut;
 use o1::{
     set::{
         Ref,
@@ -136,8 +137,6 @@ enum Kont {
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchTreeBuilder(search_tree_builder::Error),
-    SerializeBlockStorage(storage::Error),
-    SerializeValueBlockStorage(storage::Error),
     BlockWriteWriteBlockRequest(arbeitssklave::Error),
     BlockWriteWriteValueRequest(arbeitssklave::Error),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
@@ -218,7 +217,11 @@ where E: EchoPolicy,
                             },
                             Some(Order::WriteBlock(OrderWriteBlock {
                                 write_block_result: Ok(block_id),
-                                target: WriteBlockTarget::WriteValue { async_ref, block_entry_index, blockwheel_filename, },
+                                target: WriteBlockTarget::WriteValue {
+                                    async_ref,
+                                    block_entry_index,
+                                    blockwheel_filename,
+                                },
                             })) => {
                                 let block_ref = BlockRef { blockwheel_filename, block_id, };
                                 match sklavenwelt.value_writes_pending.entry(async_ref) {
@@ -229,10 +232,10 @@ where E: EchoPolicy,
                                         let block_entry = &mut value_write_pending
                                             .block_entries[block_entry_index];
                                         match &mut block_entry.item.value_cell.cell {
-                                            value @ kv::Cell::Value(storage::OwnedValueBlockRef::Inline(..)) =>
-                                                *value = kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
-                                            kv::Cell::Value(storage::OwnedValueBlockRef::Ref(..)) =>
-                                                unreachable!(),
+                                            value @ kv::Cell::Value(storage::ValueRef::Inline(..)) =>
+                                                *value = kv::Cell::Value(storage::ValueRef::External(block_ref)),
+                                            kv::Cell::Value(storage::ValueRef::Local(..)) |
+                                            kv::Cell::Value(storage::ValueRef::External(..)) |
                                             kv::Cell::Tombstone =>
                                                 unreachable!(),
                                         }
@@ -287,7 +290,9 @@ where E: EchoPolicy,
     loop {
         match builder_kont {
             search_tree_builder::Kont::PollNextItemOrProcessedBlock(
-                search_tree_builder::KontPollNextItemOrProcessedBlock { next, },
+                search_tree_builder::KontPollNextItemOrProcessedBlock {
+                    next,
+                },
             ) => {
                 let (ord_key, value_cell) = memcache_iter.next().unwrap();
                 let item = kv::KeyValuePair {
@@ -298,13 +303,20 @@ where E: EchoPolicy,
                     .map_err(Error::SearchTreeBuilder)?;
             },
             search_tree_builder::Kont::PollProcessedBlock(
-                search_tree_builder::KontPollProcessedBlock { next, },
+                search_tree_builder::KontPollProcessedBlock {
+                    next,
+                },
             ) => {
                 assert!(memcache_iter.next().is_none());
                 return Ok(Kont::Continue { next, });
             }
             search_tree_builder::Kont::ProcessBlockAsync(
-                search_tree_builder::KontProcessBlockAsync { node_type, block_entries, async_ref, next, },
+                search_tree_builder::KontProcessBlockAsync {
+                    node_type,
+                    block_entries,
+                    async_ref,
+                    next,
+                },
             ) => {
                 process_ready_block(sklavenwelt, node_type, block_entries, async_ref, thread_pool)?;
                 builder_kont = next.process_scheduled()
@@ -330,11 +342,18 @@ where E: EchoPolicy,
             search_tree_builder::Kont::PollNextItemOrProcessedBlock(..) =>
                 unreachable!("totally unexpected Kont::PollNextItemOrProcessedBlock during search tree writing"),
             search_tree_builder::Kont::PollProcessedBlock(
-                search_tree_builder::KontPollProcessedBlock { next, },
+                search_tree_builder::KontPollProcessedBlock {
+                    next,
+                },
             ) =>
                 return Ok(Kont::Continue { next, }),
             search_tree_builder::Kont::ProcessBlockAsync(
-                search_tree_builder::KontProcessBlockAsync { node_type, block_entries, async_ref, next, },
+                search_tree_builder::KontProcessBlockAsync {
+                    node_type,
+                    block_entries,
+                    async_ref,
+                    next,
+                },
             ) => {
                 process_ready_block(sklavenwelt, node_type, block_entries, async_ref, thread_pool)?;
                 builder_kont = next.process_scheduled()
@@ -360,12 +379,12 @@ where E: EchoPolicy,
     let mut values_write_pending = 0;
     for (block_entry_index, block_entry) in block_entries.iter().enumerate() {
         match &block_entry.item.value_cell.cell {
-            kv::Cell::Value(storage::OwnedValueBlockRef::Inline(
-                kv::Value { ref value_bytes, },
-            )) if value_bytes.len() > sklavenwelt.values_inline_size_limit => {
+            kv::Cell::Value(storage::ValueRef::Inline(value_bytes)) if value_bytes.len() > sklavenwelt.values_inline_size_limit => {
                 let mut block_bytes = sklavenwelt.blocks_pool.lend();
-                storage::value_block_serialize(value_bytes, &mut block_bytes)
-                    .map_err(Error::SerializeValueBlockStorage)?;
+                let value_block = storage::ValueBlock::from(
+                    kv::Value { value_bytes: value_bytes.clone(), },
+                );
+                value_bytes.write_to_bytes_mut(&mut block_bytes);
 
                 let wheel_ref = sklavenwelt.wheels.acquire();
                 let rueckkopplung = sklavenwelt
@@ -426,9 +445,10 @@ where E: EchoPolicy,
 {
     let wheel_ref = sklavenwelt.wheels.acquire();
     let block_bytes = sklavenwelt.blocks_pool.lend();
-    let mut kont = storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes)
-        .map_err(Error::SerializeBlockStorage)?;
-    let mut block_entries_iter = block_entries.drain(..);
+    let mut kont =
+        storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes);
+    let mut block_entries_iter =
+        block_entries.drain(..);
     let block_bytes = loop {
         match kont {
             storage::BlockSerializerContinue::Done(block_bytes) =>
@@ -436,19 +456,19 @@ where E: EchoPolicy,
             storage::BlockSerializerContinue::More(serializer) =>
                 match block_entries_iter.next() {
                     Some(block_entry) => {
-                        let value_ref_cell = &block_entry
-                            .item.value_cell
-                            .into_owned_value_ref(&wheel_ref.blockwheel_filename);
+                        let key = block_entry.item.key;
+                        let mut value_cell = block_entry.item.value_cell;
+                        value_cell.maybe_collapse(&wheel_ref.blockwheel_filename);
+
                         let entry = storage::Entry {
                             jump_ref: storage::JumpRef::from_maybe_block_ref(
                                 &block_entry.child_block_ref,
                                 &wheel_ref.blockwheel_filename,
                             ),
-                            key: &block_entry.item.key.key_bytes,
-                            value_cell: value_ref_cell.into(),
+                            key,
+                            value_cell,
                         };
-                        kont = serializer.entry(entry)
-                            .map_err(Error::SerializeBlockStorage)?;
+                        kont = serializer.entry(entry);
                     },
                     _ =>
                         unreachable!(),

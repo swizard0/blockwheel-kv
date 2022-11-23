@@ -18,6 +18,7 @@ use blockwheel_fs::{
 };
 
 use crate::{
+    kv,
     wheels::{
         BlockRef,
         WheelFilename,
@@ -295,25 +296,38 @@ impl ReadFromSource for ValueRef {
     }
 }
 
-// Cell
-
-#[derive(Clone, Debug)]
-pub enum Cell {
-    Value(ValueRef),
-    Tombstone,
+impl ValueRef {
+    pub fn maybe_collapse(&mut self, current_blockwheel_filename: &WheelFilename) {
+        match self {
+            ValueRef::External(block_ref) if &block_ref.blockwheel_filename == current_blockwheel_filename =>
+                *self = ValueRef::Local(LocalRef {
+                    block_id: block_ref.block_id.clone(),
+                }),
+            ValueRef::Inline(..) | ValueRef::Local(..) | ValueRef::External(..) =>
+                (),
+        }
+    }
 }
+
+impl From<kv::Value> for ValueRef {
+    fn from(value: kv::Value) -> ValueRef {
+        ValueRef::Inline(value.value_bytes)
+    }
+}
+
+// Cell
 
 const TAG_CELL_VALUE: u8 = 1;
 const TAG_CELL_TOMBSTONE: u8 = 2;
 
-impl WriteToBytesMut for Cell {
+impl WriteToBytesMut for kv::Cell<ValueRef> {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
         match self {
-            Cell::Value(value_ref) => {
+            kv::Cell::Value(value_ref) => {
                 TAG_CELL_VALUE.write_to_bytes_mut(bytes_mut);
                 value_ref.write_to_bytes_mut(bytes_mut);
             },
-            Cell::Tombstone =>
+            kv::Cell::Tombstone =>
                 TAG_CELL_TOMBSTONE.write_to_bytes_mut(bytes_mut),
         }
     }
@@ -326,7 +340,7 @@ pub enum ReadCellError {
     Value(ReadValueRefError),
 }
 
-impl ReadFromSource for Cell {
+impl ReadFromSource for kv::Cell<ValueRef> {
     type Error = ReadCellError;
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
@@ -336,23 +350,39 @@ impl ReadFromSource for Cell {
             TAG_CELL_VALUE => {
                 let value_ref = ValueRef::read_from_source(source)
                     .map_err(Self::Error::Value)?;
-                Ok(Cell::Value(value_ref))
+                Ok(kv::Cell::Value(value_ref))
             },
             TAG_CELL_TOMBSTONE =>
-                Ok(Cell::Tombstone),
+                Ok(kv::Cell::Tombstone),
+        }
+    }
+}
+
+impl kv::Cell<ValueRef> {
+    pub fn maybe_collapse(&mut self, current_blockwheel_filename: &WheelFilename) {
+        match self {
+            kv::Cell::Value(value) =>
+                value.maybe_collapse(current_blockwheel_filename),
+            kv::Cell::Tombstone =>
+                (),
+        }
+    }
+}
+
+impl From<kv::Cell<kv::Value>> for kv::Cell<ValueRef> {
+    fn from(cell: kv::Cell<kv::Value>) -> kv::Cell<ValueRef> {
+        match cell {
+            kv::Cell::Value(value) =>
+                kv::Cell::Value(value.into()),
+            kv::Cell::Tombstone =>
+                kv::Cell::Tombstone,
         }
     }
 }
 
 // ValueCell
 
-#[derive(Clone, Debug)]
-pub struct ValueCell {
-    pub version: u64,
-    pub cell: Cell,
-}
-
-impl WriteToBytesMut for ValueCell {
+impl WriteToBytesMut for kv::ValueCell<ValueRef> {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
         self.version.write_to_bytes_mut(bytes_mut);
         self.cell.write_to_bytes_mut(bytes_mut);
@@ -365,15 +395,30 @@ pub enum ReadValueCellError {
     Cell(ReadCellError),
 }
 
-impl ReadFromSource for ValueCell {
+impl ReadFromSource for kv::ValueCell<ValueRef> {
     type Error = ReadValueCellError;
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
         let version = u64::read_from_source(source)
             .map_err(Self::Error::Version)?;
-        let cell = Cell::read_from_source(source)
+        let cell = kv::Cell::read_from_source(source)
             .map_err(Self::Error::Cell)?;
-        Ok(ValueCell { version, cell, })
+        Ok(kv::ValueCell { version, cell, })
+    }
+}
+
+impl kv::ValueCell<ValueRef> {
+    pub fn maybe_collapse(&mut self, current_blockwheel_filename: &WheelFilename) {
+        self.cell.maybe_collapse(current_blockwheel_filename);
+    }
+}
+
+impl From<kv::ValueCell<kv::Value>> for kv::ValueCell<ValueRef> {
+    fn from(value_cell: kv::ValueCell<kv::Value>) -> kv::ValueCell<ValueRef> {
+        kv::ValueCell {
+            version: value_cell.version,
+            cell: value_cell.cell.into(),
+        }
     }
 }
 
@@ -382,14 +427,14 @@ impl ReadFromSource for ValueCell {
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub jump_ref: JumpRef,
-    pub key: Bytes,
-    pub value_cell: ValueCell,
+    pub key: kv::Key,
+    pub value_cell: kv::ValueCell<ValueRef>,
 }
 
 impl WriteToBytesMut for Entry {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
         self.jump_ref.write_to_bytes_mut(bytes_mut);
-        self.key.write_to_bytes_mut(bytes_mut);
+        self.key.key_bytes.write_to_bytes_mut(bytes_mut);
         self.value_cell.write_to_bytes_mut(bytes_mut);
     }
 }
@@ -407,11 +452,11 @@ impl ReadFromSource for Entry {
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
         let jump_ref = JumpRef::read_from_source(source)
             .map_err(Self::Error::JumpRef)?;
-        let key = Bytes::read_from_source(source)
+        let key_bytes = Bytes::read_from_source(source)
             .map_err(Self::Error::Key)?;
-        let value_cell = ValueCell::read_from_source(source)
+        let value_cell = kv::ValueCell::read_from_source(source)
             .map_err(Self::Error::ValueCell)?;
-        Ok(Entry { jump_ref, key, value_cell, })
+        Ok(Entry { jump_ref, key: kv::Key { key_bytes, }, value_cell, })
     }
 }
 
@@ -420,7 +465,7 @@ impl ReadFromSource for Entry {
 const VALUE_BLOCK_MAGIC: u64 = 0x5df58182f2741b7a;
 
 #[derive(Clone, Debug)]
-struct ValueBlock {
+pub struct ValueBlock {
     value_block: Bytes,
 }
 
@@ -453,6 +498,14 @@ impl ReadFromSource for ValueBlock {
         let value_block = Bytes::read_from_source(source)
             .map_err(Self::Error::ValueBlock)?;
         Ok(ValueBlock { value_block, })
+    }
+}
+
+impl From<kv::Value> for ValueBlock {
+    fn from(value: kv::Value) -> ValueBlock {
+        ValueBlock {
+            value_block: value.value_bytes,
+        }
     }
 }
 

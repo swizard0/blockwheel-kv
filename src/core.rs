@@ -36,15 +36,15 @@ mod search_ranges_merge;
 mod tests;
 
 pub type SearchTreeBuilderCps =
-    search_tree_builder::BuilderCps<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+    search_tree_builder::BuilderCps<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 pub type SearchTreeBuilderKont =
-    search_tree_builder::Kont<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+    search_tree_builder::Kont<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 pub type SearchTreeBuilderBlockEntry =
-    search_tree_builder::BlockEntry<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+    search_tree_builder::BlockEntry<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 pub type SearchTreeBuilderBlockNext =
-    search_tree_builder::KontPollProcessedBlockNext<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+    search_tree_builder::KontPollProcessedBlockNext<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 pub type SearchTreeBuilderItemOrBlockNext =
-    search_tree_builder::KontPollNextItemOrProcessedBlockNext<kv::KeyValuePair<storage::OwnedValueBlockRef>, BlockRef>;
+    search_tree_builder::KontPollNextItemOrProcessedBlockNext<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 
 pub type SearchRangesMergeCps =
     search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;

@@ -69,7 +69,7 @@ impl ReadFromSource for WheelFilename {
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
         let filename_bytes = Bytes::read_from_source(source)
-            .map_err(ReadWheelFilenameError::FilenameBytes)?;
+            .map_err(Self::Error::FilenameBytes)?;
         Ok(WheelFilename { filename_bytes, })
     }
 }
@@ -161,10 +161,10 @@ impl ReadFromSource for BlockRef {
     type Error = ReadBlockRefError;
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
-        let blockwheel_filename = Bytes::read_from_source(source)
-            .map_err(ReadBlockRefError::BlockwheelFilename)?;
-        let block_id = Bytes::read_from_source(source)
-            .map_err(ReadBlockRefError::BlockId)?;
+        let blockwheel_filename = WheelFilename::read_from_source(source)
+            .map_err(Self::Error::BlockwheelFilename)?;
+        let block_id = blockwheel_fs::block::Id::read_from_source(source)
+            .map_err(Self::Error::BlockId)?;
         Ok(BlockRef { blockwheel_filename, block_id, })
     }
 }
