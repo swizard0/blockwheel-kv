@@ -72,6 +72,8 @@ impl ReadFromSource for NodeType {
             },
             TAG_NODE_TYPE_LEAF =>
                 Ok(NodeType::Leaf),
+            _ =>
+                Err(Self::Error::InvalidTag(tag)),
         }
     }
 }
@@ -164,7 +166,7 @@ pub enum JumpRef {
 
 const TAG_JUMP_REF_NONE: u8 = 1;
 const TAG_JUMP_REF_LOCAL: u8 = 2;
-const TAG_JUMP_REF_EXTERNAL: u8 = 2;
+const TAG_JUMP_REF_EXTERNAL: u8 = 3;
 
 impl WriteToBytesMut for JumpRef {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
@@ -210,6 +212,8 @@ impl ReadFromSource for JumpRef {
                     .map_err(Self::Error::External)?;
                 Ok(JumpRef::External(block_ref))
             },
+            _ =>
+                Err(Self::Error::InvalidTag(tag)),
         }
     }
 }
@@ -240,7 +244,7 @@ pub enum ValueRef {
 
 const TAG_VALUE_REF_INLINE: u8 = 1;
 const TAG_VALUE_REF_LOCAL: u8 = 2;
-const TAG_VALUE_REF_EXTERNAL: u8 = 2;
+const TAG_VALUE_REF_EXTERNAL: u8 = 3;
 
 impl WriteToBytesMut for ValueRef {
     fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
@@ -292,6 +296,8 @@ impl ReadFromSource for ValueRef {
                     .map_err(Self::Error::External)?;
                 Ok(ValueRef::External(block_ref))
             },
+            _ =>
+                Err(Self::Error::InvalidTag(tag)),
         }
     }
 }
@@ -304,6 +310,18 @@ impl ValueRef {
                     block_id: block_ref.block_id.clone(),
                 }),
             ValueRef::Inline(..) | ValueRef::Local(..) | ValueRef::External(..) =>
+                (),
+        }
+    }
+
+    pub fn maybe_lift(&mut self, current_blockwheel_filename: &WheelFilename) {
+        match self {
+            ValueRef::Local(LocalRef { block_id, }) =>
+                *self = ValueRef::External(BlockRef {
+                    blockwheel_filename: current_blockwheel_filename.clone(),
+                    block_id: block_id.clone(),
+                }),
+            ValueRef::Inline(..) | ValueRef::External(..) =>
                 (),
         }
     }
@@ -354,6 +372,8 @@ impl ReadFromSource for kv::Cell<ValueRef> {
             },
             TAG_CELL_TOMBSTONE =>
                 Ok(kv::Cell::Tombstone),
+            _ =>
+                Err(Self::Error::InvalidTag(tag)),
         }
     }
 }
@@ -363,6 +383,15 @@ impl kv::Cell<ValueRef> {
         match self {
             kv::Cell::Value(value) =>
                 value.maybe_collapse(current_blockwheel_filename),
+            kv::Cell::Tombstone =>
+                (),
+        }
+    }
+
+    pub fn maybe_lift(&mut self, current_blockwheel_filename: &WheelFilename) {
+        match self {
+            kv::Cell::Value(value) =>
+                value.maybe_lift(current_blockwheel_filename),
             kv::Cell::Tombstone =>
                 (),
         }
@@ -410,6 +439,10 @@ impl ReadFromSource for kv::ValueCell<ValueRef> {
 impl kv::ValueCell<ValueRef> {
     pub fn maybe_collapse(&mut self, current_blockwheel_filename: &WheelFilename) {
         self.cell.maybe_collapse(current_blockwheel_filename);
+    }
+
+    pub fn maybe_lift(&mut self, current_blockwheel_filename: &WheelFilename) {
+        self.cell.maybe_lift(current_blockwheel_filename);
     }
 }
 
@@ -506,6 +539,12 @@ impl From<kv::Value> for ValueBlock {
         ValueBlock {
             value_block: value.value_bytes,
         }
+    }
+}
+
+impl From<ValueBlock> for Bytes {
+    fn from(value_block: ValueBlock) -> Bytes {
+        value_block.value_block
     }
 }
 

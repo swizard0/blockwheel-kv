@@ -384,7 +384,7 @@ where E: EchoPolicy,
                 let value_block = storage::ValueBlock::from(
                     kv::Value { value_bytes: value_bytes.clone(), },
                 );
-                value_bytes.write_to_bytes_mut(&mut block_bytes);
+                value_block.write_to_bytes_mut(&mut block_bytes);
 
                 let wheel_ref = sklavenwelt.wheels.acquire();
                 let rueckkopplung = sklavenwelt

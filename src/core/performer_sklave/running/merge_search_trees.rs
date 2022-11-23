@@ -155,7 +155,6 @@ pub enum Error {
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
     BlockLoadReadBlockRequest(arbeitssklave::Error),
     BlockStoreWriteBlockRequest(arbeitssklave::Error),
-    SerializeBlockStorage(storage::Error),
 }
 
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
@@ -555,7 +554,7 @@ where E: EchoPolicy,
 
 fn job_step_builder<E, P>(
     sklavenwelt: &mut Welt<E>,
-    item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
+    item_arrived: Option<kv::KeyValuePair<storage::ValueRef>>,
     mut builder_kont: SearchTreeBuilderKont,
     thread_pool: &P,
 )
@@ -581,8 +580,8 @@ where E: EchoPolicy,
 
                 // serialize block
                 let block_bytes = sklavenwelt.blocks_pool.lend();
-                let mut serialize_kont = storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes)
-                    .map_err(Error::SerializeBlockStorage)?;
+                let mut serialize_kont =
+                    storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes);
                 let mut block_entries_iter = block_entries.drain(..);
                 let block_bytes = loop {
                     match serialize_kont {
@@ -590,19 +589,19 @@ where E: EchoPolicy,
                             break block_bytes.freeze(),
                         storage::BlockSerializerContinue::More(serializer) => {
                             let block_entry = block_entries_iter.next().unwrap();
-                            let value_ref_cell = &block_entry.item
-                                .value_cell
-                                .into_owned_value_ref(&wheel_ref.blockwheel_filename);
+                            let key = block_entry.item.key;
+                            let mut value_cell = block_entry.item.value_cell;
+                            value_cell.maybe_collapse(&wheel_ref.blockwheel_filename);
+
                             let entry = storage::Entry {
                                 jump_ref: storage::JumpRef::from_maybe_block_ref(
                                     &block_entry.child_block_ref,
                                     &wheel_ref.blockwheel_filename,
                                 ),
-                                key: &block_entry.item.key.key_bytes,
-                                value_cell: value_ref_cell.into(),
+                                key,
+                                value_cell,
                             };
-                            serialize_kont = serializer.entry(entry)
-                                .map_err(Error::SerializeBlockStorage)?;
+                            serialize_kont = serializer.entry(entry);
                         },
                     }
                 };
@@ -654,7 +653,7 @@ enum MergeKont {
         next: SearchRangesMergeBlockNext,
     },
     ProceedItem {
-        item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+        item: kv::KeyValuePair<storage::ValueRef>,
         next: SearchRangesMergeItemNext,
     },
     Finished,
@@ -666,7 +665,7 @@ enum BuildKont {
         merger_source_build: SearchRangesMergeCps,
     },
     Active {
-        item_arrived: Option<kv::KeyValuePair<storage::OwnedValueBlockRef>>,
+        item_arrived: Option<kv::KeyValuePair<storage::ValueRef>>,
         kont: BuildKontActive,
     },
 }

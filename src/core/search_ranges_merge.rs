@@ -71,7 +71,7 @@ pub struct KontAwaitBlocksNext<V, S> where V: DerefMut<Target = Vec<S>> {
 }
 
 pub struct KontEmitDeprecated<V, S> where V: DerefMut<Target = Vec<S>> {
-    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub item: kv::KeyValuePair<storage::ValueRef>,
     pub next: KontEmitDeprecatedNext<V, S>,
 }
 
@@ -81,7 +81,7 @@ pub struct KontEmitDeprecatedNext<V, S> where V: DerefMut<Target = Vec<S>> {
 }
 
 pub struct KontEmitItem<V, S> where V: DerefMut<Target = Vec<S>> {
-    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub item: kv::KeyValuePair<storage::ValueRef>,
     pub next: KontEmitItemNext<V, S>,
 }
 
@@ -193,16 +193,24 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
 
                 State::MergerStep { merger_kont, } =>
                     match merger_kont {
-                        merger::Kont::ScheduleIterAwait(merger::KontScheduleIterAwait { await_iter, next, }) => {
+                        merger::Kont::ScheduleIterAwait(merger::KontScheduleIterAwait {
+                            await_iter,
+                            next,
+                        }) => {
                             self.inner.await_iters.push(await_iter);
                             self.inner.state = State::MergerStep {
                                 merger_kont: next.proceed(),
                             };
                         },
-                        merger::Kont::AwaitScheduled(merger::KontAwaitScheduled { next, }) => {
+                        merger::Kont::AwaitScheduled(merger::KontAwaitScheduled {
+                            next,
+                        }) => {
                             self.inner.state = State::AwaitIters { merger_next: next, };
                         },
-                        merger::Kont::EmitDeprecated(merger::KontEmitDeprecated { item, next, }) => {
+                        merger::Kont::EmitDeprecated(merger::KontEmitDeprecated {
+                            item,
+                            next,
+                        }) => {
                             self.inner.state = State::Emitted;
                             return Ok(Kont::EmitDeprecated(KontEmitDeprecated {
                                 item,
@@ -212,7 +220,10 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                 },
                             }));
                         },
-                        merger::Kont::EmitItem(merger::KontEmitItem { item, next, }) => {
+                        merger::Kont::EmitItem(merger::KontEmitItem {
+                            item,
+                            next,
+                        }) => {
                             self.inner.state = State::Emitted;
                             return Ok(Kont::EmitItem(KontEmitItem {
                                 item,

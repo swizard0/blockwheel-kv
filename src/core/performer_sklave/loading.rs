@@ -190,7 +190,7 @@ where E: EchoPolicy,
                             };
 
                             welt_state.blocks_total += 1;
-                            match storage::block_deserialize_iter(&block_bytes) {
+                            match storage::block_deserialize_iter(block_bytes) {
                                 Ok(deserializer) =>
                                     match deserializer.block_header().node_type {
                                         storage::NodeType::Root { tree_entries_count, } => {
@@ -200,7 +200,9 @@ where E: EchoPolicy,
                                         storage::NodeType::Leaf =>
                                             (),
                                     },
-                                Err(storage::Error::InvalidBlockMagic { expected, provided, }) =>
+                                Err(storage::Error::BlockHeader(
+                                    storage::ReadBlockHeaderError::InvalidMagic { expected, provided, },
+                                )) =>
                                     log::debug!("skipping block {:?} (invalid magic provided: {}, expected: {})", block_ref, provided, expected),
                                 Err(error) =>
                                     return Err(Error::DeserializeBlock { block_ref, error, }),

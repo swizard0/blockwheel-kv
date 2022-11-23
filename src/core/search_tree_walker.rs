@@ -78,7 +78,7 @@ pub struct KontRequireBlockNext {
 }
 
 pub struct KontItemFound {
-    pub item: kv::KeyValuePair<storage::OwnedValueBlockRef>,
+    pub item: kv::KeyValuePair<storage::ValueRef>,
     pub next: KontItemFoundNext,
 }
 
@@ -112,12 +112,12 @@ pub enum BlockEntryAction {
     OnlyJump(BlockRef),
     OnlyEntry {
         key: kv::Key,
-        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
+        value_cell: kv::ValueCell<storage::ValueRef>,
     },
     JumpAndEntry {
         jump: BlockRef,
         key: kv::Key,
-        value_cell: kv::ValueCell<storage::OwnedValueBlockRef>,
+        value_cell: kv::ValueCell<storage::ValueRef>,
     },
 }
 
@@ -162,7 +162,7 @@ impl WalkerCps {
                     let mut block_entry_steps = self.inner.block_entry_steps_pool.lend(Vec::new);
                     block_entry_steps.clear();
 
-                    let entries_iter = storage::block_deserialize_iter(&block_bytes)
+                    let entries_iter = storage::block_deserialize_iter(block_bytes)
                         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
                     for maybe_entry in entries_iter {
                         let iter_entry = maybe_entry
@@ -171,14 +171,14 @@ impl WalkerCps {
                             SearchRangeBounds { range_from: Bound::Unbounded, .. } =>
                                 (),
                             SearchRangeBounds { range_from: Bound::Excluded(key), .. } =>
-                                match key.key_bytes[..].cmp(iter_entry.key) {
+                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                                     Ordering::Less =>
                                         (),
                                     Ordering::Equal | Ordering::Greater =>
                                         continue,
                                 },
                             SearchRangeBounds { range_from: Bound::Included(key), .. } =>
-                                match key.key_bytes[..].cmp(iter_entry.key) {
+                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                                     Ordering::Less | Ordering::Equal =>
                                         (),
                                     Ordering::Greater =>
@@ -186,16 +186,15 @@ impl WalkerCps {
                                 },
                         }
 
-                        let owned_jump_ref = storage::OwnedJumpRef::from_jump_ref(&iter_entry.jump_ref, &block_bytes);
-                        let maybe_jump_block_ref = match owned_jump_ref {
-                            storage::OwnedJumpRef::None =>
+                        let maybe_jump_block_ref = match iter_entry.jump_ref {
+                            storage::JumpRef::None =>
                                 None,
-                            storage::OwnedJumpRef::Local(storage::LocalRef { block_id, }) =>
+                            storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
                                 Some(BlockRef {
                                     blockwheel_filename: block_ref.blockwheel_filename.clone(),
                                     block_id: block_id.clone(),
                                 }),
-                            storage::OwnedJumpRef::External(block_ref) =>
+                            storage::JumpRef::External(block_ref) =>
                                 Some(block_ref),
                         };
 
@@ -203,14 +202,14 @@ impl WalkerCps {
                             SearchRangeBounds { range_to: Bound::Unbounded, .. } =>
                                 false,
                             SearchRangeBounds { range_to: Bound::Excluded(key), .. } =>
-                                match key.key_bytes[..].cmp(iter_entry.key) {
+                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                                     Ordering::Less | Ordering::Equal =>
                                         true,
                                     Ordering::Greater =>
                                         false,
                                 },
                             SearchRangeBounds { range_to: Bound::Included(key), .. } =>
-                                match key.key_bytes[..].cmp(iter_entry.key) {
+                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
                                     Ordering::Less  =>
                                         true,
                                     Ordering::Equal | Ordering::Greater =>
@@ -218,20 +217,9 @@ impl WalkerCps {
                                 },
                         };
 
-                        let owned_entry = storage::OwnedEntry::from_entry(&iter_entry, &block_bytes);
-                        let key = owned_entry.key;
-                        let value_cell = match owned_entry.value_cell {
-                            kv::ValueCell { version, cell: kv::Cell::Value(value_ref), } =>
-                                kv::ValueCell {
-                                    version,
-                                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::from_owned_value_ref(
-                                        value_ref,
-                                        &block_ref.blockwheel_filename,
-                                    )),
-                                },
-                            kv::ValueCell { version, cell: kv::Cell::Tombstone, } =>
-                                kv::ValueCell { version, cell: kv::Cell::Tombstone, },
-                        };
+                        let key = iter_entry.key;
+                        let mut value_cell = iter_entry.value_cell;
+                        value_cell.maybe_lift(&block_ref.blockwheel_filename);
 
                         match (maybe_jump_block_ref, force_stop) {
                             (None, true) =>

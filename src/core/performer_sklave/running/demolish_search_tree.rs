@@ -185,7 +185,10 @@ where E: EchoPolicy,
                         .map_err(Error::SearchRangesMerge)?
                 },
                 Kont::AwaitBlocks { next, } =>
-                    if let Some(ReceivedBlockTask { async_token, block_bytes, }) = sklavenwelt.received_block_tasks.pop() {
+                    if let Some(ReceivedBlockTask {
+                        async_token,
+                        block_bytes,
+                    }) = sklavenwelt.received_block_tasks.pop() {
                         next.block_arrived(async_token, block_bytes)
                             .map_err(Error::SearchRangesMerge)?
                     } else {
@@ -214,7 +217,11 @@ where E: EchoPolicy,
             loop {
                 match merger_kont {
                     search_ranges_merge::Kont::RequireBlockAsync(
-                        search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                        search_ranges_merge::KontRequireBlockAsync {
+                            block_ref,
+                            async_token,
+                            next,
+                        },
                     ) => {
                         let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
                             .ok_or_else(|| Error::WheelNotFound {
@@ -242,22 +249,30 @@ where E: EchoPolicy,
                         merger_kont = next.scheduled()
                             .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) => {
+                    search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks {
+                        next,
+                    }) => {
                         sklavenwelt.kont = Some(Kont::AwaitBlocks { next, });
                         break;
                     },
-                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { block_ref, next, }) => {
+                    search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished {
+                        block_ref,
+                        next,
+                    }) => {
                         sklavenwelt.total_search_tree_blocks_removed += 1;
                         schedule_delete_block(sklavenwelt, block_ref, thread_pool)?;
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { item, next, }) => {
+                    search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated {
+                        item,
+                        next,
+                    }) => {
                         #[allow(clippy::single_match)]
                         match item {
                             kv::KeyValuePair {
                                 value_cell: kv::ValueCell {
-                                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                                    cell: kv::Cell::Value(storage::ValueRef::External(block_ref)),
                                     ..
                                 },
                                 ..
@@ -265,13 +280,18 @@ where E: EchoPolicy,
                                 sklavenwelt.total_external_value_blocks_removed += 1;
                                 schedule_delete_block(sklavenwelt, block_ref, thread_pool)?;
                             },
+                            kv::KeyValuePair { value_cell: kv::ValueCell { cell: kv::Cell::Value(storage::ValueRef::Local(..)), .. }, .. } =>
+                                unreachable!("totally unexpected ValueRef::Local value from `search_range_merge`"),
                             _ =>
                                 (),
                         }
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                     },
-                    search_ranges_merge::Kont::EmitItem(search_ranges_merge::KontEmitItem { next, .. }) => {
+                    search_ranges_merge::Kont::EmitItem(search_ranges_merge::KontEmitItem {
+                        next,
+                        ..
+                    }) => {
                         merger_kont = next.proceed()
                             .map_err(Error::SearchRangesMerge)?;
                     },

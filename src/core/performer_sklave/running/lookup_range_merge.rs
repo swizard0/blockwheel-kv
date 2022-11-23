@@ -4,6 +4,11 @@ use alloc_pool::{
     },
 };
 
+use alloc_pool_pack::{
+    SourceBytes,
+    ReadFromSource,
+};
+
 use arbeitssklave::{
     komm::{
         self,
@@ -130,7 +135,7 @@ pub enum Error {
     BlockLoadReadBlockRequest(arbeitssklave::Error),
     LoadBlock(blockwheel_fs::RequestReadBlockError),
     LoadValue(blockwheel_fs::RequestReadBlockError),
-    ValueDeserialize(storage::Error),
+    ValueDeserialize(storage::ReadValueBlockError),
 }
 
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
@@ -173,7 +178,9 @@ where E: EchoPolicy,
                                     },
                                     Order::ReadBlock(OrderReadBlock {
                                         read_block_result: Ok(block_bytes),
-                                        target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
+                                        target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                            async_token: HideDebug(async_token),
+                                        }),
                                     }) =>
                                         sklavenwelt.received_block_tasks
                                             .push(ReceivedBlockTask { async_token, block_bytes, }),
@@ -181,8 +188,12 @@ where E: EchoPolicy,
                                         read_block_result: Ok(block_bytes),
                                         target: ReadBlockTarget::LoadValue,
                                     }) => {
-                                        let value_bytes = storage::value_block_deserialize(&block_bytes)
-                                            .map_err(Error::ValueDeserialize)?;
+                                        let value_bytes =
+                                            storage::ValueBlock::read_from_source(
+                                                &mut SourceBytes::from(block_bytes),
+                                            )
+                                            .map_err(Error::ValueDeserialize)?
+                                            .into();
                                         assert!(sklavenwelt.received_value_bytes.is_none());
                                         sklavenwelt.received_value_bytes =
                                             Some(value_bytes);
@@ -360,7 +371,7 @@ where E: EchoPolicy,
                                 key,
                                 value_cell: kv::ValueCell {
                                     version,
-                                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)),
+                                    cell: kv::Cell::Value(storage::ValueRef::Inline(value_bytes)),
                                 },
                             } => {
                                 sklavenwelt.kont = Some(Kont::ReadyItem {
@@ -368,7 +379,7 @@ where E: EchoPolicy,
                                         key,
                                         value_cell: kv::ValueCell {
                                             version,
-                                            cell: kv::Cell::Value(value),
+                                            cell: kv::Cell::Value(kv::Value { value_bytes, }),
                                         },
                                     },
                                     lookup_context,
@@ -392,7 +403,7 @@ where E: EchoPolicy,
                                 key,
                                 value_cell: kv::ValueCell {
                                     version,
-                                    cell: kv::Cell::Value(storage::OwnedValueBlockRef::Ref(block_ref)),
+                                    cell: kv::Cell::Value(storage::ValueRef::External(block_ref)),
                                 },
                             } => {
                                 let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
@@ -419,6 +430,8 @@ where E: EchoPolicy,
                                 sklavenwelt.kont =
                                     Some(Kont::AwaitItemValue { key, version, lookup_context, next, });
                             },
+                            kv::KeyValuePair { value_cell: kv::ValueCell { cell: kv::Cell::Value(storage::ValueRef::Local(..)), .. }, .. } =>
+                                unreachable!("totally unexpected ValueRef::Local value from `search_range_merge`"),
                         }
                         break;
                     },
