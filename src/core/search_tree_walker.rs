@@ -162,7 +162,7 @@ impl WalkerCps {
                     let mut block_entry_steps = self.inner.block_entry_steps_pool.lend(Vec::new);
                     block_entry_steps.clear();
 
-                    let entries_iter = storage::block_deserialize_iter(block_bytes)
+                    let entries_iter = storage::block_deserialize_iter(&block_bytes)
                         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
                     for maybe_entry in entries_iter {
                         let iter_entry = maybe_entry

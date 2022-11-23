@@ -8,7 +8,7 @@ use alloc_pool::{
 use alloc_pool_pack::{
     integer,
     Source,
-    SourceBytes,
+    SourceBytesRef,
     ReadFromSource,
     WriteToBytesMut,
 };
@@ -592,14 +592,14 @@ pub enum Error {
     ValueBlock(ReadValueBlockError),
 }
 
-pub struct BlockDeserializeIter {
-    source: SourceBytes,
+pub struct BlockDeserializeIter<'a> {
+    source: SourceBytesRef<'a>,
     block_header: BlockHeader,
     entries_read: usize,
 }
 
-pub fn block_deserialize_iter(block_bytes: Bytes) -> Result<BlockDeserializeIter, Error> {
-    let mut source = SourceBytes::from(block_bytes);
+pub fn block_deserialize_iter<'a>(block_bytes: &'a Bytes) -> Result<BlockDeserializeIter<'a>, Error> {
+    let mut source = SourceBytesRef::from(block_bytes);
     let block_header = BlockHeader::read_from_source(&mut source)
         .map_err(Error::BlockHeader)?;
     Ok(BlockDeserializeIter {
@@ -609,13 +609,13 @@ pub fn block_deserialize_iter(block_bytes: Bytes) -> Result<BlockDeserializeIter
     })
 }
 
-impl BlockDeserializeIter {
+impl<'a> BlockDeserializeIter<'a> {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
     }
 }
 
-impl Iterator for BlockDeserializeIter {
+impl<'a> Iterator for BlockDeserializeIter<'a> {
     type Item = Result<Entry, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -5,7 +5,7 @@ use alloc_pool::{
 };
 
 use alloc_pool_pack::{
-    SourceBytes,
+    SourceBytesRef,
     ReadFromSource,
 };
 
@@ -190,7 +190,7 @@ where E: EchoPolicy,
                                     }) => {
                                         let value_bytes =
                                             storage::ValueBlock::read_from_source(
-                                                &mut SourceBytes::from(block_bytes),
+                                                &mut SourceBytesRef::from(&block_bytes),
                                             )
                                             .map_err(Error::ValueDeserialize)?
                                             .into();

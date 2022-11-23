@@ -190,7 +190,7 @@ where E: EchoPolicy,
                             };
 
                             welt_state.blocks_total += 1;
-                            match storage::block_deserialize_iter(block_bytes) {
+                            match storage::block_deserialize_iter(&block_bytes) {
                                 Ok(deserializer) =>
                                     match deserializer.block_header().node_type {
                                         storage::NodeType::Root { tree_entries_count, } => {
