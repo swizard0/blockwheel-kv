@@ -24,13 +24,13 @@ use rand::{
 use alloc_pool::{
     bytes::{
         Bytes,
-        BytesMut,
         BytesPool,
     },
 };
 
 use alloc_pool_pack::{
     Source,
+    Target,
     ReadFromSource,
     WriteToBytesMut,
 };
@@ -54,8 +54,8 @@ pub struct WheelFilename {
 }
 
 impl WriteToBytesMut for WheelFilename {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        self.filename_bytes.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        self.filename_bytes.write_to_bytes_mut(target);
     }
 }
 
@@ -145,9 +145,9 @@ pub struct BlockRef {
 }
 
 impl WriteToBytesMut for BlockRef {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        self.blockwheel_filename.write_to_bytes_mut(bytes_mut);
-        self.block_id.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        self.blockwheel_filename.write_to_bytes_mut(target);
+        self.block_id.write_to_bytes_mut(target);
     }
 }
 

@@ -8,6 +8,7 @@ use alloc_pool::{
 use alloc_pool_pack::{
     integer,
     Source,
+    Target,
     SourceBytesRef,
     ReadFromSource,
     WriteToBytesMut,
@@ -38,15 +39,15 @@ const TAG_NODE_TYPE_ROOT: u8 = 1;
 const TAG_NODE_TYPE_LEAF: u8 = 2;
 
 impl WriteToBytesMut for NodeType {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
         match self {
             &NodeType::Root { tree_entries_count, } => {
-                TAG_NODE_TYPE_ROOT.write_to_bytes_mut(bytes_mut);
+                TAG_NODE_TYPE_ROOT.write_to_bytes_mut(target);
                 let value = tree_entries_count as u64;
-                value.write_to_bytes_mut(bytes_mut);
+                value.write_to_bytes_mut(target);
             },
             NodeType::Leaf =>
-                TAG_NODE_TYPE_LEAF.write_to_bytes_mut(bytes_mut),
+                TAG_NODE_TYPE_LEAF.write_to_bytes_mut(target),
         }
     }
 }
@@ -89,10 +90,10 @@ pub struct BlockHeader {
 }
 
 impl WriteToBytesMut for BlockHeader {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        BLOCK_MAGIC.write_to_bytes_mut(bytes_mut);
-        self.node_type.write_to_bytes_mut(bytes_mut);
-        (self.entries_count as u32).write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        BLOCK_MAGIC.write_to_bytes_mut(target);
+        self.node_type.write_to_bytes_mut(target);
+        (self.entries_count as u32).write_to_bytes_mut(target);
     }
 }
 
@@ -135,8 +136,8 @@ pub struct LocalRef {
 }
 
 impl WriteToBytesMut for LocalRef {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        self.block_id.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        self.block_id.write_to_bytes_mut(target);
     }
 }
 
@@ -169,17 +170,17 @@ const TAG_JUMP_REF_LOCAL: u8 = 2;
 const TAG_JUMP_REF_EXTERNAL: u8 = 3;
 
 impl WriteToBytesMut for JumpRef {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
         match self {
             JumpRef::None =>
-                TAG_JUMP_REF_NONE.write_to_bytes_mut(bytes_mut),
+                TAG_JUMP_REF_NONE.write_to_bytes_mut(target),
             JumpRef::Local(local_ref) => {
-                TAG_JUMP_REF_LOCAL.write_to_bytes_mut(bytes_mut);
-                local_ref.write_to_bytes_mut(bytes_mut);
+                TAG_JUMP_REF_LOCAL.write_to_bytes_mut(target);
+                local_ref.write_to_bytes_mut(target);
             },
             JumpRef::External(block_ref) => {
-                TAG_JUMP_REF_EXTERNAL.write_to_bytes_mut(bytes_mut);
-                block_ref.write_to_bytes_mut(bytes_mut);
+                TAG_JUMP_REF_EXTERNAL.write_to_bytes_mut(target);
+                block_ref.write_to_bytes_mut(target);
             },
         }
     }
@@ -247,19 +248,19 @@ const TAG_VALUE_REF_LOCAL: u8 = 2;
 const TAG_VALUE_REF_EXTERNAL: u8 = 3;
 
 impl WriteToBytesMut for ValueRef {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
         match self {
             ValueRef::Inline(bytes) => {
-                TAG_VALUE_REF_INLINE.write_to_bytes_mut(bytes_mut);
-                bytes.write_to_bytes_mut(bytes_mut);
+                TAG_VALUE_REF_INLINE.write_to_bytes_mut(target);
+                bytes.write_to_bytes_mut(target);
             },
             ValueRef::Local(local_ref) => {
-                TAG_VALUE_REF_LOCAL.write_to_bytes_mut(bytes_mut);
-                local_ref.write_to_bytes_mut(bytes_mut);
+                TAG_VALUE_REF_LOCAL.write_to_bytes_mut(target);
+                local_ref.write_to_bytes_mut(target);
             },
             ValueRef::External(block_ref) => {
-                TAG_VALUE_REF_EXTERNAL.write_to_bytes_mut(bytes_mut);
-                block_ref.write_to_bytes_mut(bytes_mut);
+                TAG_VALUE_REF_EXTERNAL.write_to_bytes_mut(target);
+                block_ref.write_to_bytes_mut(target);
             },
         }
     }
@@ -339,14 +340,14 @@ const TAG_CELL_VALUE: u8 = 1;
 const TAG_CELL_TOMBSTONE: u8 = 2;
 
 impl WriteToBytesMut for kv::Cell<ValueRef> {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
         match self {
             kv::Cell::Value(value_ref) => {
-                TAG_CELL_VALUE.write_to_bytes_mut(bytes_mut);
-                value_ref.write_to_bytes_mut(bytes_mut);
+                TAG_CELL_VALUE.write_to_bytes_mut(target);
+                value_ref.write_to_bytes_mut(target);
             },
             kv::Cell::Tombstone =>
-                TAG_CELL_TOMBSTONE.write_to_bytes_mut(bytes_mut),
+                TAG_CELL_TOMBSTONE.write_to_bytes_mut(target),
         }
     }
 }
@@ -412,9 +413,9 @@ impl From<kv::Cell<kv::Value>> for kv::Cell<ValueRef> {
 // ValueCell
 
 impl WriteToBytesMut for kv::ValueCell<ValueRef> {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        self.version.write_to_bytes_mut(bytes_mut);
-        self.cell.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        self.version.write_to_bytes_mut(target);
+        self.cell.write_to_bytes_mut(target);
     }
 }
 
@@ -465,10 +466,10 @@ pub struct Entry {
 }
 
 impl WriteToBytesMut for Entry {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        self.jump_ref.write_to_bytes_mut(bytes_mut);
-        self.key.key_bytes.write_to_bytes_mut(bytes_mut);
-        self.value_cell.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        self.jump_ref.write_to_bytes_mut(target);
+        self.key.key_bytes.write_to_bytes_mut(target);
+        self.value_cell.write_to_bytes_mut(target);
     }
 }
 
@@ -503,9 +504,9 @@ pub struct ValueBlock {
 }
 
 impl WriteToBytesMut for ValueBlock {
-    fn write_to_bytes_mut(&self, bytes_mut: &mut BytesMut) {
-        VALUE_BLOCK_MAGIC.write_to_bytes_mut(bytes_mut);
-        self.value_block.write_to_bytes_mut(bytes_mut);
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        VALUE_BLOCK_MAGIC.write_to_bytes_mut(target);
+        self.value_block.write_to_bytes_mut(target);
     }
 }
 
@@ -598,7 +599,7 @@ pub struct BlockDeserializeIter<'a> {
     entries_read: usize,
 }
 
-pub fn block_deserialize_iter<'a>(block_bytes: &'a Bytes) -> Result<BlockDeserializeIter<'a>, Error> {
+pub fn block_deserialize_iter(block_bytes: &Bytes) -> Result<BlockDeserializeIter<'_>, Error> {
     let mut source = SourceBytesRef::from(block_bytes);
     let block_header = BlockHeader::read_from_source(&mut source)
         .map_err(Error::BlockHeader)?;
