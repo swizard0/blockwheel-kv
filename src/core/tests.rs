@@ -99,7 +99,7 @@ pub fn make_kinda_block(
     *global_block_id = global_block_id.next();
 
     let block_bytes = BytesMut::new_detached(Vec::new());
-    let mut kont = storage::BlockSerializer::start(node_type, items.len(), block_bytes).unwrap();
+    let mut kont = storage::BlockSerializer::start(node_type, items.len(), block_bytes);
     let mut items_iter = items.into_iter();
     loop {
         match kont {
@@ -107,33 +107,32 @@ pub fn make_kinda_block(
                 return (block_ref, block_bytes.freeze()),
             storage::BlockSerializerContinue::More(serializer) => {
                 let (maybe_jump_ref, key, value) = items_iter.next().unwrap();
-                let value_cell = storage::ValueCell {
+                let value_cell = kv::ValueCell {
                     version: 0,
-                    cell: storage::Cell::Value(
-                        storage::ValueRef::Inline(value.as_bytes()),
-                    ),
+                    cell: kv::Cell::Value(storage::ValueRef::Inline(to_bytes(value))),
                 };
                 let entry = storage::Entry {
                     jump_ref: storage::JumpRef::from_maybe_block_ref(
                         &maybe_jump_ref,
                         &blockwheel_filename,
                     ),
-                    key: key.as_bytes(),
+                    key: kv::Key { key_bytes: to_bytes(key), },
                     value_cell,
                 };
-                kont = serializer.entry(entry).unwrap();
+                kont = serializer.entry(entry);
             },
         }
     }
 }
 
-pub fn kinda_parse_item(item: &kv::KeyValuePair<storage::OwnedValueBlockRef>) -> (String, Option<String>, u64) {
+pub fn kinda_parse_item(item: &kv::KeyValuePair<storage::ValueRef>) -> (String, Option<String>, u64) {
     (
         String::from_utf8(item.key.key_bytes.to_vec()).unwrap(),
         match &item.value_cell.cell {
-            kv::Cell::Value(storage::OwnedValueBlockRef::Inline(value)) =>
-                Some(String::from_utf8(value.value_bytes.to_vec()).unwrap()),
-            kv::Cell::Value(storage::OwnedValueBlockRef::Ref(..)) |
+            kv::Cell::Value(storage::ValueRef::Inline(value)) =>
+                Some(String::from_utf8(value.to_vec()).unwrap()),
+            kv::Cell::Value(storage::ValueRef::Local(..)) |
+            kv::Cell::Value(storage::ValueRef::External(..)) |
             kv::Cell::Tombstone =>
                 None,
         },
