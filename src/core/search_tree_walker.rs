@@ -186,18 +186,6 @@ impl WalkerCps {
                                 },
                         }
 
-                        let maybe_jump_block_ref = match iter_entry.jump_ref {
-                            storage::JumpRef::None =>
-                                None,
-                            storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
-                                Some(BlockRef {
-                                    blockwheel_filename: block_ref.blockwheel_filename.clone(),
-                                    block_id: block_id.clone(),
-                                }),
-                            storage::JumpRef::External(block_ref) =>
-                                Some(block_ref),
-                        };
-
                         let force_stop = match &search_range {
                             SearchRangeBounds { range_to: Bound::Unbounded, .. } =>
                                 false,
@@ -217,31 +205,49 @@ impl WalkerCps {
                                 },
                         };
 
-                        let key = iter_entry.key;
-                        let mut value_cell = iter_entry.value_cell;
-                        value_cell.maybe_lift(&block_ref.blockwheel_filename);
+                        let maybe_jump_block_ref = match iter_entry.jump_ref {
+                            storage::JumpRef::None =>
+                                None,
+                            storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
+                                Some(BlockRef {
+                                    blockwheel_filename: block_ref.blockwheel_filename.clone(),
+                                    block_id: block_id.clone(),
+                                }),
+                            storage::JumpRef::External(block_ref) =>
+                                Some(block_ref),
+                        };
 
                         match (maybe_jump_block_ref, force_stop) {
                             (None, true) =>
                                 break,
-                            (None, false) =>
+                            (None, false) => {
+                                let key = iter_entry.key;
+                                let mut value_cell = iter_entry.value_cell;
+                                value_cell.maybe_lift(&block_ref.blockwheel_filename);
+
                                 block_entry_steps.push(BlockEntryStep::TryJump(
                                     BlockEntryAction::OnlyEntry { key, value_cell, },
-                                )),
+                                ));
+                            },
                             (Some(jump_block_ref), true) => {
                                 block_entry_steps.push(BlockEntryStep::TryJump(
                                     BlockEntryAction::OnlyJump(jump_block_ref),
                                 ));
                                 break;
                             },
-                            (Some(jump_block_ref), false) =>
+                            (Some(jump_block_ref), false) => {
+                                let key = iter_entry.key;
+                                let mut value_cell = iter_entry.value_cell;
+                                value_cell.maybe_lift(&block_ref.blockwheel_filename);
+
                                 block_entry_steps.push(BlockEntryStep::TryJump(
                                     BlockEntryAction::JumpAndEntry {
                                         jump: jump_block_ref,
                                         key,
                                         value_cell,
                                     },
-                                )),
+                                ));
+                            },
                         }
                     }
                     block_entry_steps.shrink_to_fit();

@@ -9,6 +9,7 @@ use alloc_pool_pack::{
     integer,
     Source,
     Target,
+    TargetCounter,
     SourceBytesRef,
     ReadFromSource,
     WriteToBytesMut,
@@ -467,8 +468,8 @@ pub struct Entry {
 
 impl WriteToBytesMut for Entry {
     fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
-        self.jump_ref.write_to_bytes_mut(target);
         self.key.key_bytes.write_to_bytes_mut(target);
+        self.jump_ref.write_to_bytes_mut(target);
         self.value_cell.write_to_bytes_mut(target);
     }
 }
@@ -484,13 +485,50 @@ impl ReadFromSource for Entry {
     type Error = ReadEntryError;
 
     fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
-        let jump_ref = JumpRef::read_from_source(source)
-            .map_err(Self::Error::JumpRef)?;
         let key_bytes = Bytes::read_from_source(source)
             .map_err(Self::Error::Key)?;
+        let jump_ref = JumpRef::read_from_source(source)
+            .map_err(Self::Error::JumpRef)?;
         let value_cell = kv::ValueCell::read_from_source(source)
             .map_err(Self::Error::ValueCell)?;
         Ok(Entry { jump_ref, key: kv::Key { key_bytes, }, value_cell, })
+    }
+}
+
+// EntryContainer
+
+#[derive(Clone, Debug)]
+pub struct EntryContainer {
+    pub entry: Entry,
+}
+
+impl WriteToBytesMut for EntryContainer {
+    fn write_to_bytes_mut<T>(&self, target: &mut T) where T: Target {
+        let mut target_counter = TargetCounter::default();
+        self.entry.write_to_bytes_mut(&mut target_counter);
+        let entry_size_bytes: u32 = target_counter.bytes_written()
+            .try_into()
+            .unwrap();
+        entry_size_bytes.write_to_bytes_mut(target);
+        self.entry.write_to_bytes_mut(target);
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadEntryContainerError {
+    EntrySizeBytes(integer::ReadIntegerError),
+    Entry(ReadEntryError),
+}
+
+impl ReadFromSource for EntryContainer {
+    type Error = ReadEntryContainerError;
+
+    fn read_from_source<S>(source: &mut S) -> Result<Self, Self::Error> where S: Source {
+        let _entry_size_bytes = u32::read_from_source(source)
+            .map_err(Self::Error::EntrySizeBytes)?;
+        let entry = Entry::read_from_source(source)
+            .map_err(Self::Error::Entry)?;
+        Ok(EntryContainer { entry, })
     }
 }
 
@@ -569,7 +607,8 @@ impl BlockSerializer {
     }
 
     pub fn entry(mut self, entry: Entry) -> BlockSerializerContinue {
-        entry.write_to_bytes_mut(&mut self.block_bytes);
+        let entry_container = EntryContainer { entry, };
+        entry_container.write_to_bytes_mut(&mut self.block_bytes);
         self.entries_left -= 1;
         if self.entries_left == 0 {
             BlockSerializerContinue::Done(self.block_bytes)
@@ -589,7 +628,7 @@ pub enum BlockSerializerContinue {
 #[derive(Debug)]
 pub enum Error {
     BlockHeader(ReadBlockHeaderError),
-    Entry(ReadEntryError),
+    EntryContainer(ReadEntryContainerError),
     ValueBlock(ReadValueBlockError),
 }
 
@@ -623,8 +662,10 @@ impl<'a> Iterator for BlockDeserializeIter<'a> {
         if self.entries_read >= self.block_header.entries_count {
             None
         } else {
-            let maybe_entry = Entry::read_from_source(&mut self.source)
-                .map_err(Error::Entry);
+            let maybe_entry_container = EntryContainer::read_from_source(&mut self.source)
+                .map_err(Error::EntryContainer);
+            let maybe_entry = maybe_entry_container
+                .map(|EntryContainer { entry, }| entry);
             self.entries_read += 1;
             Some(maybe_entry)
         }
