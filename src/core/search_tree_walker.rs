@@ -162,27 +162,33 @@ impl WalkerCps {
                     let mut block_entry_steps = self.inner.block_entry_steps_pool.lend(Vec::new);
                     block_entry_steps.clear();
 
-                    let entries_iter = storage::block_deserialize_iter(&block_bytes)
+                    let mut entries_iter = storage::block_deserialize_iter(&block_bytes)
                         .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
-                    for maybe_entry in entries_iter {
-                        let iter_entry = maybe_entry
+                    loop {
+                        let maybe_entry_snapshot = entries_iter.entry_snapshot()
                             .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+                        let Some(mut entry_snapshot) = maybe_entry_snapshot else { break };
+
                         match &search_range {
                             SearchRangeBounds { range_from: Bound::Unbounded, .. } =>
                                 (),
                             SearchRangeBounds { range_from: Bound::Excluded(key), .. } =>
-                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                                match key.key_bytes[..].cmp(entry_snapshot.peek_key_slice()) {
                                     Ordering::Less =>
                                         (),
-                                    Ordering::Equal | Ordering::Greater =>
-                                        continue,
+                                    Ordering::Equal | Ordering::Greater => {
+                                        entry_snapshot.skip_entry();
+                                        continue;
+                                    },
                                 },
                             SearchRangeBounds { range_from: Bound::Included(key), .. } =>
-                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                                match key.key_bytes[..].cmp(entry_snapshot.peek_key_slice()) {
                                     Ordering::Less | Ordering::Equal =>
                                         (),
-                                    Ordering::Greater =>
-                                        continue,
+                                    Ordering::Greater => {
+                                        entry_snapshot.skip_entry();
+                                        continue;
+                                    },
                                 },
                         }
 
@@ -190,14 +196,14 @@ impl WalkerCps {
                             SearchRangeBounds { range_to: Bound::Unbounded, .. } =>
                                 false,
                             SearchRangeBounds { range_to: Bound::Excluded(key), .. } =>
-                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                                match key.key_bytes[..].cmp(entry_snapshot.peek_key_slice()) {
                                     Ordering::Less | Ordering::Equal =>
                                         true,
                                     Ordering::Greater =>
                                         false,
                                 },
                             SearchRangeBounds { range_to: Bound::Included(key), .. } =>
-                                match key.key_bytes[..].cmp(&iter_entry.key.key_bytes) {
+                                match key.key_bytes[..].cmp(entry_snapshot.peek_key_slice()) {
                                     Ordering::Less  =>
                                         true,
                                     Ordering::Equal | Ordering::Greater =>
@@ -205,7 +211,11 @@ impl WalkerCps {
                                 },
                         };
 
-                        let maybe_jump_block_ref = match iter_entry.jump_ref {
+                        let (jump_ref, mut entry_snapshot) = entry_snapshot
+                            .proceed_to_jump_ref()
+                            .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
+
+                        let maybe_jump_block_ref = match jump_ref {
                             storage::JumpRef::None =>
                                 None,
                             storage::JumpRef::Local(storage::LocalRef { block_id, }) =>
@@ -218,11 +228,16 @@ impl WalkerCps {
                         };
 
                         match (maybe_jump_block_ref, force_stop) {
-                            (None, true) =>
-                                break,
+                            (None, true) => {
+                                entry_snapshot.skip_entry();
+                                break;
+                            },
                             (None, false) => {
-                                let key = iter_entry.key;
-                                let mut value_cell = iter_entry.value_cell;
+                                let key_bytes = block_bytes.clone_subslice(entry_snapshot.peek_key_slice());
+                                let key = kv::Key { key_bytes, };
+                                let mut value_cell = entry_snapshot
+                                    .proceed_to_value_cell()
+                                    .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
                                 value_cell.maybe_lift(&block_ref.blockwheel_filename);
 
                                 block_entry_steps.push(BlockEntryStep::TryJump(
@@ -233,11 +248,15 @@ impl WalkerCps {
                                 block_entry_steps.push(BlockEntryStep::TryJump(
                                     BlockEntryAction::OnlyJump(jump_block_ref),
                                 ));
+                                entry_snapshot.skip_entry();
                                 break;
                             },
                             (Some(jump_block_ref), false) => {
-                                let key = iter_entry.key;
-                                let mut value_cell = iter_entry.value_cell;
+                                let key_bytes = block_bytes.clone_subslice(entry_snapshot.peek_key_slice());
+                                let key = kv::Key { key_bytes, };
+                                let mut value_cell = entry_snapshot
+                                    .proceed_to_value_cell()
+                                    .map_err(|error| Error::ReadBlockStorage { block_ref: block_ref.clone(), error, })?;
                                 value_cell.maybe_lift(&block_ref.blockwheel_filename);
 
                                 block_entry_steps.push(BlockEntryStep::TryJump(

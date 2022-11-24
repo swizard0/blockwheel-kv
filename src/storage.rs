@@ -630,6 +630,10 @@ pub enum Error {
     BlockHeader(ReadBlockHeaderError),
     EntryContainer(ReadEntryContainerError),
     ValueBlock(ReadValueBlockError),
+    EntrySnapshotEntryContainerSizeBytes(integer::ReadIntegerError),
+    EntrySnapshotKeyLength(integer::ReadIntegerError),
+    EntrySnapshotJumpRef(ReadJumpRefError),
+    EntrySnapshotValueCell(ReadValueCellError),
 }
 
 pub struct BlockDeserializeIter<'a> {
@@ -652,6 +656,84 @@ pub fn block_deserialize_iter(block_bytes: &Bytes) -> Result<BlockDeserializeIte
 impl<'a> BlockDeserializeIter<'a> {
     pub fn block_header(&self) -> &BlockHeader {
         &self.block_header
+    }
+
+    pub fn entry_snapshot(&mut self) -> Result<Option<BlockDeserializeEntrySnapshotKey<'a, '_>>, Error> {
+        if self.entries_read >= self.block_header.entries_count {
+            return Ok(None);
+        }
+        let entry_size_bytes = u32::read_from_source(&mut self.source)
+            .map_err(Error::EntrySnapshotEntryContainerSizeBytes)?;
+        let start_source = self.source.clone();
+        let key_length = u32::read_from_source(&mut self.source)
+            .map_err(Error::EntrySnapshotKeyLength)?;
+        self.entries_read += 1;
+        Ok(Some(BlockDeserializeEntrySnapshotKey {
+            start_source,
+            source: &mut self.source,
+            entry_size_bytes,
+            key_length,
+        }))
+    }
+}
+
+pub struct BlockDeserializeEntrySnapshotKey<'a, 'b> {
+    start_source: SourceBytesRef<'a>,
+    source: &'b mut SourceBytesRef<'a>,
+    entry_size_bytes: u32,
+    key_length: u32,
+}
+
+impl<'a, 'b> BlockDeserializeEntrySnapshotKey<'a, 'b> {
+    pub fn peek_key_slice(&mut self) -> &[u8] {
+        &self.source.slice()[.. self.key_length as usize]
+    }
+
+    pub fn proceed_to_jump_ref(self) -> Result<(JumpRef, BlockDeserializeEntrySnapshotJumpRef<'a, 'b>), Error> {
+        let key_source = self.source.clone();
+        self.source.advance(self.key_length as usize);
+        let jump_ref = JumpRef::read_from_source(self.source)
+            .map_err(Error::EntrySnapshotJumpRef)?;
+        Ok((
+            jump_ref,
+            BlockDeserializeEntrySnapshotJumpRef {
+                start_source: self.start_source,
+                key_source,
+                source: self.source,
+                entry_size_bytes: self.entry_size_bytes,
+                key_length: self.key_length,
+            },
+        ))
+    }
+
+    pub fn skip_entry(self) {
+        *self.source = self.start_source;
+        self.source.advance(self.entry_size_bytes as usize);
+    }
+}
+
+pub struct BlockDeserializeEntrySnapshotJumpRef<'a, 'b> {
+    start_source: SourceBytesRef<'a>,
+    key_source: SourceBytesRef<'a>,
+    source: &'b mut SourceBytesRef<'a>,
+    entry_size_bytes: u32,
+    key_length: u32,
+}
+
+impl<'a, 'b> BlockDeserializeEntrySnapshotJumpRef<'a, 'b> {
+    pub fn peek_key_slice(&mut self) -> &[u8] {
+        &self.key_source.slice()[.. self.key_length as usize]
+    }
+
+    pub fn proceed_to_value_cell(self) -> Result<kv::ValueCell<ValueRef>, Error> {
+        let value_cell = kv::ValueCell::read_from_source(self.source)
+            .map_err(Error::EntrySnapshotValueCell)?;
+        Ok(value_cell)
+    }
+
+    pub fn skip_entry(self) {
+        *self.source = self.start_source;
+        self.source.advance(self.entry_size_bytes as usize);
     }
 }
 
