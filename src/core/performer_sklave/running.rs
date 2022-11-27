@@ -129,11 +129,11 @@ pub enum Error {
     },
     WheelInfo {
         blockwheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
+        error: blockwheel_fs::Error,
     },
     WheelFlush {
         blockwheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
+        error: blockwheel_fs::Error,
     },
 }
 

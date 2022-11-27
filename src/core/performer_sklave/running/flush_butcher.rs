@@ -137,8 +137,8 @@ enum Kont {
 pub enum Error {
     OrphanSklave(arbeitssklave::Error),
     SearchTreeBuilder(search_tree_builder::Error),
-    BlockWriteWriteBlockRequest(arbeitssklave::Error),
-    BlockWriteWriteValueRequest(arbeitssklave::Error),
+    BlockWriteWriteBlockRequest(blockwheel_fs::Error),
+    BlockWriteWriteValueRequest(blockwheel_fs::Error),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
     FeedbackCommit(komm::Error),
 }

@@ -61,11 +61,11 @@ enum WeltStateMode {
 pub enum Error {
     WheelIterBlocksInit {
         wheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
+        error: blockwheel_fs::Error,
     },
     WheelIterBlocksNext {
         wheel_filename: wheels::WheelFilename,
-        error: arbeitssklave::Error,
+        error: blockwheel_fs::Error,
     },
     WheelIterBlocksInitCanceled {
         blockwheel_filename: wheels::WheelFilename,

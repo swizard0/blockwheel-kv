@@ -202,7 +202,8 @@ fn make_wheel_ref(
     let blockwheel_filename = match &params.interpreter {
         blockwheel_fs::InterpreterParams::FixedFile(interpreter_params) =>
             wheels::WheelFilename::from_path(&interpreter_params.wheel_filename, blocks_pool),
-        blockwheel_fs::InterpreterParams::Ram(..) => {
+        blockwheel_fs::InterpreterParams::Ram(..) |
+        blockwheel_fs::InterpreterParams::Dummy(..) => {
             let mut rng = rand::thread_rng();
             let filename: String = (0 .. 16).map(|_| rng.gen::<char>()).collect();
             wheels::WheelFilename::from_path(&filename, blocks_pool)

@@ -153,8 +153,8 @@ pub enum Error {
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
     FeedbackCommit(komm::Error),
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
-    BlockLoadReadBlockRequest(arbeitssklave::Error),
-    BlockStoreWriteBlockRequest(arbeitssklave::Error),
+    BlockLoadReadBlockRequest(blockwheel_fs::Error),
+    BlockStoreWriteBlockRequest(blockwheel_fs::Error),
 }
 
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)

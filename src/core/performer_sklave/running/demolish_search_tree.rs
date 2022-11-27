@@ -113,8 +113,8 @@ pub enum Error {
     DeleteBlock(blockwheel_fs::RequestDeleteBlockError),
     FeedbackCommit(komm::Error),
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
-    BlockLoadReadBlockRequest(arbeitssklave::Error),
-    DeleteBlockRequest(arbeitssklave::Error),
+    BlockLoadReadBlockRequest(blockwheel_fs::Error),
+    DeleteBlockRequest(blockwheel_fs::Error),
 }
 
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)

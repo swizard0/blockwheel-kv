@@ -131,8 +131,8 @@ pub enum Error {
     WheelNotFound {
         blockwheel_filename: wheels::WheelFilename,
     },
-    ValueLoadReadBlockRequest(arbeitssklave::Error),
-    BlockLoadReadBlockRequest(arbeitssklave::Error),
+    ValueLoadReadBlockRequest(blockwheel_fs::Error),
+    BlockLoadReadBlockRequest(blockwheel_fs::Error),
     LoadBlock(blockwheel_fs::RequestReadBlockError),
     LoadValue(blockwheel_fs::RequestReadBlockError),
     ValueDeserialize(storage::ReadValueBlockError),
