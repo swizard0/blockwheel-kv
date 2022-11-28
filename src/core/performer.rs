@@ -186,7 +186,7 @@ struct Inner<C> where C: Context {
     info: Info,
     pending_events: Vec<PendingEvent<C>>,
     pending_flushes: Vec<C::Flush>,
-    delayed_replies: Vec<PendingEvent<C>>,
+    delayed_mutations: Vec<DelayedMutation<C>>,
 }
 
 pub struct SearchForest {
@@ -197,6 +197,18 @@ pub struct SearchForest {
     demolish_groups: Set<DemolishGroup>,
     accesses_count: usize,
     butcher_flushes_count: usize,
+}
+
+enum DelayedMutation<C> where C: Context {
+    Insert {
+        key: kv::Key,
+        value: kv::Value,
+        insert_context: C::Insert,
+    },
+    Remove {
+        key: kv::Key,
+        remove_context: C::Remove,
+    },
 }
 
 enum PendingEvent<C> where C: Context {
@@ -272,7 +284,7 @@ impl<C> Performer<C> where C: Context {
                 info: Info::default(),
                 pending_events: Vec::new(),
                 pending_flushes: Vec::new(),
-                delayed_replies: Vec::new(),
+                delayed_mutations: Vec::new(),
             },
         }
     }
@@ -564,10 +576,31 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn poll(mut self) -> Kont<C> {
-        // force delayed replies if possible
-        if !self.delayed_replies.is_empty() && self.forest.butcher_flushes_count < self.params.search_tree_bootstrap_search_trees_limit {
-            self.pending_events.append(&mut self.delayed_replies);
+        // force delayed mutation if possible
+        loop {
+            if self.forest.butcher_flushes_count >= self.params.search_tree_bootstrap_search_trees_limit {
+                break;
+            }
+            match self.delayed_mutations.pop() {
+                None =>
+                    break,
+                Some(DelayedMutation::Insert { key, value, insert_context, }) => {
+                    let version = self.insert(key, value);
+                    self.pending_events.push(PendingEvent::Inserted(PendingEventInserted {
+                        version,
+                        insert_context,
+                    }));
+                },
+                Some(DelayedMutation::Remove { key, remove_context, }) => {
+                    let version = self.remove(key);
+                    self.pending_events.push(PendingEvent::Removed(PendingEventRemoved {
+                        version,
+                        remove_context,
+                    }));
+                },
+            }
         }
+
         // time to flush butcher
         if let Some(event) = self.maybe_flush(false) {
             self.pending_events.push(PendingEvent::FlushButcher(event));
@@ -650,11 +683,7 @@ impl<C> KontPollNext<C> where C: Context {
     }
 
     pub fn incoming_insert(mut self, key: kv::Key, value: kv::Value, insert_context: C::Insert) -> Kont<C> {
-        let version = self.inner.insert(key, value);
-        self.inner.delayed_replies.push(PendingEvent::Inserted(PendingEventInserted {
-            version,
-            insert_context,
-        }));
+        self.inner.delayed_mutations.push(DelayedMutation::Insert { key, value, insert_context, });
         self.inner.poll()
     }
 
@@ -673,11 +702,7 @@ impl<C> KontPollNext<C> where C: Context {
     }
 
     pub fn incoming_remove(mut self, key: kv::Key, remove_context: C::Remove) -> Kont<C> {
-        let version = self.inner.remove(key);
-        self.inner.delayed_replies.push(PendingEvent::Removed(PendingEventRemoved {
-            version,
-            remove_context,
-        }));
+        self.inner.delayed_mutations.push(DelayedMutation::Remove { key, remove_context, });
         self.inner.poll()
     }
 
