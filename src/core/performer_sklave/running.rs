@@ -391,7 +391,11 @@ where E: EchoPolicy,
                                         &mut sklavenwelt.env.delayed_orders,
                                     );
 
-                                    assert!(sklavenwelt.env.lookup_range_merge_sklaven.is_empty());
+                                    assert!(
+                                        sklavenwelt.env.lookup_range_merge_sklaven.is_empty(),
+                                        "expected zero `lookup_range_merge_sklaven` on flush but got #{}",
+                                        sklavenwelt.env.lookup_range_merge_sklaven.len(),
+                                    );
                                     assert!(sklavenwelt.env.flush_butcher_sklaven.is_empty());
                                     assert!(sklavenwelt.env.merge_search_trees_sklaven.is_empty());
                                     assert!(sklavenwelt.env.demolish_search_tree_sklaven.is_empty());
@@ -647,7 +651,10 @@ where E: EchoPolicy,
                     flush_context: echo,
                     next,
                 }) => {
-                    log::debug!("kv flush is done, performing flush for wheels");
+                    log::debug!(
+                        "kv flush is done (lookup_range_merge_sklaven.len() = {}), performing flush for wheels",
+                        sklavenwelt.env.lookup_range_merge_sklaven.len(),
+                    );
                     let mut wheels_left = 0;
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
                         let flush_rueckkopplung = sendegeraet

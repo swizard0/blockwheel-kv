@@ -197,6 +197,7 @@ pub struct SearchForest {
     demolish_groups: Set<DemolishGroup>,
     accesses_count: usize,
     butcher_flushes_count: usize,
+    uncommitted_lookups: usize,
 }
 
 enum DelayedMutation<C> where C: Context {
@@ -407,6 +408,7 @@ impl<C> Inner<C> where C: Context {
             self.block_entry_steps_pool.clone(),
         );
 
+        self.forest.uncommitted_lookups += 1;
         LookupRangesMerger {
             source,
             token: AccessToken {
@@ -447,6 +449,8 @@ impl<C> Inner<C> where C: Context {
                 },
             }
         }
+        assert!(self.forest.uncommitted_lookups > 0);
+        self.forest.uncommitted_lookups -= 1;
     }
 
     fn maybe_merge_search_trees(&mut self) -> Option<PendingEventMergeSearchTrees> {
@@ -600,7 +604,6 @@ impl<C> Inner<C> where C: Context {
                 },
             }
         }
-
         // time to flush butcher
         if let Some(event) = self.maybe_flush(false) {
             self.pending_events.push(PendingEvent::FlushButcher(event));
@@ -611,6 +614,13 @@ impl<C> Inner<C> where C: Context {
         }
         // flush done
         if !self.pending_flushes.is_empty() && self.forest.flush_friendly() {
+            log::debug!(
+                "flush requests (#{} total) are done ({}/{}/{}), reporting success",
+                self.pending_flushes.len(),
+                self.forest.butcher_flushes_count,
+                self.forest.accesses_count,
+                self.forest.demolish_groups.len(),
+            );
             if let Some(event) = self.maybe_flush(true) {
                 self.pending_events.push(PendingEvent::FlushButcher(event));
             } else {
@@ -812,6 +822,7 @@ impl SearchForest {
             demolish_groups: Set::new(),
             accesses_count: 0,
             butcher_flushes_count: 0,
+            uncommitted_lookups: 0,
         }
     }
 
@@ -822,7 +833,8 @@ impl SearchForest {
     pub fn flush_friendly(&self) -> bool {
         self.butcher_flushes_count == 0 &&
             self.accesses_count == 0 &&
-            self.demolish_groups.is_empty()
+            self.demolish_groups.is_empty() &&
+            self.uncommitted_lookups == 0
     }
 
     pub fn add_constructed(&mut self, root_block: BlockRef, items_count: usize) -> u64 {
