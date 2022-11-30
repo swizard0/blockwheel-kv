@@ -64,8 +64,7 @@ where Self: Sized + Send + Sync + 'static,
 
 #[derive(Debug)]
 pub enum Error {
-    PerformerVersklaven(arbeitssklave::Error),
-    PerformerSendegeraet(komm::Error),
+    PerformerVersklaven(arbeitssklave::komm::Error),
     RequestInfo(arbeitssklave::Error),
     RequestInsert(arbeitssklave::Error),
     RequestLookupRange(komm::Error),
@@ -74,65 +73,8 @@ pub enum Error {
     RequestFlush(arbeitssklave::Error),
 }
 
-pub struct Freie<E> where E: EchoPolicy {
-    performer_sklave_freie: arbeitssklave::Freie<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
-}
-
-impl<E> Default for Freie<E> where E: EchoPolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<E> Freie<E> where E: EchoPolicy {
-    pub fn new() -> Self {
-        Self {
-            performer_sklave_freie: arbeitssklave::Freie::new(),
-        }
-    }
-
-    pub fn versklaven<P>(
-        self,
-        params: Params,
-        blocks_pool: BytesPool,
-        version_provider: version::Provider,
-        wheels: wheels::Wheels<E>,
-        thread_pool: &P,
-    )
-        -> Result<Meister<E>, Error>
-    where P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
-    {
-        let performer_sklave_sendegeraet =
-            komm::Sendegeraet::starten(
-                &self.performer_sklave_freie,
-                thread_pool.clone(),
-            )
-            .map_err(Error::PerformerSendegeraet)?;
-
-        let welt = core::performer_sklave::Welt::new(
-            core::performer_sklave::Env::new(
-                params,
-                blocks_pool,
-                version_provider,
-                wheels,
-                performer_sklave_sendegeraet.clone(),
-            ),
-        );
-
-        let performer_sklave_meister = self
-            .performer_sklave_freie
-            .versklaven(welt, thread_pool)
-            .map_err(Error::PerformerVersklaven)?;
-
-        Ok(Meister {
-            performer_sklave_meister,
-            performer_sklave_sendegeraet,
-        })
-    }
-}
-
 pub struct Meister<E> where E: EchoPolicy {
-    performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
+    performer_sklave_meister: arbeitssklave::komm::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
     performer_sklave_sendegeraet: komm::Sendegeraet<core::performer_sklave::Order<E>>,
 }
 
@@ -142,6 +84,39 @@ impl<E> Clone for Meister<E> where E: EchoPolicy {
             performer_sklave_meister: self.performer_sklave_meister.clone(),
             performer_sklave_sendegeraet: self.performer_sklave_sendegeraet.clone(),
         }
+    }
+}
+
+impl<E> Meister<E> where E: EchoPolicy {
+    pub fn versklaven<P>(
+        params: Params,
+        blocks_pool: BytesPool,
+        version_provider: version::Provider,
+        wheels: wheels::Wheels<E>,
+        thread_pool: &P,
+    )
+        -> Result<Self, Error>
+    where P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
+    {
+        let welt = core::performer_sklave::Welt::new(
+            core::performer_sklave::Env::new(
+                params,
+                blocks_pool,
+                version_provider,
+                wheels,
+            ),
+        );
+        let performer_sklave_meister = arbeitssklave::Freie::new(welt)
+            .versklaven_komm(thread_pool)
+            .map_err(Error::PerformerVersklaven)?;
+        let performer_sklave_sendegeraet = performer_sklave_meister
+            .sendegeraet()
+            .clone();
+
+        Ok(Meister {
+            performer_sklave_meister,
+            performer_sklave_sendegeraet,
+        })
     }
 }
 

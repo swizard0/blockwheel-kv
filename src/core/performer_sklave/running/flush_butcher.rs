@@ -158,7 +158,7 @@ where E: EchoPolicy,
 {
     'outer: loop {
         // first retrieve all orders available
-        if let Some(Kont::Start { .. }) = sklave_job.sklavenwelt().kont {
+        if let Some(Kont::Start { .. }) = sklave_job.kont {
             // skip it on initialize
         } else {
             let gehorsam = sklave_job.zu_ihren_diensten()
@@ -171,7 +171,6 @@ where E: EchoPolicy,
                         match befehle.befehl() {
                             arbeitssklave::SklavenBefehl::Mehr { befehl, mut mehr_befehle, } => {
                                 mehr_befehle
-                                    .sklavenwelt_mut()
                                     .incoming_orders.push(befehl);
                                 befehle = mehr_befehle;
                             },
@@ -185,7 +184,7 @@ where E: EchoPolicy,
         }
 
         loop {
-            let sklavenwelt = sklave_job.sklavenwelt_mut();
+            let sklavenwelt = &mut *sklave_job;
             match sklavenwelt.kont.take().unwrap() {
 
                 Kont::Start { frozen_memcache, } => {

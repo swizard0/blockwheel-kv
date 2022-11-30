@@ -104,14 +104,13 @@ impl<E> Welt<E> where E: EchoPolicy {
     }
 }
 
-pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
+pub type SklaveJob<E> = arbeitssklave::komm::SklaveJob<Welt<E>, Order<E>>;
 
 pub struct Env<E> where E: EchoPolicy {
     params: Params,
     blocks_pool: BytesPool,
     version_provider: version::Provider,
     wheels: wheels::Wheels<E>,
-    sendegeraet: komm::Sendegeraet<Order<E>>,
     incoming_orders: Vec<Order<E>>,
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
@@ -127,7 +126,6 @@ impl<E> Env<E> where E: EchoPolicy {
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels: wheels::Wheels<E>,
-        sendegeraet: komm::Sendegeraet<Order<E>>,
     )
         -> Self
     {
@@ -136,7 +134,6 @@ impl<E> Env<E> where E: EchoPolicy {
             blocks_pool,
             version_provider,
             wheels,
-            sendegeraet,
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
@@ -313,7 +310,7 @@ where E: EchoPolicy,
 {
     loop {
         // first retrieve all orders available
-        if let WeltState::Init = sklave_job.sklavenwelt().state {
+        if let WeltState::Init = sklave_job.state {
             // skip it on initialize
         } else {
             let gehorsam = sklave_job.zu_ihren_diensten()
@@ -326,7 +323,6 @@ where E: EchoPolicy,
                         match befehle.befehl() {
                             arbeitssklave::SklavenBefehl::Mehr { befehl, mut mehr_befehle, } => {
                                 mehr_befehle
-                                    .sklavenwelt_mut()
                                     .env
                                     .incoming_orders.push(befehl);
                                 befehle = mehr_befehle;
@@ -341,7 +337,8 @@ where E: EchoPolicy,
         }
 
         // then process the orders retrieved
-        let sklavenwelt = sklave_job.sklavenwelt_mut();
+        let sendegeraet = sklave_job.sendegeraet().clone();
+        let sklavenwelt = &mut *sklave_job;
         loop {
             let state = mem::replace(&mut sklavenwelt.state, WeltState::Init);
             match state {
@@ -351,7 +348,7 @@ where E: EchoPolicy,
                         WeltState::Loading(loading::WeltState::new());
                 },
                 WeltState::Loading(loading) =>
-                    match loading::job(loading, sklavenwelt, thread_pool).map_err(Error::Loading)? {
+                    match loading::job(loading, sklavenwelt, &sendegeraet, thread_pool).map_err(Error::Loading)? {
                         loading::Outcome::Rasten { loading, } => {
                             sklavenwelt.state = WeltState::Loading(loading);
                             break;
@@ -363,7 +360,7 @@ where E: EchoPolicy,
                         },
                     },
                 WeltState::Running(running) =>
-                    match running::job(running, sklavenwelt, thread_pool).map_err(Error::Running)? {
+                    match running::job(running, sklavenwelt, &sendegeraet, thread_pool).map_err(Error::Running)? {
                         running::Outcome::Rasten { running, } => {
                             sklavenwelt.state = WeltState::Running(running);
                             break;

@@ -192,12 +192,13 @@ pub enum Error {
     InsertJobCanceled,
 }
 
-fn make_wheel_ref(
+fn make_wheel_ref<P>(
     params: blockwheel_fs::Params,
     blocks_pool: &BytesPool,
-    thread_pool: &edeltraud::Edeltraud<Job>,
+    thread_pool: &P,
 )
     -> Result<wheels::WheelRef<EchoPolicy>, Error>
+where P: edeltraud::ThreadPool<Job> + Clone + Send + Sync + 'static,
 {
     let blockwheel_filename = match &params.interpreter {
         blockwheel_fs::InterpreterParams::FixedFile(interpreter_params) =>
@@ -210,10 +211,8 @@ fn make_wheel_ref(
         },
     };
 
-    let freie: blockwheel_fs::Freie<wheels::WheelEchoPolicy<EchoPolicy>> =
-        blockwheel_fs::Freie::new();
-    let meister = freie
-        .versklaven(
+    let meister =
+        blockwheel_fs::Meister::versklaven(
             params,
             blocks_pool.clone(),
             &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
@@ -366,7 +365,7 @@ struct Welt {
 enum Job {
     BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>),
     BlockwheelKv(blockwheel_kv::job::Job<EchoPolicy>),
-    FtdSklave(arbeitssklave::SklaveJob<Welt, ReplyOrder>),
+    FtdSklave(arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>),
     Insert(JobInsertArgs),
 }
 
@@ -382,8 +381,8 @@ impl From<blockwheel_kv::job::Job<EchoPolicy>> for Job {
     }
 }
 
-impl From<arbeitssklave::SklaveJob<Welt, ReplyOrder>> for Job {
-    fn from(job: arbeitssklave::SklaveJob<Welt, ReplyOrder>) -> Job {
+impl From<arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>> for Job {
+    fn from(job: arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>) -> Job {
         Job::FtdSklave(job)
     }
 }
@@ -404,15 +403,21 @@ impl edeltraud::Job for Job {
             Job::FtdSklave(mut sklave_job) => {
                 #[allow(clippy::while_let_loop)]
                 loop {
-                    match sklave_job.zu_ihren_diensten().unwrap() {
-                        arbeitssklave::Gehorsam::Machen { mut befehle, } =>
+                    match sklave_job.zu_ihren_diensten() {
+                        Ok(arbeitssklave::Gehorsam::Machen { mut befehle, }) =>
                             loop {
                                 match befehle.befehl() {
-                                    arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
+                                    arbeitssklave::SklavenBefehl::Mehr {
+                                        befehl,
+                                        mehr_befehle,
+                                    } => {
                                         befehle = mehr_befehle;
-                                        let tx_lock = befehle.sklavenwelt().ftd_tx.lock().unwrap();
-                                        if let Err(_send_error) = tx_lock.send(befehl) {
-                                            log::warn!("frontend tx lost, terminatong FtdSklave job");
+                                        let Ok(tx_lock) = befehle.ftd_tx.lock() else {
+                                            log::error!("failed to lock mutex in FtdSklave job, terminating");
+                                            return;
+                                        };
+                                        if let Err(mpsc::SendError(befehl)) = tx_lock.send(befehl) {
+                                            log::warn!("failed to send back order {befehl:?} in FtdSklave job, terminating");
                                             return;
                                         }
                                     },
@@ -422,8 +427,12 @@ impl edeltraud::Job for Job {
                                     },
                                 }
                             },
-                        arbeitssklave::Gehorsam::Rasten =>
+                        Ok(arbeitssklave::Gehorsam::Rasten) =>
                             break,
+                        Err(error) => {
+                            log::info!("FtdSklave::zu_ihren_diensten terminated with {error:?}");
+                            break;
+                        },
                     }
                 }
             },
@@ -494,9 +503,10 @@ fn stress_loop(
     -> Result<(), Error>
 {
     let blocks_pool = BytesPool::new();
-    let thread_pool: edeltraud::Edeltraud<Job> = edeltraud::Builder::new()
+    let edeltraud: edeltraud::Edeltraud<Job> = edeltraud::Builder::new()
         .build()
         .map_err(Error::ThreadPool)?;
+    let thread_pool = edeltraud.handle();
 
     let wheel_ref_a = make_wheel_ref(params.wheel_a, &blocks_pool, &thread_pool)?;
     let wheel_ref_b = make_wheel_ref(params.wheel_b, &blocks_pool, &thread_pool)?;
@@ -507,9 +517,8 @@ fn stress_loop(
         .build()
         .map_err(Error::WheelsBuilder)?;
 
-    let freie: blockwheel_kv::Freie<EchoPolicy> = blockwheel_kv::Freie::new();
-    let meister = freie
-        .versklaven(
+    let meister =
+        blockwheel_kv::Meister::versklaven(
             params.kv,
             blocks_pool.clone(),
             version_provider.clone(),
@@ -519,12 +528,13 @@ fn stress_loop(
         .map_err(Error::BlockwheelKvMeister)?;
 
     let (ftd_tx, ftd_rx) = mpsc::channel();
-    let ftd_sklave_freie = arbeitssklave::Freie::new();
-    let ftd_sendegeraet = komm::Sendegeraet::starten(&ftd_sklave_freie, thread_pool.clone())
+    let ftd_sklave_meister =
+        arbeitssklave::Freie::new(
+            Welt { ftd_tx: Mutex::new(ftd_tx), },
+        )
+        .versklaven_komm(&thread_pool)
         .unwrap();
-    let _ftd_sklave_meister = ftd_sklave_freie
-        .versklaven(Welt { ftd_tx: Mutex::new(ftd_tx), }, &thread_pool)
-        .unwrap();
+    let ftd_sendegeraet = ftd_sklave_meister.sendegeraet().clone();
 
     let mut rng = SmallRng::from_entropy();
     let p_distribution = Uniform::new(0.0, 1.0);
