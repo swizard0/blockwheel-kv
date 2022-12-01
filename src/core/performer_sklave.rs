@@ -300,23 +300,25 @@ pub enum Error {
 }
 
 use std::{sync::atomic::{AtomicUsize, Ordering}, time::{Instant, Duration}};
-pub static SKLAVE_JOB_INVOKED_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static SKLAVE_JOB_GOT_RASTEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static SKLAVE_JOB_GOT_MACHEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static SKLAVE_JOB_RUN_MS: AtomicUsize = AtomicUsize::new(0);
-pub static SKLAVE_JOB_IDLE_MS: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_INVOKED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_GOT_RASTEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_GOT_MACHEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_GOT_MACHEN_BEFEHL_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_RUN_MS: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_RUN_MAX_MS: AtomicUsize = AtomicUsize::new(0);
+pub static PERFORMER_IDLE_MS: AtomicUsize = AtomicUsize::new(0);
 
 impl<E> Drop for Welt<E> where E: EchoPolicy {
     fn drop(&mut self) {
 
-        println!(" ;; SKLAVE_JOB_INVOKED_TOTAL: {:?}", SKLAVE_JOB_INVOKED_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; SKLAVE_JOB_GOT_RASTEN_TOTAL: {:?}", SKLAVE_JOB_GOT_RASTEN_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; SKLAVE_JOB_GOT_MACHEN_TOTAL: {:?}", SKLAVE_JOB_GOT_MACHEN_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL: {:?}", SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; SKLAVE_JOB_RUN_MS: {:?}", Duration::from_micros(SKLAVE_JOB_RUN_MS.load(Ordering::Relaxed) as u64));
-        println!(" ;; SKLAVE_JOB_IDLE_MS: {:?}", Duration::from_micros(SKLAVE_JOB_IDLE_MS.load(Ordering::Relaxed) as u64));
-        println!(" ;; SKLAVE_JOB_WELT_ALIVE_MS: {:?}", self.created_at.elapsed());
+        println!(" ;; PERFORMER_INVOKED_TOTAL: {:?}", PERFORMER_INVOKED_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; PERFORMER_GOT_RASTEN_TOTAL: {:?}", PERFORMER_GOT_RASTEN_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; PERFORMER_GOT_MACHEN_TOTAL: {:?}", PERFORMER_GOT_MACHEN_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; PERFORMER_GOT_MACHEN_BEFEHL_TOTAL: {:?}", PERFORMER_GOT_MACHEN_BEFEHL_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; PERFORMER_RUN_MS: {:?}", Duration::from_micros(PERFORMER_RUN_MS.load(Ordering::Relaxed) as u64));
+        println!(" ;; PERFORMER_RUN_MAX_MS: {:?}", Duration::from_micros(PERFORMER_RUN_MAX_MS.load(Ordering::Relaxed) as u64));
+        println!(" ;; PERFORMER_IDLE_MS: {:?}", Duration::from_micros(PERFORMER_IDLE_MS.load(Ordering::Relaxed) as u64));
+        println!(" ;; PERFORMER_WELT_ALIVE_MS: {:?}", self.created_at.elapsed());
 
     }
 }
@@ -327,20 +329,26 @@ where E: EchoPolicy,
 {
     let now = Instant::now();
     if let Some(started_at) = sklave_job.idle_started_at {
-        SKLAVE_JOB_IDLE_MS.fetch_add(started_at.elapsed().as_micros() as usize, Ordering::Relaxed);
+        PERFORMER_IDLE_MS.fetch_add(started_at.elapsed().as_micros() as usize, Ordering::Relaxed);
     }
 
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
-    SKLAVE_JOB_RUN_MS.fetch_add(now.elapsed().as_micros() as usize, Ordering::Relaxed);
+
+    let elapsed_ms = now.elapsed().as_micros() as usize;
+    PERFORMER_RUN_MS.fetch_add(elapsed_ms, Ordering::Relaxed);
+    let current_max = PERFORMER_RUN_MAX_MS.load(Ordering::Relaxed);
+    if current_max < elapsed_ms {
+        PERFORMER_RUN_MAX_MS.store(elapsed_ms, Ordering::Relaxed);
+    }
 }
 
 fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
 where E: EchoPolicy,
       P: edeltraud::ThreadPool<job::Job<E>>,
 {
-    SKLAVE_JOB_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     loop {
         // first retrieve all orders available
@@ -352,18 +360,18 @@ where E: EchoPolicy,
                 .map_err(Error::OrphanSklave)?;
             match gehorsam {
                 arbeitssklave::Gehorsam::Rasten => {
-                    SKLAVE_JOB_GOT_RASTEN_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    PERFORMER_GOT_RASTEN_TOTAL.fetch_add(1, Ordering::Relaxed);
                     return Ok(());
                 },
                 arbeitssklave::Gehorsam::Machen { mut befehle, } => {
-                    SKLAVE_JOB_GOT_MACHEN_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    PERFORMER_GOT_MACHEN_TOTAL.fetch_add(1, Ordering::Relaxed);
                     loop {
                         match befehle.befehl() {
                             arbeitssklave::SklavenBefehl::Mehr {
                                 befehl,
                                 mut mehr_befehle,
                             } => {
-                                SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL.fetch_add(1, Ordering::Relaxed);
+                                PERFORMER_GOT_MACHEN_BEFEHL_TOTAL.fetch_add(1, Ordering::Relaxed);
                                 mehr_befehle
                                     .env
                                     .incoming_orders.push(befehl);
