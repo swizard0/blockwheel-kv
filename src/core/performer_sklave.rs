@@ -93,6 +93,8 @@ pub enum OrderWheel {
 pub struct Welt<E> where E: EchoPolicy {
     env: Env<E>,
     state: WeltState<E>,
+    created_at: Instant,
+    idle_started_at: Option<Instant>,
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
@@ -100,6 +102,8 @@ impl<E> Welt<E> where E: EchoPolicy {
         Welt {
             env,
             state: WeltState::Init,
+            created_at: Instant::now(),
+            idle_started_at: None,
         }
     }
 }
@@ -295,33 +299,71 @@ pub enum Error {
     OrphanSklave(arbeitssklave::Error),
 }
 
+use std::{sync::atomic::{AtomicUsize, Ordering}, time::{Instant, Duration}};
+pub static SKLAVE_JOB_INVOKED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static SKLAVE_JOB_GOT_RASTEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static SKLAVE_JOB_GOT_MACHEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL: AtomicUsize = AtomicUsize::new(0);
+pub static SKLAVE_JOB_RUN_MS: AtomicUsize = AtomicUsize::new(0);
+pub static SKLAVE_JOB_IDLE_MS: AtomicUsize = AtomicUsize::new(0);
+
+impl<E> Drop for Welt<E> where E: EchoPolicy {
+    fn drop(&mut self) {
+
+        println!(" ;; SKLAVE_JOB_INVOKED_TOTAL: {:?}", SKLAVE_JOB_INVOKED_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; SKLAVE_JOB_GOT_RASTEN_TOTAL: {:?}", SKLAVE_JOB_GOT_RASTEN_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; SKLAVE_JOB_GOT_MACHEN_TOTAL: {:?}", SKLAVE_JOB_GOT_MACHEN_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL: {:?}", SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL.load(Ordering::Relaxed));
+        println!(" ;; SKLAVE_JOB_RUN_MS: {:?}", Duration::from_micros(SKLAVE_JOB_RUN_MS.load(Ordering::Relaxed) as u64));
+        println!(" ;; SKLAVE_JOB_IDLE_MS: {:?}", Duration::from_micros(SKLAVE_JOB_IDLE_MS.load(Ordering::Relaxed) as u64));
+        println!(" ;; SKLAVE_JOB_WELT_ALIVE_MS: {:?}", self.created_at.elapsed());
+
+    }
+}
+
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
 where E: EchoPolicy,
       P: edeltraud::ThreadPool<job::Job<E>>,
 {
+    let now = Instant::now();
+    if let Some(started_at) = sklave_job.idle_started_at {
+        SKLAVE_JOB_IDLE_MS.fetch_add(started_at.elapsed().as_micros() as usize, Ordering::Relaxed);
+    }
+
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
+    SKLAVE_JOB_RUN_MS.fetch_add(now.elapsed().as_micros() as usize, Ordering::Relaxed);
 }
 
 fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
 where E: EchoPolicy,
       P: edeltraud::ThreadPool<job::Job<E>>,
 {
+    SKLAVE_JOB_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
+
     loop {
         // first retrieve all orders available
         if let WeltState::Init = sklave_job.state {
             // skip it on initialize
         } else {
+            sklave_job.idle_started_at = Some(Instant::now());
             let gehorsam = sklave_job.zu_ihren_diensten()
                 .map_err(Error::OrphanSklave)?;
             match gehorsam {
-                arbeitssklave::Gehorsam::Rasten =>
-                    return Ok(()),
-                arbeitssklave::Gehorsam::Machen { mut befehle, } =>
+                arbeitssklave::Gehorsam::Rasten => {
+                    SKLAVE_JOB_GOT_RASTEN_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                },
+                arbeitssklave::Gehorsam::Machen { mut befehle, } => {
+                    SKLAVE_JOB_GOT_MACHEN_TOTAL.fetch_add(1, Ordering::Relaxed);
                     loop {
                         match befehle.befehl() {
-                            arbeitssklave::SklavenBefehl::Mehr { befehl, mut mehr_befehle, } => {
+                            arbeitssklave::SklavenBefehl::Mehr {
+                                befehl,
+                                mut mehr_befehle,
+                            } => {
+                                SKLAVE_JOB_GOT_MACHEN_BEFEHL_TOTAL.fetch_add(1, Ordering::Relaxed);
                                 mehr_befehle
                                     .env
                                     .incoming_orders.push(befehl);
@@ -332,7 +374,8 @@ where E: EchoPolicy,
                                 break;
                             },
                         }
-                    },
+                    }
+                },
             }
         }
 
