@@ -45,6 +45,8 @@ use crate::{
 pub enum Order {
     ReadBlock(OrderReadBlock),
     WriteBlock(OrderWriteBlock),
+    ReadBlockCancel(komm::UmschlagAbbrechen<ReadBlockTarget>),
+    WriteBlockCancel(komm::UmschlagAbbrechen<WriteBlockTarget>),
 }
 
 pub struct OrderReadBlock {
@@ -685,4 +687,25 @@ enum BuildKontActive {
         items_count: usize,
         root_block: BlockRef,
     },
+}
+
+impl From<komm::UmschlagAbbrechen<ReadBlockTarget>> for Order {
+    fn from(v: komm::UmschlagAbbrechen<ReadBlockTarget>) -> Order {
+        Order::ReadBlockCancel(v)
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<WriteBlockTarget>> for Order {
+    fn from(v: komm::UmschlagAbbrechen<WriteBlockTarget>) -> Order {
+        Order::WriteBlockCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>> for Order {
+    fn from(v: komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>) -> Order {
+        Order::WriteBlock(OrderWriteBlock {
+            write_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
 }

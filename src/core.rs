@@ -14,6 +14,13 @@ use alloc_pool::{
     Unique,
 };
 
+use arbeitssklave::{
+    komm::{
+        self,
+        Echo,
+    },
+};
+
 use crate::{
     kv,
     storage,
@@ -23,6 +30,13 @@ use crate::{
 };
 
 pub mod performer_sklave;
+
+use performer_sklave::{
+    running::{
+        flush_butcher,
+        merge_search_trees,
+    },
+};
 
 mod merger;
 mod context;
@@ -34,6 +48,33 @@ mod search_ranges_merge;
 
 #[cfg(test)]
 mod tests;
+
+// blockwheel_fs rueckkopplung
+
+pub type FsInfo<E> = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteInfo>;
+pub type FsFlush<E> = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteFlush>;
+
+pub enum FsWriteBlock {
+    FlushButcher {
+        rueckkopplung: komm::Rueckkopplung<flush_butcher::Order, flush_butcher::WriteBlockTarget>,
+    },
+    MergeSearchTrees {
+        rueckkopplung: komm::Rueckkopplung<merge_search_trees::Order, merge_search_trees::WriteBlockTarget>,
+    },
+}
+
+impl Echo<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>> for FsWriteBlock {
+    fn commit_echo(self, inhalt: Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>) -> Result<(), komm::EchoError> {
+        match self {
+            FsWriteBlock::FlushButcher { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+            FsWriteBlock::MergeSearchTrees { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+        }
+    }
+}
+
+// types
 
 pub type SearchTreeBuilderCps =
     search_tree_builder::BuilderCps<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
@@ -54,6 +95,8 @@ pub type SearchRangesMergeBlockNext =
     search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
 pub type SearchRangesMergeItemNext =
     search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+
+// MemCache
 
 pub struct MemCache {
     cache: BTreeMap<OrdKey, kv::ValueCell<kv::Value>>,
@@ -101,6 +144,8 @@ impl DerefMut for MemCache {
     }
 }
 
+// SearchRangeBounds
+
 #[derive(Clone, Debug)]
 pub struct SearchRangeBounds {
     range_from: Bound<kv::Key>,
@@ -139,6 +184,7 @@ impl<R> From<R> for SearchRangeBounds where R: RangeBounds<kv::Key> {
     }
 }
 
+// OrdKey
 
 #[derive(Clone, Debug)]
 pub struct OrdKey {

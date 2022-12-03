@@ -119,7 +119,6 @@ pub struct Env<E> where E: EchoPolicy {
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
     lookup_range_merge_sklaven: HashMap<komm::StreamId, running::lookup_range_merge::Meister<E>>,
-    flush_butcher_sklaven: Set<running::flush_butcher::Meister<E>>,
     merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<E>>,
     demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
 }
@@ -142,7 +141,6 @@ impl<E> Env<E> where E: EchoPolicy {
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
             lookup_range_merge_sklaven: HashMap::new(),
-            flush_butcher_sklaven: Set::new(),
             merge_search_trees_sklaven: Set::new(),
             demolish_search_tree_sklaven: Set::new(),
         }
@@ -166,14 +164,8 @@ pub struct LookupRangeMergeDrop {
     route: LookupRangeRoute,
 }
 
-#[derive(Debug)]
-pub struct FlushButcherRoute {
-    meister_ref: Ref,
-}
-
 pub struct FlushButcherDrop {
     search_tree_id: u64,
-    route: FlushButcherRoute,
 }
 
 pub struct FlushButcherDone {
@@ -250,10 +242,6 @@ pub struct WheelRouteFlush;
 
 #[derive(Debug)]
 pub enum WheelRouteWriteBlock {
-    FlushButcher {
-        route: FlushButcherRoute,
-        target: running::flush_butcher::WriteBlockTarget,
-    },
     MergeSearchTrees {
         route: MergeSearchTreesRoute,
         target: running::merge_search_trees::WriteBlockTarget,
@@ -325,7 +313,7 @@ impl<E> Drop for Welt<E> where E: EchoPolicy {
 
 pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
 {
     let now = Instant::now();
     if let Some(started_at) = sklave_job.idle_started_at {
@@ -346,7 +334,7 @@ where E: EchoPolicy,
 
 fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
 {
     PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
 

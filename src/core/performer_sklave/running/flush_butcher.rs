@@ -39,6 +39,7 @@ use crate::{
         search_tree_builder,
         MemCache,
         BlockRef,
+        FsWriteBlock,
         SearchTreeBuilderCps,
         SearchTreeBuilderKont,
         SearchTreeBuilderBlockNext,
@@ -49,6 +50,7 @@ use crate::{
 
 pub enum Order {
     WriteBlock(OrderWriteBlock),
+    WriteBlockCancel(komm::UmschlagAbbrechen<WriteBlockTarget>),
 }
 
 pub struct OrderWriteBlock {
@@ -71,8 +73,6 @@ pub enum WriteBlockTarget {
 
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
-    meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -84,13 +84,10 @@ pub struct Welt<E> where E: EchoPolicy {
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
         values_inline_size_limit: usize,
-        meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
         block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -105,8 +102,6 @@ impl<E> Welt<E> where E: EchoPolicy {
             },
             values_inline_size_limit,
             kont: Some(Kont::Start { frozen_memcache, }),
-            meister_ref,
-            sendegeraet,
             wheels,
             blocks_pool,
             block_entries_pool,
@@ -124,7 +119,7 @@ struct ValueWritePending {
 }
 
 pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
-pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
+pub type SklaveJob<E> = arbeitssklave::komm::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]
 enum Kont {
@@ -140,6 +135,7 @@ pub enum Error {
     BlockWriteWriteBlockRequest(blockwheel_fs::Error),
     BlockWriteWriteValueRequest(blockwheel_fs::Error),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
+    WheelIsGoneDuringWriteBlock,
     FeedbackCommit(komm::Error),
 }
 
@@ -184,23 +180,22 @@ where E: EchoPolicy,
         }
 
         loop {
-            let sklavenwelt = &mut *sklave_job;
-            match sklavenwelt.kont.take().unwrap() {
+            match sklave_job.kont.take().unwrap() {
 
                 Kont::Start { frozen_memcache, } => {
                     let builder = search_tree_builder::BuilderCps::new(
-                        sklavenwelt.block_entries_pool.clone(),
-                        sklavenwelt.search_tree_builder_params,
+                        sklave_job.block_entries_pool.clone(),
+                        sklave_job.search_tree_builder_params,
                     );
-                    sklavenwelt.kont =
-                        Some(init_build(sklavenwelt, frozen_memcache, builder, thread_pool)?);
+                    sklave_job.kont =
+                        Some(init_build(&mut sklave_job, frozen_memcache, builder, thread_pool)?);
                 },
 
                 Kont::Continue { next, } =>
                     loop {
-                        match sklavenwelt.incoming_orders.pop() {
+                        match sklave_job.incoming_orders.pop() {
                             None => {
-                                sklavenwelt.kont = Some(Kont::Continue { next, });
+                                sklave_job.kont = Some(Kont::Continue { next, });
                                 continue 'outer;
                             },
                             Some(Order::WriteBlock(OrderWriteBlock {
@@ -210,8 +205,8 @@ where E: EchoPolicy,
                                 let block_ref = BlockRef { blockwheel_filename, block_id, };
                                 let builder_kont = next.block_processed(async_ref, block_ref)
                                     .map_err(Error::SearchTreeBuilder)?;
-                                sklavenwelt.kont =
-                                    Some(proceed_build(sklavenwelt, builder_kont, thread_pool)?);
+                                sklave_job.kont =
+                                    Some(proceed_build(&mut sklave_job, builder_kont, thread_pool)?);
                                 break;
                             },
                             Some(Order::WriteBlock(OrderWriteBlock {
@@ -223,7 +218,7 @@ where E: EchoPolicy,
                                 },
                             })) => {
                                 let block_ref = BlockRef { blockwheel_filename, block_id, };
-                                match sklavenwelt.value_writes_pending.entry(async_ref) {
+                                match sklave_job.value_writes_pending.entry(async_ref) {
                                     Entry::Occupied(mut oe) => {
                                         let value_write_pending = oe.get_mut();
                                         assert!(value_write_pending.pending_count > 0);
@@ -242,7 +237,7 @@ where E: EchoPolicy,
                                         if value_write_pending.pending_count == 0 {
                                             let (_, value_write_pending) = oe.remove_entry();
                                             serialize_block(
-                                                sklavenwelt,
+                                                &mut sklave_job,
                                                 value_write_pending.node_type,
                                                 async_ref,
                                                 value_write_pending.block_entries,
@@ -256,11 +251,13 @@ where E: EchoPolicy,
                             },
                             Some(Order::WriteBlock(OrderWriteBlock { write_block_result: Err(error), .. })) =>
                                 return Err(Error::WriteBlock(error)),
+                            Some(Order::WriteBlockCancel(..)) =>
+                                return Err(Error::WheelIsGoneDuringWriteBlock),
                         }
                     },
 
                 Kont::Finished { root_block_ref: root_block, } => {
-                    if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
+                    if let Some(feedback) = sklave_job.maybe_feedback.take() {
                         feedback.commit(performer_sklave::FlushButcherDone { root_block, })
                             .map_err(Error::FeedbackCommit)?;
                     }
@@ -273,7 +270,7 @@ where E: EchoPolicy,
 }
 
 fn init_build<E, P>(
-    sklavenwelt: &mut Welt<E>,
+    sklave_job: &mut SklaveJob<E>,
     frozen_memcache: Arc<MemCache>,
     builder: SearchTreeBuilderCps,
     thread_pool: &P,
@@ -317,7 +314,7 @@ where E: EchoPolicy,
                     next,
                 },
             ) => {
-                process_ready_block(sklavenwelt, node_type, block_entries, async_ref, thread_pool)?;
+                process_ready_block(sklave_job, node_type, block_entries, async_ref, thread_pool)?;
                 builder_kont = next.process_scheduled()
                     .map_err(Error::SearchTreeBuilder)?;
             },
@@ -328,7 +325,7 @@ where E: EchoPolicy,
 }
 
 fn proceed_build<E, P>(
-    sklavenwelt: &mut Welt<E>,
+    sklave_job: &mut SklaveJob<E>,
     mut builder_kont: SearchTreeBuilderKont,
     thread_pool: &P,
 )
@@ -354,7 +351,7 @@ where E: EchoPolicy,
                     next,
                 },
             ) => {
-                process_ready_block(sklavenwelt, node_type, block_entries, async_ref, thread_pool)?;
+                process_ready_block(sklave_job, node_type, block_entries, async_ref, thread_pool)?;
                 builder_kont = next.process_scheduled()
                     .map_err(Error::SearchTreeBuilder)?;
             },
@@ -365,7 +362,7 @@ where E: EchoPolicy,
 }
 
 fn process_ready_block<E, P>(
-    sklavenwelt: &mut Welt<E>,
+    sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
     block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
     async_ref: Ref,
@@ -378,34 +375,29 @@ where E: EchoPolicy,
     let mut values_write_pending = 0;
     for (block_entry_index, block_entry) in block_entries.iter().enumerate() {
         match &block_entry.item.value_cell.cell {
-            kv::Cell::Value(storage::ValueRef::Inline(value_bytes)) if value_bytes.len() > sklavenwelt.values_inline_size_limit => {
-                let mut block_bytes = sklavenwelt.blocks_pool.lend();
+            kv::Cell::Value(storage::ValueRef::Inline(value_bytes)) if value_bytes.len() > sklave_job.values_inline_size_limit => {
+                let mut block_bytes = sklave_job.blocks_pool.lend();
                 let value_block = storage::ValueBlock::from(
                     kv::Value { value_bytes: value_bytes.clone(), },
                 );
                 value_block.write_to_bytes_mut(&mut block_bytes);
 
-                let wheel_ref = sklavenwelt.wheels.acquire();
-                let rueckkopplung = sklavenwelt
-                    .sendegeraet
+                let wheel_ref = sklave_job.wheels.acquire();
+                let rueckkopplung = sklave_job
+                    .sendegeraet()
                     .rueckkopplung(
-                        performer_sklave::WheelRouteWriteBlock::FlushButcher {
-                            route: performer_sklave::FlushButcherRoute {
-                                meister_ref: sklavenwelt.meister_ref,
-                            },
-                            target: WriteBlockTarget::WriteValue {
-                                async_ref,
-                                block_entry_index,
-                                blockwheel_filename: wheel_ref
-                                    .blockwheel_filename
-                                    .clone(),
-                            },
+                        WriteBlockTarget::WriteValue {
+                            async_ref,
+                            block_entry_index,
+                            blockwheel_filename: wheel_ref
+                                .blockwheel_filename
+                                .clone(),
                         },
                     );
                 wheel_ref.meister
                     .write_block(
                         block_bytes.freeze(),
-                        rueckkopplung,
+                        FsWriteBlock::FlushButcher { rueckkopplung, },
                         &edeltraud::ThreadPoolMap::new(thread_pool),
                     )
                     .map_err(Error::BlockWriteWriteValueRequest)?;
@@ -417,9 +409,9 @@ where E: EchoPolicy,
     }
 
     if values_write_pending == 0 {
-        serialize_block(sklavenwelt, node_type, async_ref, block_entries, thread_pool)
+        serialize_block(sklave_job, node_type, async_ref, block_entries, thread_pool)
     } else {
-        sklavenwelt.value_writes_pending.insert(
+        sklave_job.value_writes_pending.insert(
             async_ref,
             ValueWritePending {
                 node_type,
@@ -432,7 +424,7 @@ where E: EchoPolicy,
 }
 
 fn serialize_block<E, P>(
-    sklavenwelt: &mut Welt<E>,
+    sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
     async_ref: Ref,
     mut block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
@@ -442,8 +434,8 @@ fn serialize_block<E, P>(
 where E: EchoPolicy,
       P: edeltraud::ThreadPool<job::Job<E>>,
 {
-    let wheel_ref = sklavenwelt.wheels.acquire();
-    let block_bytes = sklavenwelt.blocks_pool.lend();
+    let wheel_ref = sklave_job.wheels.acquire();
+    let block_bytes = sklave_job.blocks_pool.lend();
     let mut kont =
         storage::BlockSerializer::start(node_type, block_entries.len(), block_bytes);
     let mut block_entries_iter =
@@ -475,28 +467,38 @@ where E: EchoPolicy,
         }
     };
 
-    let rueckkopplung = sklavenwelt
-        .sendegeraet
+    let rueckkopplung = sklave_job
+        .sendegeraet()
         .rueckkopplung(
-            performer_sklave::WheelRouteWriteBlock::FlushButcher {
-                route: performer_sklave::FlushButcherRoute {
-                    meister_ref: sklavenwelt.meister_ref,
-                },
-                target: WriteBlockTarget::WriteBlock {
-                    async_ref,
-                    blockwheel_filename: wheel_ref
-                        .blockwheel_filename
-                        .clone(),
-                },
+            WriteBlockTarget::WriteBlock {
+                async_ref,
+                blockwheel_filename: wheel_ref
+                    .blockwheel_filename
+                    .clone(),
             },
         );
     wheel_ref.meister
         .write_block(
             block_bytes,
-            rueckkopplung,
+            FsWriteBlock::FlushButcher { rueckkopplung, },
             &edeltraud::ThreadPoolMap::new(thread_pool),
         )
         .map_err(Error::BlockWriteWriteBlockRequest)?;
 
     Ok(())
+}
+
+impl From<komm::UmschlagAbbrechen<WriteBlockTarget>> for Order {
+    fn from(v: komm::UmschlagAbbrechen<WriteBlockTarget>) -> Order {
+        Order::WriteBlockCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>> for Order {
+    fn from(v: komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>) -> Order {
+        Order::WriteBlock(OrderWriteBlock {
+            write_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
 }

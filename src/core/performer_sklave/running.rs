@@ -29,7 +29,6 @@ use crate::{
             LookupRangeStream,
             FlushButcherDone,
             FlushButcherDrop,
-            FlushButcherRoute,
             MergeSearchTreesDone,
             MergeSearchTreesDrop,
             MergeSearchTreesRoute,
@@ -108,7 +107,7 @@ pub enum Error {
     CommitRemoved(komm::EchoError),
     CommitFlushed(komm::EchoError),
     LookupRangeMergerVersklaven(arbeitssklave::Error),
-    FlushButcherVersklaven(arbeitssklave::Error),
+    FlushButcherVersklaven(komm::Error),
     MergeSearchTreesVersklaven(arbeitssklave::Error),
     DemolishSearchTreeVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
@@ -145,7 +144,7 @@ pub fn job<E, P>(
 )
     -> Result<Outcome<E>, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
 {
     loop {
         let mut performer_kont = match welt_state.kont {
@@ -249,19 +248,9 @@ where E: EchoPolicy,
                             break next.commit_lookup_range(access_token);
                         },
                         Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
-                            stamp: FlushButcherDrop {
-                                route: FlushButcherRoute { meister_ref, },
-                                ..
-                            },
-                        })) => {
-                            let maybe_removed = sklavenwelt.env
-                                .flush_butcher_sklaven
-                                .remove(meister_ref);
-                            if maybe_removed.is_none() {
-                                log::debug!("flush butcher sklave entry has already unregistered");
-                            }
-                            return Err(Error::FlushButcherSklaveCrashed);
-                        },
+                            stamp: FlushButcherDrop { .. },
+                        })) =>
+                            return Err(Error::FlushButcherSklaveCrashed),
                         Some(Order::UnregisterMergeSearchTrees(komm::UmschlagAbbrechen {
                             stamp: MergeSearchTreesDrop {
                                 route: MergeSearchTreesRoute { meister_ref, },
@@ -292,19 +281,9 @@ where E: EchoPolicy,
                         },
                         Some(Order::FlushButcherDone(komm::Umschlag {
                             inhalt: FlushButcherDone { root_block, },
-                            stamp: FlushButcherDrop {
-                                search_tree_id,
-                                route: FlushButcherRoute { meister_ref, },
-                            },
-                        })) => {
-                            let maybe_removed = sklavenwelt.env
-                                .flush_butcher_sklaven
-                                .remove(meister_ref);
-                            if maybe_removed.is_none() {
-                                log::warn!("flush butcher sklave entry has already unregistered");
-                            }
-                            break next.butcher_flushed(search_tree_id, root_block);
-                        },
+                            stamp: FlushButcherDrop { search_tree_id, },
+                        })) =>
+                            break next.butcher_flushed(search_tree_id, root_block),
                         Some(Order::MergeSearchTreesDone(komm::Umschlag {
                             inhalt: MergeSearchTreesDone {
                                 merged_search_tree_ref,
@@ -396,7 +375,6 @@ where E: EchoPolicy,
                                         "expected zero `lookup_range_merge_sklaven` on flush but got #{}",
                                         sklavenwelt.env.lookup_range_merge_sklaven.len(),
                                     );
-                                    assert!(sklavenwelt.env.flush_butcher_sklaven.is_empty());
                                     assert!(sklavenwelt.env.merge_search_trees_sklaven.is_empty());
                                     assert!(sklavenwelt.env.demolish_search_tree_sklaven.is_empty());
                                 },
@@ -405,36 +383,6 @@ where E: EchoPolicy,
                             },
                         Some(Order::Wheel(OrderWheel::WriteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringWriteBlock { route: stamp, }),
-                        Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
-                            inhalt: write_block_result,
-                            stamp: WheelRouteWriteBlock::FlushButcher {
-                                route: FlushButcherRoute { meister_ref, },
-                                target,
-                            },
-                        }))) => {
-                            let maybe_meister = sklavenwelt.env
-                                .flush_butcher_sklaven
-                                .get(meister_ref);
-                            match maybe_meister {
-                                Some(meister) => {
-                                    let send_result = meister.befehl(
-                                        flush_butcher::Order::WriteBlock(
-                                            flush_butcher::OrderWriteBlock {
-                                                write_block_result,
-                                                target,
-                                            },
-                                        ),
-                                        thread_pool,
-                                    );
-                                    if let Err(error) = send_result {
-                                        log::warn!("flush butcher sklave write block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref);
-                                    }
-                                },
-                                None =>
-                                    log::warn!("flush butcher sklave entry has already unregistered before write block order"),
-                            }
-                        },
                         Some(Order::Wheel(OrderWheel::WriteBlock(komm::Umschlag {
                             inhalt: write_block_result,
                             stamp: WheelRouteWriteBlock::MergeSearchTrees {
@@ -682,10 +630,6 @@ where E: EchoPolicy,
                     frozen_memcache,
                     next,
                 }) => {
-                    let insert_entry  = sklavenwelt.env
-                        .flush_butcher_sklaven
-                        .insert_entry();
-                    let meister_ref = *insert_entry.set_ref();
                     let flush_butcher_meister =
                         arbeitssklave::Freie::new(
                             flush_butcher::Welt::new(
@@ -693,23 +637,14 @@ where E: EchoPolicy,
                                 sklavenwelt.env.params.tree_block_size,
                                 sklavenwelt.env.params
                                     .search_tree_values_inline_size_limit,
-                                meister_ref,
-                                sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),
-                                sendegeraet
-                                    .rueckkopplung(FlushButcherDrop {
-                                        search_tree_id,
-                                        route: FlushButcherRoute {
-                                            meister_ref,
-                                        },
-                                    }),
+                                sendegeraet.rueckkopplung(FlushButcherDrop { search_tree_id, }),
                             ),
                         )
-                        .versklaven(thread_pool)
+                        .versklaven_komm(thread_pool)
                         .map_err(Error::FlushButcherVersklaven)?;
-                    insert_entry.commit(flush_butcher_meister);
                     next.scheduled()
                 },
                 performer::Kont::LookupRangeMergerReady(performer::KontLookupRangeMergerReady {

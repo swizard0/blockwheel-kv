@@ -42,6 +42,9 @@ use arbeitssklave::{
 use crate::{
     core::{
         performer_sklave,
+        FsInfo,
+        FsFlush,
+        FsWriteBlock,
     },
     EchoPolicy,
 };
@@ -186,9 +189,9 @@ impl<E> Clone for Wheels<E> where E: EchoPolicy {
 pub struct WheelEchoPolicy<E>(PhantomData<E>);
 
 impl<E> blockwheel_fs::EchoPolicy for WheelEchoPolicy<E> where E: EchoPolicy {
-    type Info = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteInfo>;
-    type Flush = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteFlush>;
-    type WriteBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteWriteBlock>;
+    type Info = FsInfo<E>;
+    type Flush = FsFlush<E>;
+    type WriteBlock = FsWriteBlock;
     type ReadBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteReadBlock>;
     type DeleteBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteDeleteBlock>;
     type IterBlocksInit = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksInit>;
