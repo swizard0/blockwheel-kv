@@ -65,32 +65,50 @@ pub static JOB_FLUSH_BUTCHER_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_MERGE_SEARCH_TREES_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 pub static JOB_DEMOLISH_SEARCH_TREE_SKLAVE: AtomicUsize = AtomicUsize::new(0);
 
-impl<E> edeltraud::Job for Job<E> where E: EchoPolicy {
-    fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
-        match self {
+pub struct JobUnit<E, J>(edeltraud::JobUnit<J, Job<E>>) where E: EchoPolicy;
+
+impl<E, J> From<edeltraud::JobUnit<J, Job<E>>> for JobUnit<E, J> where E: EchoPolicy {
+    fn from(job_unit: edeltraud::JobUnit<J, Job<E>>) -> Self {
+        Self(job_unit)
+    }
+}
+
+impl<E, J> edeltraud::Job for JobUnit<E, J>
+where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<blockwheel_fs::job::BlockPrepareWriteJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<blockwheel_fs::job::BlockPrepareDeleteJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<blockwheel_fs::job::BlockProcessReadJob<wheels::WheelEchoPolicy<E>>>,
+{
+    fn run(self) {
+        match self.0.job {
             Job::BlockwheelFs(job) => {
                 JOB_BLOCKWHEEL_FS.fetch_add(1, Ordering::Relaxed);
-                job.run(&edeltraud::ThreadPoolMap::new(thread_pool));
+                let job_unit = blockwheel_fs::job::JobUnit::from(edeltraud::JobUnit {
+                    handle: self.0.handle,
+                    job,
+                });
+                job_unit.run();
             },
             Job::PerformerSklave(sklave_job) => {
                 JOB_PERFORMER_SKLAVE.fetch_add(1, Ordering::Relaxed);
-                core::performer_sklave::run_job(sklave_job, thread_pool);
+                core::performer_sklave::run_job(sklave_job, &self.0.handle);
             },
             Job::LookupRangeMergeSklave(sklave_job) => {
                 JOB_LOOKUP_RANGE_MERGE_SKLAVE.fetch_add(1, Ordering::Relaxed);
-                core::performer_sklave::running::lookup_range_merge::run_job(sklave_job, thread_pool)
+                core::performer_sklave::running::lookup_range_merge::run_job(sklave_job, &self.0.handle)
             },
             Job::FlushButcherSklave(sklave_job) => {
                 JOB_FLUSH_BUTCHER_SKLAVE.fetch_add(1, Ordering::Relaxed);
-                core::performer_sklave::running::flush_butcher::run_job(sklave_job, thread_pool)
+                core::performer_sklave::running::flush_butcher::run_job(sklave_job, &self.0.handle)
             },
             Job::MergeSearchTreesSklave(sklave_job) => {
                 JOB_MERGE_SEARCH_TREES_SKLAVE.fetch_add(1, Ordering::Relaxed);
-                core::performer_sklave::running::merge_search_trees::run_job(sklave_job, thread_pool)
+                core::performer_sklave::running::merge_search_trees::run_job(sklave_job, &self.0.handle)
             },
             Job::DemolishSearchTreeSklave(sklave_job) => {
                 JOB_DEMOLISH_SEARCH_TREE_SKLAVE.fetch_add(1, Ordering::Relaxed);
-                core::performer_sklave::running::demolish_search_tree::run_job(sklave_job, thread_pool)
+                core::performer_sklave::running::demolish_search_tree::run_job(sklave_job, &self.0.handle)
             },
         }
     }

@@ -64,17 +64,17 @@ where Self: Sized + Send + Sync + 'static,
 
 #[derive(Debug)]
 pub enum Error {
-    PerformerVersklaven(arbeitssklave::komm::Error),
+    PerformerVersklaven(arbeitssklave::Error),
     RequestInfo(arbeitssklave::Error),
     RequestInsert(arbeitssklave::Error),
-    RequestLookupRange(komm::Error),
-    RequestLookupRangeNext(komm::Error),
+    RequestLookupRange(arbeitssklave::Error),
+    RequestLookupRangeNext(arbeitssklave::Error),
     RequestRemove(arbeitssklave::Error),
     RequestFlush(arbeitssklave::Error),
 }
 
 pub struct Meister<E> where E: EchoPolicy {
-    performer_sklave_meister: arbeitssklave::komm::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
+    performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
     performer_sklave_sendegeraet: komm::Sendegeraet<core::performer_sklave::Order<E>>,
 }
 
@@ -88,26 +88,28 @@ impl<E> Clone for Meister<E> where E: EchoPolicy {
 }
 
 impl<E> Meister<E> where E: EchoPolicy {
-    pub fn versklaven<P>(
+    pub fn versklaven<J>(
         params: Params,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
         wheels: wheels::Wheels<E>,
-        thread_pool: &P,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<Self, Error>
-    where P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
+    where J: Send + 'static,
     {
-        let welt = core::performer_sklave::Welt::new(
-            core::performer_sklave::Env::new(
-                params,
-                blocks_pool,
-                version_provider,
-                wheels,
-            ),
-        );
-        let performer_sklave_meister = arbeitssklave::Freie::new(welt)
-            .versklaven_komm(thread_pool)
+        let performer_sklave_meister = arbeitssklave::Freie::new()
+            .versklaven(
+                core::performer_sklave::Welt::new(
+                    core::performer_sklave::Env::new(
+                        params,
+                        blocks_pool,
+                        version_provider,
+                        wheels,
+                    ),
+                ),
+                thread_pool,
+            )
             .map_err(Error::PerformerVersklaven)?;
         let performer_sklave_sendegeraet = performer_sklave_meister
             .sendegeraet()
@@ -167,13 +169,12 @@ impl<E> LookupRangeStream<E> where E: EchoPolicy {
 }
 
 impl<E> Meister<E> where E: EchoPolicy {
-    pub fn info<P>(
+    pub fn info<J>(
         &self,
         echo: E::Info,
-        thread_pool: &P,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
-    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
@@ -189,15 +190,14 @@ impl<E> Meister<E> where E: EchoPolicy {
             .map_err(Error::RequestInfo)
     }
 
-    pub fn insert<P>(
+    pub fn insert<J>(
         &self,
         key: kv::Key,
         value: kv::Value,
         echo: E::Insert,
-        thread_pool: &P,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
-    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
@@ -213,15 +213,14 @@ impl<E> Meister<E> where E: EchoPolicy {
             .map_err(Error::RequestInsert)
     }
 
-    pub fn lookup_range<R, P>(
+    pub fn lookup_range<R, J>(
         &self,
         range: R,
         stream_echo: E::LookupRange,
-        _thread_pool: &P,
+        _thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<LookupRangeStream<E>, Error>
     where R: RangeBounds<kv::Key>,
-          P: edeltraud::ThreadPool<job::Job<E>>,
     {
         let stream = self.performer_sklave_sendegeraet
             .stream_starten(
@@ -234,14 +233,13 @@ impl<E> Meister<E> where E: EchoPolicy {
         Ok(LookupRangeStream { stream, })
     }
 
-    pub fn remove<P>(
+    pub fn remove<J>(
         &self,
         key: kv::Key,
         echo: E::Remove,
-        thread_pool: &P,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
-    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(
@@ -257,13 +255,12 @@ impl<E> Meister<E> where E: EchoPolicy {
             .map_err(Error::RequestRemove)
     }
 
-    pub fn flush<P>(
+    pub fn flush<J>(
         &self,
         echo: E::Flush,
-        thread_pool: &P,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
-    where P: edeltraud::ThreadPool<job::Job<E>>
     {
         self.performer_sklave_meister
             .befehl(

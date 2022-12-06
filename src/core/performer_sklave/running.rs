@@ -6,7 +6,6 @@ use arbeitssklave::{
 };
 
 use crate::{
-    job,
     wheels,
     core::{
         performer,
@@ -107,7 +106,7 @@ pub enum Error {
     CommitRemoved(komm::EchoError),
     CommitFlushed(komm::EchoError),
     LookupRangeMergerVersklaven(arbeitssklave::Error),
-    FlushButcherVersklaven(komm::Error),
+    FlushButcherVersklaven(arbeitssklave::Error),
     MergeSearchTreesVersklaven(arbeitssklave::Error),
     DemolishSearchTreeVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
@@ -136,15 +135,19 @@ pub enum Error {
     },
 }
 
-pub fn job<E, P>(
+pub fn job<E, J>(
     mut welt_state: WeltState<E>,
     sklavenwelt: &mut Welt<E>,
     sendegeraet: &komm::Sendegeraet<Order<E>>,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Outcome<E>, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>> + Clone + Send + Sync + 'static,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<flush_butcher::SklaveJob<E>>,
+      J: From<lookup_range_merge::SklaveJob<E>>,
+      J: From<merge_search_trees::SklaveJob<E>>,
+      J: From<demolish_search_tree::SklaveJob<E>>,
 {
     loop {
         let mut performer_kont = match welt_state.kont {
@@ -565,7 +568,7 @@ where E: EchoPolicy,
                                 blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
                             });
                         wheel_ref.meister
-                            .info(info_rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+                            .info(info_rueckkopplung, thread_pool)
                             .map_err(|error| Error::WheelInfo {
                                 blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
                                 error,
@@ -608,7 +611,7 @@ where E: EchoPolicy,
                         let flush_rueckkopplung = sendegeraet
                             .rueckkopplung(WheelRouteFlush);
                         wheel_ref.meister
-                            .flush(flush_rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+                            .flush(flush_rueckkopplung, thread_pool)
                             .map_err(|error| Error::WheelFlush {
                                 blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
                                 error,
@@ -630,8 +633,8 @@ where E: EchoPolicy,
                     frozen_memcache,
                     next,
                 }) => {
-                    let flush_butcher_meister =
-                        arbeitssklave::Freie::new(
+                    let flush_butcher_meister = arbeitssklave::Freie::new()
+                        .versklaven(
                             flush_butcher::Welt::new(
                                 frozen_memcache,
                                 sklavenwelt.env.params.tree_block_size,
@@ -642,8 +645,8 @@ where E: EchoPolicy,
                                 welt_state.pools.block_entries_pool.clone(),
                                 sendegeraet.rueckkopplung(FlushButcherDrop { search_tree_id, }),
                             ),
+                            thread_pool,
                         )
-                        .versklaven_komm(thread_pool)
                         .map_err(Error::FlushButcherVersklaven)?;
                     next.scheduled()
                 },
@@ -656,8 +659,8 @@ where E: EchoPolicy,
                         .stream_token
                         .stream_id()
                         .clone();
-                    let merger_meister =
-                        arbeitssklave::Freie::new(
+                    let merger_meister = arbeitssklave::Freie::new()
+                        .versklaven(
                             lookup_range_merge::Welt::new(
                                 ranges_merger.source,
                                 lookup_context,
@@ -670,8 +673,8 @@ where E: EchoPolicy,
                                         route: LookupRangeRoute { stream_id: stream_id.clone(), },
                                     }),
                             ),
+                            thread_pool,
                         )
-                        .versklaven(thread_pool)
                         .map_err(Error::LookupRangeMergerVersklaven)?;
                     sklavenwelt.env
                         .lookup_range_merge_sklaven
@@ -686,8 +689,8 @@ where E: EchoPolicy,
                         .merge_search_trees_sklaven
                         .insert_entry();
                     let meister_ref = *insert_entry.set_ref();
-                    let merge_meister =
-                        arbeitssklave::Freie::new(
+                    let merge_meister = arbeitssklave::Freie::new()
+                        .versklaven(
                             merge_search_trees::Welt::new(
                                 ranges_merger.source_count_items,
                                 ranges_merger.source_build,
@@ -703,8 +706,8 @@ where E: EchoPolicy,
                                         route: MergeSearchTreesRoute { meister_ref, },
                                     }),
                             ),
+                            thread_pool,
                         )
-                        .versklaven(thread_pool)
                         .map_err(Error::MergeSearchTreesVersklaven)?;
                     insert_entry.commit(merge_meister);
                     next.scheduled()
@@ -717,8 +720,8 @@ where E: EchoPolicy,
                         .demolish_search_tree_sklaven
                         .insert_entry();
                     let meister_ref = *insert_entry.set_ref();
-                    let demolish_meister =
-                        arbeitssklave::Freie::new(
+                    let demolish_meister = arbeitssklave::Freie::new()
+                        .versklaven(
                             demolish_search_tree::Welt::new(
                                 order.source,
                                 meister_ref,
@@ -730,8 +733,8 @@ where E: EchoPolicy,
                                         route: DemolishSearchTreeRoute { meister_ref, },
                                     }),
                             ),
+                            thread_pool,
                         )
-                        .versklaven(thread_pool)
                         .map_err(Error::DemolishSearchTreeVersklaven)?;
                     insert_entry.commit(demolish_meister);
                     next.roger_that()

@@ -18,7 +18,6 @@ use arbeitssklave::{
 
 use crate::{
     kv,
-    job,
     wheels,
     storage,
     core::{
@@ -138,18 +137,16 @@ pub enum Error {
     ValueDeserialize(storage::ReadValueBlockError),
 }
 
-pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -333,7 +330,7 @@ where E: EchoPolicy,
                             .read_block(
                                 block_ref.block_id,
                                 rueckkopplung,
-                                &edeltraud::ThreadPoolMap::new(thread_pool),
+                                thread_pool,
                             )
                             .map_err(Error::BlockLoadReadBlockRequest)?;
                         merger_kont = next.scheduled()
@@ -424,7 +421,7 @@ where E: EchoPolicy,
                                     .read_block(
                                         block_ref.block_id,
                                         rueckkopplung,
-                                        &edeltraud::ThreadPoolMap::new(thread_pool),
+                                        thread_pool,
                                     )
                                     .map_err(Error::ValueLoadReadBlockRequest)?;
                                 sklavenwelt.kont =

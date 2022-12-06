@@ -3,7 +3,6 @@ use std::{
 };
 
 use crate::{
-    job,
     wheels,
     storage,
     core::{
@@ -82,15 +81,15 @@ pub enum Error {
     },
 }
 
-pub fn job<E, P>(
+pub fn job<E, J>(
     mut welt_state: WeltState,
     sklavenwelt: &mut Welt<E>,
     sendegeraet: &komm::Sendegeraet<Order<E>>,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Outcome<E>, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     loop {
         match mem::replace(&mut welt_state.mode, WeltStateMode::NeedIterBlocksRequest) {
@@ -105,7 +104,7 @@ where E: EchoPolicy,
                                 .rueckkopplung(WheelRouteIterBlocksInit {
                                     blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
                                 }),
-                            &edeltraud::ThreadPoolMap::new(thread_pool),
+                            thread_pool,
                         )
                         .map_err(|error| Error::WheelIterBlocksInit {
                             wheel_filename: wheel_ref.blockwheel_filename.clone(),
@@ -172,7 +171,7 @@ where E: EchoPolicy,
                                         .rueckkopplung(WheelRouteIterBlocksNext {
                                             blockwheel_filename,
                                         }),
-                                    &edeltraud::ThreadPoolMap::new(thread_pool),
+                                    thread_pool,
                                 )
                                 .map_err(|error| Error::WheelIterBlocksNext {
                                     wheel_filename: wheel_ref.blockwheel_filename.clone(),
@@ -220,7 +219,7 @@ where E: EchoPolicy,
                                         .rueckkopplung(WheelRouteIterBlocksNext {
                                             blockwheel_filename,
                                         }),
-                                    &edeltraud::ThreadPoolMap::new(thread_pool),
+                                    thread_pool,
                                 )
                                 .map_err(|error| Error::WheelIterBlocksNext {
                                     wheel_filename: wheel_ref.blockwheel_filename.clone(),

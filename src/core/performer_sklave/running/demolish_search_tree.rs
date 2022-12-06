@@ -16,7 +16,6 @@ use arbeitssklave::{
 
 use crate::{
     kv,
-    job,
     wheels,
     storage,
     core::{
@@ -111,25 +110,25 @@ pub enum Error {
     SearchRangesMerge(search_ranges_merge::Error),
     ReadBlock(blockwheel_fs::RequestReadBlockError),
     DeleteBlock(blockwheel_fs::RequestDeleteBlockError),
-    FeedbackCommit(komm::Error),
+    FeedbackCommit(arbeitssklave::Error),
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
     BlockLoadReadBlockRequest(blockwheel_fs::Error),
     DeleteBlockRequest(blockwheel_fs::Error),
 }
 
-pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
- {
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
+{
     'outer: loop {
         // first retrieve all orders available
         if let Some(Kont::Start { .. }) = sklave_job.kont {
@@ -239,12 +238,7 @@ where E: EchoPolicy,
                                     }),
                                 },
                             );
-                        wheel_ref.meister
-                            .read_block(
-                                block_ref.block_id,
-                                rueckkopplung,
-                                &edeltraud::ThreadPoolMap::new(thread_pool),
-                            )
+                        wheel_ref.meister.read_block(block_ref.block_id, rueckkopplung, thread_pool)
                             .map_err(Error::BlockLoadReadBlockRequest)?;
                         merger_kont = next.scheduled()
                             .map_err(Error::SearchRangesMerge)?;
@@ -310,14 +304,14 @@ struct ReceivedBlockTask {
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
 }
 
-fn schedule_delete_block<E, P>(
+fn schedule_delete_block<E, J>(
     sklavenwelt: &mut Welt<E>,
     block_ref: BlockRef,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
         .ok_or_else(|| Error::WheelNotFound {
@@ -332,12 +326,7 @@ where E: EchoPolicy,
                 },
             },
         );
-    wheel_ref.meister
-        .delete_block(
-            block_ref.block_id,
-            rueckkopplung,
-            &edeltraud::ThreadPoolMap::new(thread_pool),
-        )
+    wheel_ref.meister.delete_block(block_ref.block_id, rueckkopplung, thread_pool)
         .map_err(Error::DeleteBlockRequest)?;
     sklavenwelt.pending_delete_tasks += 1;
 

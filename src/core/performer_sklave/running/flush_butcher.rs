@@ -31,7 +31,6 @@ use arbeitssklave::{
 
 use crate::{
     kv,
-    job,
     wheels,
     storage,
     core::{
@@ -119,7 +118,7 @@ struct ValueWritePending {
 }
 
 pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
-pub type SklaveJob<E> = arbeitssklave::komm::SklaveJob<Welt<E>, Order>;
+pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]
 enum Kont {
@@ -136,21 +135,19 @@ pub enum Error {
     BlockWriteWriteValueRequest(blockwheel_fs::Error),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
     WheelIsGoneDuringWriteBlock,
-    FeedbackCommit(komm::Error),
+    FeedbackCommit(arbeitssklave::Error),
 }
 
-pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -269,15 +266,14 @@ where E: EchoPolicy,
     }
 }
 
-fn init_build<E, P>(
+fn init_build<E, J>(
     sklave_job: &mut SklaveJob<E>,
     frozen_memcache: Arc<MemCache>,
     builder: SearchTreeBuilderCps,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Kont, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let mut memcache_iter = frozen_memcache.iter();
 
@@ -324,14 +320,13 @@ where E: EchoPolicy,
     }
 }
 
-fn proceed_build<E, P>(
+fn proceed_build<E, J>(
     sklave_job: &mut SklaveJob<E>,
     mut builder_kont: SearchTreeBuilderKont,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Kont, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match builder_kont {
@@ -361,16 +356,15 @@ where E: EchoPolicy,
     }
 }
 
-fn process_ready_block<E, P>(
+fn process_ready_block<E, J>(
     sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
     block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
     async_ref: Ref,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let mut values_write_pending = 0;
     for (block_entry_index, block_entry) in block_entries.iter().enumerate() {
@@ -398,7 +392,7 @@ where E: EchoPolicy,
                     .write_block(
                         block_bytes.freeze(),
                         FsWriteBlock::FlushButcher { rueckkopplung, },
-                        &edeltraud::ThreadPoolMap::new(thread_pool),
+                        thread_pool,
                     )
                     .map_err(Error::BlockWriteWriteValueRequest)?;
                 values_write_pending += 1;
@@ -423,16 +417,15 @@ where E: EchoPolicy,
     }
 }
 
-fn serialize_block<E, P>(
+fn serialize_block<E, J>(
     sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
     async_ref: Ref,
     mut block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     let wheel_ref = sklave_job.wheels.acquire();
     let block_bytes = sklave_job.blocks_pool.lend();
@@ -481,7 +474,7 @@ where E: EchoPolicy,
         .write_block(
             block_bytes,
             FsWriteBlock::FlushButcher { rueckkopplung, },
-            &edeltraud::ThreadPoolMap::new(thread_pool),
+            thread_pool,
         )
         .map_err(Error::BlockWriteWriteBlockRequest)?;
 

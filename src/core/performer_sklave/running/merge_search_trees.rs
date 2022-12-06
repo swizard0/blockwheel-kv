@@ -18,7 +18,6 @@ use arbeitssklave::{
 
 use crate::{
     kv,
-    job,
     wheels,
     storage,
     core::{
@@ -153,24 +152,24 @@ pub enum Error {
     SearchTreeBuilder(search_tree_builder::Error),
     ReadBlock(blockwheel_fs::RequestReadBlockError),
     WriteBlock(blockwheel_fs::RequestWriteBlockError),
-    FeedbackCommit(komm::Error),
+    FeedbackCommit(arbeitssklave::Error),
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
     BlockLoadReadBlockRequest(blockwheel_fs::Error),
     BlockStoreWriteBlockRequest(blockwheel_fs::Error),
+    WheelIsGoneDuringReadBlock,
+    WheelIsGoneDuringWriteBlock,
 }
 
-pub fn run_job<E, P>(sklave_job: SklaveJob<E>, thread_pool: &P)
+pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
     }
 }
 
-fn job<E, P>(mut sklave_job: SklaveJob<E>, thread_pool: &P) -> Result<(), Error>
+fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -223,6 +222,10 @@ where E: EchoPolicy,
                                         target: WriteBlockTarget::StoreBlock { .. },
                                     }) =>
                                         return Err(Error::WriteBlock(error)),
+                                    Order::ReadBlockCancel(..) =>
+                                        return Err(Error::WheelIsGoneDuringReadBlock),
+                                    Order::WriteBlockCancel(..) =>
+                                        return Err(Error::WheelIsGoneDuringWriteBlock),
                                 }
                             },
                             arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -496,14 +499,13 @@ where E: EchoPolicy,
     }
 }
 
-fn job_step_merger<E, P>(
+fn job_step_merger<E, J>(
     sklavenwelt: &mut Welt<E>,
     mut merger_kont: SearchRangesMergeKont,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<MergeKont, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match merger_kont {
@@ -528,7 +530,7 @@ where E: EchoPolicy,
                     .read_block(
                         block_ref.block_id,
                         rueckkopplung,
-                        &edeltraud::ThreadPoolMap::new(thread_pool),
+                        thread_pool,
                     )
                     .map_err(Error::BlockLoadReadBlockRequest)?;
                 merger_kont = next.scheduled()
@@ -554,15 +556,14 @@ where E: EchoPolicy,
     }
 }
 
-fn job_step_builder<E, P>(
+fn job_step_builder<E, J>(
     sklavenwelt: &mut Welt<E>,
     item_arrived: Option<kv::KeyValuePair<storage::ValueRef>>,
     mut builder_kont: SearchTreeBuilderKont,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<BuildKont, Error>
 where E: EchoPolicy,
-      P: edeltraud::ThreadPool<job::Job<E>>,
 {
     loop {
         match builder_kont {
@@ -621,12 +622,7 @@ where E: EchoPolicy,
                             }),
                         },
                     );
-                wheel_ref.meister
-                    .write_block(
-                        block_bytes,
-                        rueckkopplung,
-                        &edeltraud::ThreadPoolMap::new(thread_pool),
-                    )
+                wheel_ref.meister.write_block(block_bytes, rueckkopplung, thread_pool)
                     .map_err(Error::BlockStoreWriteBlockRequest)?;
                 builder_kont = next.process_scheduled()
                     .map_err(Error::SearchTreeBuilder)?;
