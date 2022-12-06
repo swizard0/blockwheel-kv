@@ -84,7 +84,6 @@ pub enum Error {
 pub fn job<E, J>(
     mut welt_state: WeltState,
     sklavenwelt: &mut Welt<E>,
-    sendegeraet: &komm::Sendegeraet<Order<E>>,
     thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Outcome<E>, Error>
@@ -100,7 +99,9 @@ where E: EchoPolicy,
                 for wheel_ref in wheels_iter {
                     wheel_ref.meister
                         .iter_blocks_init(
-                            sendegeraet
+                            sklavenwelt
+                                .env
+                                .sendegeraet
                                 .rueckkopplung(WheelRouteIterBlocksInit {
                                     blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
                                 }),
@@ -167,7 +168,9 @@ where E: EchoPolicy,
                             wheel_ref.meister
                                 .iter_blocks_next(
                                     iterator_next,
-                                    sendegeraet
+                                    sklavenwelt
+                                        .env
+                                        .sendegeraet
                                         .rueckkopplung(WheelRouteIterBlocksNext {
                                             blockwheel_filename,
                                         }),
@@ -215,7 +218,9 @@ where E: EchoPolicy,
                             wheel_ref.meister
                                 .iter_blocks_next(
                                     iterator_next,
-                                    sendegeraet
+                                    sklavenwelt
+                                        .env
+                                        .sendegeraet
                                         .rueckkopplung(WheelRouteIterBlocksNext {
                                             blockwheel_filename,
                                         }),

@@ -72,6 +72,7 @@ pub enum WriteBlockTarget {
 
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
+    sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -87,6 +88,7 @@ impl<E> Welt<E> where E: EchoPolicy {
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
         values_inline_size_limit: usize,
+        sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
         block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -101,6 +103,7 @@ impl<E> Welt<E> where E: EchoPolicy {
             },
             values_inline_size_limit,
             kont: Some(Kont::Start { frozen_memcache, }),
+            sendegeraet,
             wheels,
             blocks_pool,
             block_entries_pool,
@@ -140,6 +143,7 @@ pub enum Error {
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
@@ -148,6 +152,7 @@ where E: EchoPolicy,
 
 fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -274,6 +279,7 @@ fn init_build<E, J>(
 )
     -> Result<Kont, Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     let mut memcache_iter = frozen_memcache.iter();
 
@@ -327,6 +333,7 @@ fn proceed_build<E, J>(
 )
     -> Result<Kont, Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     loop {
         match builder_kont {
@@ -365,6 +372,7 @@ fn process_ready_block<E, J>(
 )
     -> Result<(), Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     let mut values_write_pending = 0;
     for (block_entry_index, block_entry) in block_entries.iter().enumerate() {
@@ -378,7 +386,7 @@ where E: EchoPolicy,
 
                 let wheel_ref = sklave_job.wheels.acquire();
                 let rueckkopplung = sklave_job
-                    .sendegeraet()
+                    .sendegeraet
                     .rueckkopplung(
                         WriteBlockTarget::WriteValue {
                             async_ref,
@@ -426,6 +434,7 @@ fn serialize_block<E, J>(
 )
     -> Result<(), Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     let wheel_ref = sklave_job.wheels.acquire();
     let block_bytes = sklave_job.blocks_pool.lend();
@@ -461,7 +470,7 @@ where E: EchoPolicy,
     };
 
     let rueckkopplung = sklave_job
-        .sendegeraet()
+        .sendegeraet
         .rueckkopplung(
             WriteBlockTarget::WriteBlock {
                 async_ref,

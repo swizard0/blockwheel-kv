@@ -96,25 +96,28 @@ impl<E> Meister<E> where E: EchoPolicy {
         thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<Self, Error>
-    where J: Send + 'static,
+    where J: From<core::performer_sklave::SklaveJob<E>>,
+          J: Send + 'static,
     {
-        let performer_sklave_meister = arbeitssklave::Freie::new()
+        let performer_sklave_freie = arbeitssklave::Freie::new();
+        let performer_sklave_sendegeraet = komm::Sendegeraet::starten(
+            performer_sklave_freie.meister(),
+            thread_pool.clone(),
+        );
+        let performer_sklave_meister = performer_sklave_freie
             .versklaven(
                 core::performer_sklave::Welt::new(
                     core::performer_sklave::Env::new(
                         params,
                         blocks_pool,
                         version_provider,
+                        performer_sklave_sendegeraet,
                         wheels,
                     ),
                 ),
                 thread_pool,
             )
             .map_err(Error::PerformerVersklaven)?;
-        let performer_sklave_sendegeraet = performer_sklave_meister
-            .sendegeraet()
-            .clone();
-
         Ok(Meister {
             performer_sklave_meister,
             performer_sklave_sendegeraet,
@@ -175,6 +178,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
+    where J: From<core::performer_sklave::SklaveJob<E>>,
     {
         self.performer_sklave_meister
             .befehl(
@@ -198,6 +202,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
+    where J: From<core::performer_sklave::SklaveJob<E>>,
     {
         self.performer_sklave_meister
             .befehl(
@@ -221,6 +226,7 @@ impl<E> Meister<E> where E: EchoPolicy {
     )
         -> Result<LookupRangeStream<E>, Error>
     where R: RangeBounds<kv::Key>,
+          J: From<core::performer_sklave::SklaveJob<E>>,
     {
         let stream = self.performer_sklave_sendegeraet
             .stream_starten(
@@ -240,6 +246,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
+    where J: From<core::performer_sklave::SklaveJob<E>>,
     {
         self.performer_sklave_meister
             .befehl(
@@ -261,6 +268,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<(), Error>
+    where J: From<core::performer_sklave::SklaveJob<E>>,
     {
         self.performer_sklave_meister
             .befehl(

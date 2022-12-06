@@ -162,6 +162,7 @@ pub enum Error {
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
@@ -170,6 +171,7 @@ where E: EchoPolicy,
 
 fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     'outer: loop {
         // first retrieve all orders available
@@ -506,6 +508,7 @@ fn job_step_merger<E, J>(
 )
     -> Result<MergeKont, Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     loop {
         match merger_kont {
@@ -564,11 +567,14 @@ fn job_step_builder<E, J>(
 )
     -> Result<BuildKont, Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
 {
     loop {
         match builder_kont {
             search_tree_builder::Kont::PollNextItemOrProcessedBlock(
-                search_tree_builder::KontPollNextItemOrProcessedBlock { next, },
+                search_tree_builder::KontPollNextItemOrProcessedBlock {
+                    next,
+                },
             ) =>
                 return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedItemOrWrittenBlock { next, }, }),
             search_tree_builder::Kont::PollProcessedBlock(
@@ -576,7 +582,12 @@ where E: EchoPolicy,
             ) =>
                 return Ok(BuildKont::Active { item_arrived, kont: BuildKontActive::ProceedWrittenBlock { next, }, }),
             search_tree_builder::Kont::ProcessBlockAsync(
-                search_tree_builder::KontProcessBlockAsync { node_type, mut block_entries, async_ref, next, },
+                search_tree_builder::KontProcessBlockAsync {
+                    node_type,
+                    mut block_entries,
+                    async_ref,
+                    next,
+                },
             ) => {
                 // acquire target wheel
                 let wheel_ref = sklavenwelt.wheels.acquire();

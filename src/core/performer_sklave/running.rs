@@ -138,7 +138,6 @@ pub enum Error {
 pub fn job<E, J>(
     mut welt_state: WeltState<E>,
     sklavenwelt: &mut Welt<E>,
-    sendegeraet: &komm::Sendegeraet<Order<E>>,
     thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<Outcome<E>, Error>
@@ -148,6 +147,7 @@ where E: EchoPolicy,
       J: From<lookup_range_merge::SklaveJob<E>>,
       J: From<merge_search_trees::SklaveJob<E>>,
       J: From<demolish_search_tree::SklaveJob<E>>,
+      J: Send,
 {
     loop {
         let mut performer_kont = match welt_state.kont {
@@ -562,7 +562,7 @@ where E: EchoPolicy,
                         .pending_info_requests
                         .insert(PendingInfo { info, echo, wheels_left: 0, });
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
-                        let info_rueckkopplung = sendegeraet
+                        let info_rueckkopplung = sklavenwelt.env.sendegeraet
                             .rueckkopplung(WheelRouteInfo {
                                 route: InfoRoute { info_ref, },
                                 blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
@@ -608,7 +608,7 @@ where E: EchoPolicy,
                     );
                     let mut wheels_left = 0;
                     for wheel_ref in sklavenwelt.env.wheels.iter() {
-                        let flush_rueckkopplung = sendegeraet
+                        let flush_rueckkopplung = sklavenwelt.env.sendegeraet
                             .rueckkopplung(WheelRouteFlush);
                         wheel_ref.meister
                             .flush(flush_rueckkopplung, thread_pool)
@@ -633,17 +633,23 @@ where E: EchoPolicy,
                     frozen_memcache,
                     next,
                 }) => {
-                    let flush_butcher_meister = arbeitssklave::Freie::new()
+                    let flush_butcher_freie = arbeitssklave::Freie::new();
+                    let flush_butcher_sendegeraet = komm::Sendegeraet::starten(
+                        flush_butcher_freie.meister(),
+                        thread_pool.clone(),
+                    );
+                    let flush_butcher_meister = flush_butcher_freie
                         .versklaven(
                             flush_butcher::Welt::new(
                                 frozen_memcache,
                                 sklavenwelt.env.params.tree_block_size,
                                 sklavenwelt.env.params
                                     .search_tree_values_inline_size_limit,
+                                flush_butcher_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),
-                                sendegeraet.rueckkopplung(FlushButcherDrop { search_tree_id, }),
+                                sklavenwelt.env.sendegeraet.rueckkopplung(FlushButcherDrop { search_tree_id, }),
                             ),
                             thread_pool,
                         )
@@ -665,9 +671,9 @@ where E: EchoPolicy,
                                 ranges_merger.source,
                                 lookup_context,
                                 stream_id.clone(),
-                                sendegeraet.clone(),
+                                sklavenwelt.env.sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
-                                sendegeraet
+                                sklavenwelt.env.sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
                                         access_token: ranges_merger.token,
                                         route: LookupRangeRoute { stream_id: stream_id.clone(), },
@@ -695,12 +701,12 @@ where E: EchoPolicy,
                                 ranges_merger.source_count_items,
                                 ranges_merger.source_build,
                                 meister_ref,
-                                sendegeraet.clone(),
+                                sklavenwelt.env.sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),
                                 sklavenwelt.env.params.tree_block_size,
-                                sendegeraet
+                                sklavenwelt.env.sendegeraet
                                     .rueckkopplung(MergeSearchTreesDrop {
                                         access_token: ranges_merger.token,
                                         route: MergeSearchTreesRoute { meister_ref, },
@@ -725,9 +731,9 @@ where E: EchoPolicy,
                             demolish_search_tree::Welt::new(
                                 order.source,
                                 meister_ref,
-                                sendegeraet.clone(),
+                                sklavenwelt.env.sendegeraet.clone(),
                                 sklavenwelt.env.wheels.clone(),
-                                sendegeraet
+                                sklavenwelt.env.sendegeraet
                                      .rueckkopplung(DemolishSearchTreeDrop {
                                         demolish_group_ref: order.demolish_group_ref,
                                         route: DemolishSearchTreeRoute { meister_ref, },

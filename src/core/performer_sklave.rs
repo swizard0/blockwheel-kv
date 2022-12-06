@@ -113,6 +113,7 @@ pub struct Env<E> where E: EchoPolicy {
     params: Params,
     blocks_pool: BytesPool,
     version_provider: version::Provider,
+    sendegeraet: komm::Sendegeraet<Order<E>>,
     wheels: wheels::Wheels<E>,
     incoming_orders: Vec<Order<E>>,
     delayed_orders: Vec<Order<E>>,
@@ -127,6 +128,7 @@ impl<E> Env<E> where E: EchoPolicy {
         params: Params,
         blocks_pool: BytesPool,
         version_provider: version::Provider,
+        sendegeraet: komm::Sendegeraet<Order<E>>,
         wheels: wheels::Wheels<E>,
     )
         -> Self
@@ -135,6 +137,7 @@ impl<E> Env<E> where E: EchoPolicy {
             params,
             blocks_pool,
             version_provider,
+            sendegeraet,
             wheels,
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
@@ -312,6 +315,12 @@ impl<E> Drop for Welt<E> where E: EchoPolicy {
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<running::flush_butcher::SklaveJob<E>>,
+      J: From<running::lookup_range_merge::SklaveJob<E>>,
+      J: From<running::merge_search_trees::SklaveJob<E>>,
+      J: From<running::demolish_search_tree::SklaveJob<E>>,
+      J: Send,
 {
     let now = Instant::now();
     if let Some(started_at) = sklave_job.idle_started_at {
@@ -332,6 +341,12 @@ where E: EchoPolicy,
 
 fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
+      J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
+      J: From<running::flush_butcher::SklaveJob<E>>,
+      J: From<running::lookup_range_merge::SklaveJob<E>>,
+      J: From<running::merge_search_trees::SklaveJob<E>>,
+      J: From<running::demolish_search_tree::SklaveJob<E>>,
+      J: Send,
 {
     PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
 
@@ -373,32 +388,30 @@ where E: EchoPolicy,
         }
 
         // then process the orders retrieved
-        let sendegeraet = sklave_job.sendegeraet().clone();
-        let sklavenwelt = &mut *sklave_job;
         loop {
-            let state = mem::replace(&mut sklavenwelt.state, WeltState::Init);
+            let state = mem::replace(&mut sklave_job.state, WeltState::Init);
             match state {
                 WeltState::Init => {
                     log::debug!("WeltState::Init: loading forest");
-                    sklavenwelt.state =
+                    sklave_job.state =
                         WeltState::Loading(loading::WeltState::new());
                 },
                 WeltState::Loading(loading) =>
-                    match loading::job(loading, sklavenwelt, &sendegeraet, thread_pool).map_err(Error::Loading)? {
+                    match loading::job(loading, &mut sklave_job, thread_pool).map_err(Error::Loading)? {
                         loading::Outcome::Rasten { loading, } => {
-                            sklavenwelt.state = WeltState::Loading(loading);
+                            sklave_job.state = WeltState::Loading(loading);
                             break;
                         },
                         loading::Outcome::Done { performer, pools, } => {
-                            sklavenwelt.state =
+                            sklave_job.state =
                                 WeltState::Running(running::WeltState::new(performer, pools));
-                            sklavenwelt.env.incoming_orders.append(&mut sklavenwelt.env.delayed_orders);
+                            sklave_job.env.incoming_orders.append(&mut sklave_job.env.delayed_orders);
                         },
                     },
                 WeltState::Running(running) =>
-                    match running::job(running, sklavenwelt, &sendegeraet, thread_pool).map_err(Error::Running)? {
+                    match running::job(running, &mut sklave_job, thread_pool).map_err(Error::Running)? {
                         running::Outcome::Rasten { running, } => {
-                            sklavenwelt.state = WeltState::Running(running);
+                            sklave_job.state = WeltState::Running(running);
                             break;
                         },
                     },
