@@ -838,8 +838,6 @@ fn process(
                 data.alive.insert(key.clone(), offset);
             }
 
-            log::debug!(" ;; inserted: {:?}", key);
-
             counter.inserts += 1;
             active_tasks_counter.inserts -= 1;
             Ok(())
@@ -850,8 +848,6 @@ fn process(
             output
         },
         ReplyOrder::Remove(komm::Umschlag { inhalt: blockwheel_kv::Removed { version, }, stamp: ReplyRemove { key, }, }) => {
-            log::debug!(" ;; removed: {:?}", key);
-
             let data_cell = kv::KeyValuePair {
                 key: key.clone(),
                 value_cell: kv::ValueCell {
@@ -881,7 +877,7 @@ fn process(
         }) => {
             let stream_id = mehr.stream_id();
             let maybe_stream = data.streams.remove(stream_id);
-            assert!(maybe_stream.is_some());
+            assert!(maybe_stream.is_some(), "lookup stream {:?} not found in `data.streams`", mehr);
 
             let &offset = data.index.get(&key).unwrap();
             let kv::KeyValuePair { value_cell: kv::ValueCell { version: version_current, cell: ref cell_current, }, .. } =

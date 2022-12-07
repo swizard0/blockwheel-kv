@@ -75,12 +75,14 @@ pub enum Error {
 
 pub struct Meister<E> where E: EchoPolicy {
     performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
+    stream_erbauer: komm::StreamErbauer,
 }
 
 impl<E> Clone for Meister<E> where E: EchoPolicy {
     fn clone(&self) -> Self {
         Meister {
             performer_sklave_meister: self.performer_sklave_meister.clone(),
+            stream_erbauer: self.stream_erbauer.clone(),
         }
     }
 }
@@ -118,6 +120,7 @@ impl<E> Meister<E> where E: EchoPolicy {
             .map_err(Error::PerformerVersklaven)?;
         Ok(Meister {
             performer_sklave_meister,
+            stream_erbauer: komm::StreamErbauer::default(),
         })
     }
 }
@@ -237,6 +240,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         );
         let stream = lookup_ranges_merge_sendegeraet
             .stream_starten(
+                &self.stream_erbauer,
                 core::performer_sklave::running::lookup_range_merge::OrderItemFirst {
                     stream_echo,
                 },
