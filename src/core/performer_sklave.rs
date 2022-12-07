@@ -18,7 +18,6 @@ use o1::{
 use alloc_pool::{
     pool,
     bytes::{
-        Bytes,
         BytesPool,
     },
 };
@@ -73,8 +72,6 @@ pub enum OrderWheel {
     Info(komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>),
     FlushCancel(komm::UmschlagAbbrechen<WheelRouteFlush>),
     Flush(komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>),
-    ReadBlockCancel(komm::UmschlagAbbrechen<WheelRouteReadBlock>),
-    ReadBlock(komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>),
     DeleteBlockCancel(komm::UmschlagAbbrechen<WheelRouteDeleteBlock>),
     DeleteBlock(komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>),
     IterBlocksInitCancel(komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>),
@@ -227,18 +224,6 @@ pub struct WheelRouteInfo {
 }
 
 pub struct WheelRouteFlush;
-
-#[derive(Debug)]
-pub enum WheelRouteReadBlock {
-    LookupRangeMerge {
-        route: LookupRangeRoute,
-        target: running::lookup_range_merge::ReadBlockTarget,
-    },
-    DemolishSearchTree {
-        route: DemolishSearchTreeRoute,
-        target: running::demolish_search_tree::ReadBlockTarget,
-    },
-}
 
 #[derive(Debug)]
 pub enum WheelRouteDeleteBlock {
@@ -476,18 +461,6 @@ impl<E> From<komm::UmschlagAbbrechen<WheelRouteFlush>> for Order<E> where E: Ech
 impl<E> From<komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>> for Order<E> where E: EchoPolicy {
     fn from(v: komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>) -> Order<E> {
         Order::Wheel(OrderWheel::Flush(v))
-    }
-}
-
-impl<E> From<komm::UmschlagAbbrechen<WheelRouteReadBlock>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteReadBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::ReadBlockCancel(v))
-    }
-}
-
-impl<E> From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::ReadBlock(v))
     }
 }
 

@@ -23,6 +23,7 @@ use crate::{
         performer_sklave,
         search_ranges_merge,
         BlockRef,
+        FsReadBlock,
         SearchRangesMergeCps,
         SearchRangesMergeBlockNext,
     },
@@ -33,6 +34,7 @@ use crate::{
 #[allow(clippy::large_enum_variant)]
 pub enum Order {
     ReadBlock(OrderReadBlock),
+    ReadBlockCancel(komm::UmschlagAbbrechen<ReadBlockTarget>),
     DeleteBlock(OrderDeleteBlock),
 }
 
@@ -58,7 +60,8 @@ pub struct OrderDeleteBlock {
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
@@ -71,7 +74,8 @@ impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>,
     )
@@ -80,6 +84,7 @@ impl<E> Welt<E> where E: EchoPolicy {
         Welt {
             kont: Some(Kont::Start { merger, }),
             meister_ref,
+            parent_sendegeraet,
             sendegeraet,
             wheels,
             maybe_feedback: Some(feedback),
@@ -114,6 +119,7 @@ pub enum Error {
     WheelNotFound { blockwheel_filename: wheels::WheelFilename, },
     BlockLoadReadBlockRequest(blockwheel_fs::Error),
     DeleteBlockRequest(blockwheel_fs::Error),
+    WheelIsGoneDuringReadBlock,
 }
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
@@ -157,6 +163,8 @@ where E: EchoPolicy,
                                             .push(ReceivedBlockTask { async_token, block_bytes, }),
                                     Order::ReadBlock(OrderReadBlock { read_block_result: Err(error), .. }) =>
                                         return Err(Error::ReadBlock(error)),
+                                    Order::ReadBlockCancel(..) =>
+                                        return Err(Error::WheelIsGoneDuringReadBlock),
                                     Order::DeleteBlock(OrderDeleteBlock { delete_block_result: Ok(blockwheel_fs::Deleted), }) => {
                                         assert!(sklavenwelt.pending_delete_tasks > 0);
                                         sklavenwelt.pending_delete_tasks -= 1;
@@ -228,17 +236,15 @@ where E: EchoPolicy,
                             })?;
                         let rueckkopplung = sklavenwelt
                             .sendegeraet
-                            .rueckkopplung(
-                                performer_sklave::WheelRouteReadBlock::DemolishSearchTree {
-                                    route: performer_sklave::DemolishSearchTreeRoute {
-                                        meister_ref: sklavenwelt.meister_ref,
-                                    },
-                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
-                                        async_token: HideDebug(async_token),
-                                    }),
-                                },
-                            );
-                        wheel_ref.meister.read_block(block_ref.block_id, rueckkopplung, thread_pool)
+                            .rueckkopplung(ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                async_token: HideDebug(async_token),
+                            }));
+                        wheel_ref.meister
+                            .read_block(
+                                block_ref.block_id,
+                                FsReadBlock::DemolishSearchTree { rueckkopplung, },
+                                thread_pool,
+                            )
                             .map_err(Error::BlockLoadReadBlockRequest)?;
                         merger_kont = next.scheduled()
                             .map_err(Error::SearchRangesMerge)?;
@@ -318,7 +324,7 @@ where E: EchoPolicy,
             blockwheel_filename: block_ref.blockwheel_filename.clone(),
         })?;
     let rueckkopplung = sklavenwelt
-        .sendegeraet
+        .parent_sendegeraet
         .rueckkopplung(
             performer_sklave::WheelRouteDeleteBlock::DemolishSearchTree {
                 route: performer_sklave::DemolishSearchTreeRoute {
@@ -331,4 +337,19 @@ where E: EchoPolicy,
     sklavenwelt.pending_delete_tasks += 1;
 
     Ok(())
+}
+
+impl From<komm::UmschlagAbbrechen<ReadBlockTarget>> for Order {
+    fn from(v: komm::UmschlagAbbrechen<ReadBlockTarget>) -> Self {
+        Self::ReadBlockCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>> for Order {
+    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>) -> Self {
+        Self::ReadBlock(OrderReadBlock {
+            read_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
 }

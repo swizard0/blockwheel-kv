@@ -35,7 +35,6 @@ use crate::{
             DemolishSearchTreeRoute,
             WheelRouteInfo,
             WheelRouteFlush,
-            WheelRouteReadBlock,
             WheelRouteDeleteBlock,
         },
     },
@@ -110,9 +109,6 @@ pub enum Error {
     FlushButcherSklaveCrashed,
     MergeSearchTreesSklaveCrashed,
     DemolishSearchTreeSklaveCrashed,
-    WheelIsGoneDuringReadBlock {
-        route: WheelRouteReadBlock,
-    },
     WheelIsGoneDuringDeleteBlock {
         route: WheelRouteDeleteBlock,
     },
@@ -360,68 +356,6 @@ where E: EchoPolicy,
                                 None | Some(ActiveFlush::Kv) =>
                                     unreachable!(),
                             },
-                        Some(Order::Wheel(OrderWheel::ReadBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
-                            return Err(Error::WheelIsGoneDuringReadBlock { route: stamp, }),
-                        Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
-                            inhalt: read_block_result,
-                            stamp: WheelRouteReadBlock::LookupRangeMerge {
-                                route: LookupRangeRoute { stream_id, },
-                                target,
-                            },
-                        }))) => {
-                            let maybe_meister = sklavenwelt.env
-                                .lookup_range_merge_sklaven
-                                .get(&stream_id);
-                            match maybe_meister {
-                                Some(meister) => {
-                                    let send_result = meister.befehl(
-                                        lookup_range_merge::Order::ReadBlock(
-                                            lookup_range_merge::OrderReadBlock {
-                                                read_block_result,
-                                                target,
-                                            },
-                                        ),
-                                        thread_pool,
-                                    );
-                                    if let Err(error) = send_result {
-                                        log::warn!("lookup range merge sklave read block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.lookup_range_merge_sklaven.remove(&stream_id);
-                                    }
-                                },
-                                None =>
-                                    log::debug!("lookup range merge sklave entry has already unregistered before read block order"),
-                            }
-                        },
-                        Some(Order::Wheel(OrderWheel::ReadBlock(komm::Umschlag {
-                            inhalt: read_block_result,
-                            stamp: WheelRouteReadBlock::DemolishSearchTree {
-                                route: DemolishSearchTreeRoute { meister_ref, },
-                                target,
-                            },
-                        }))) => {
-                            let maybe_meister = sklavenwelt.env
-                                .demolish_search_tree_sklaven
-                                .get(meister_ref);
-                            match maybe_meister {
-                                Some(meister) => {
-                                    let send_result = meister.befehl(
-                                        demolish_search_tree::Order::ReadBlock(
-                                            demolish_search_tree::OrderReadBlock {
-                                                read_block_result,
-                                                target,
-                                            },
-                                        ),
-                                        thread_pool,
-                                    );
-                                    if let Err(error) = send_result {
-                                        log::warn!("demolish search tree sklave read block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref);
-                                    }
-                                },
-                                None =>
-                                    log::warn!("demolish search tree sklave entry has already unregistered before read block order"),
-                            }
-                        },
                         Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
                             return Err(Error::WheelIsGoneDuringDeleteBlock { route: stamp, }),
                         Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
@@ -590,7 +524,6 @@ where E: EchoPolicy,
                                 ranges_merger.source,
                                 lookup_context,
                                 stream_id.clone(),
-                                sklavenwelt.env.sendegeraet.clone(),
                                 merger_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.sendegeraet
@@ -644,12 +577,18 @@ where E: EchoPolicy,
                         .demolish_search_tree_sklaven
                         .insert_entry();
                     let meister_ref = *insert_entry.set_ref();
-                    let demolish_meister = arbeitssklave::Freie::new()
+                    let demolish_freie = arbeitssklave::Freie::new();
+                    let demolish_sendegeraet = komm::Sendegeraet::starten(
+                        demolish_freie.meister(),
+                        thread_pool.clone(),
+                    );
+                    let demolish_meister = demolish_freie
                         .versklaven(
                             demolish_search_tree::Welt::new(
                                 order.source,
                                 meister_ref,
                                 sklavenwelt.env.sendegeraet.clone(),
+                                demolish_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.sendegeraet
                                      .rueckkopplung(DemolishSearchTreeDrop {

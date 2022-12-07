@@ -24,6 +24,7 @@ use crate::{
         performer,
         performer_sklave,
         search_ranges_merge,
+        FsReadBlock,
         SearchRangesMergeCps,
         SearchRangesMergeBlockNext,
         SearchRangesMergeItemNext,
@@ -64,7 +65,6 @@ pub struct ReadBlockTargetLoadBlock {
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont<E>>,
     stream_id: komm::StreamId,
-    parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
     sendegeraet: komm::Sendegeraet<Order<E>>,
     wheels: wheels::Wheels<E>,
     _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
@@ -78,7 +78,6 @@ impl<E> Welt<E> where E: EchoPolicy {
         merger: SearchRangesMergeCps,
         lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
         stream_id: komm::StreamId,
-        parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
         sendegeraet: komm::Sendegeraet<Order<E>>,
         wheels: wheels::Wheels<E>,
         drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
@@ -88,7 +87,6 @@ impl<E> Welt<E> where E: EchoPolicy {
         Welt {
             kont: Some(Kont::Start { merger, lookup_context, }),
             stream_id,
-            parent_sendegeraet,
             sendegeraet,
             wheels,
             _drop_bomb: drop_bomb,
@@ -140,6 +138,7 @@ pub enum Error {
     LoadBlock(blockwheel_fs::RequestReadBlockError),
     LoadValue(blockwheel_fs::RequestReadBlockError),
     ValueDeserialize(storage::ReadValueBlockError),
+    WheelIsGoneDuringReadBlock,
 }
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
@@ -212,6 +211,8 @@ where E: EchoPolicy,
                                         target: ReadBlockTarget::LoadValue,
                                     }) =>
                                         return Err(Error::LoadValue(error)),
+                                    Order::ReadBlockCancel(..) =>
+                                        return Err(Error::WheelIsGoneDuringReadBlock),
                                 }
                             },
                             arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -322,21 +323,14 @@ where E: EchoPolicy,
                                 blockwheel_filename: block_ref.blockwheel_filename.clone(),
                             })?;
                         let rueckkopplung = sklavenwelt
-                            .parent_sendegeraet
-                            .rueckkopplung(
-                                performer_sklave::WheelRouteReadBlock::LookupRangeMerge {
-                                    route: performer_sklave::LookupRangeRoute {
-                                        stream_id: sklavenwelt.stream_id.clone(),
-                                    },
-                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
-                                        async_token: HideDebug(async_token),
-                                    }),
-                                },
-                            );
+                            .sendegeraet
+                            .rueckkopplung(ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                async_token: HideDebug(async_token),
+                            }));
                         wheel_ref.meister
                             .read_block(
                                 block_ref.block_id,
-                                rueckkopplung,
+                                FsReadBlock::LookupRangeMerge { rueckkopplung, },
                                 thread_pool,
                             )
                             .map_err(Error::BlockLoadReadBlockRequest)?;
@@ -415,19 +409,12 @@ where E: EchoPolicy,
                                         blockwheel_filename: block_ref.blockwheel_filename.clone(),
                                     })?;
                                 let rueckkopplung = sklavenwelt
-                                    .parent_sendegeraet
-                                    .rueckkopplung(
-                                        performer_sklave::WheelRouteReadBlock::LookupRangeMerge {
-                                            route: performer_sklave::LookupRangeRoute {
-                                                stream_id: sklavenwelt.stream_id.clone(),
-                                            },
-                                            target: ReadBlockTarget::LoadValue,
-                                        },
-                                    );
+                                    .sendegeraet
+                                    .rueckkopplung(ReadBlockTarget::LoadValue);
                                 wheel_ref.meister
                                     .read_block(
                                         block_ref.block_id,
-                                        rueckkopplung,
+                                        FsReadBlock::LookupRangeMerge { rueckkopplung, },
                                         thread_pool,
                                     )
                                     .map_err(Error::ValueLoadReadBlockRequest)?;

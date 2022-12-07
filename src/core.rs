@@ -40,6 +40,7 @@ use performer_sklave::{
         flush_butcher,
         lookup_range_merge,
         merge_search_trees,
+        demolish_search_tree,
     },
 };
 
@@ -86,6 +87,9 @@ pub enum FsReadBlock<E> where E: EchoPolicy {
     MergeSearchTrees {
         rueckkopplung: komm::Rueckkopplung<merge_search_trees::Order, merge_search_trees::ReadBlockTarget>,
     },
+    DemolishSearchTree {
+        rueckkopplung: komm::Rueckkopplung<demolish_search_tree::Order, demolish_search_tree::ReadBlockTarget>,
+    },
 }
 
 impl<E> Echo<Result<Bytes, blockwheel_fs::RequestReadBlockError>> for FsReadBlock<E> where E: EchoPolicy {
@@ -94,6 +98,8 @@ impl<E> Echo<Result<Bytes, blockwheel_fs::RequestReadBlockError>> for FsReadBloc
             FsReadBlock::LookupRangeMerge { rueckkopplung, } =>
                 rueckkopplung.commit_echo(inhalt),
             FsReadBlock::MergeSearchTrees { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+            FsReadBlock::DemolishSearchTree { rueckkopplung, } =>
                 rueckkopplung.commit_echo(inhalt),
         }
     }
