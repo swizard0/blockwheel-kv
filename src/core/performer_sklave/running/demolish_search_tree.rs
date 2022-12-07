@@ -4,12 +4,6 @@ use alloc_pool::{
     },
 };
 
-use o1::{
-    set::{
-        Ref,
-    },
-};
-
 use arbeitssklave::{
     komm,
 };
@@ -24,6 +18,7 @@ use crate::{
         search_ranges_merge,
         BlockRef,
         FsReadBlock,
+        FsDeleteBlock,
         SearchRangesMergeCps,
         SearchRangesMergeBlockNext,
     },
@@ -36,6 +31,7 @@ pub enum Order {
     ReadBlock(OrderReadBlock),
     ReadBlockCancel(komm::UmschlagAbbrechen<ReadBlockTarget>),
     DeleteBlock(OrderDeleteBlock),
+    DeleteBlockCancel(komm::UmschlagAbbrechen<DeleteBlockTarget>),
 }
 
 pub struct OrderReadBlock {
@@ -55,12 +51,13 @@ pub struct ReadBlockTargetLoadBlock {
 
 pub struct OrderDeleteBlock {
     pub delete_block_result: Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>,
+    pub target: DeleteBlockTarget,
 }
+
+pub struct DeleteBlockTarget;
 
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
-    meister_ref: Ref,
-    parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
     sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>>,
@@ -73,8 +70,6 @@ pub struct Welt<E> where E: EchoPolicy {
 impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
-        meister_ref: Ref,
-        parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
         sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::DemolishSearchTreeDrop>,
@@ -83,8 +78,6 @@ impl<E> Welt<E> where E: EchoPolicy {
     {
         Welt {
             kont: Some(Kont::Start { merger, }),
-            meister_ref,
-            parent_sendegeraet,
             sendegeraet,
             wheels,
             maybe_feedback: Some(feedback),
@@ -96,7 +89,6 @@ impl<E> Welt<E> where E: EchoPolicy {
     }
 }
 
-pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
 pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 enum Kont {
@@ -120,6 +112,7 @@ pub enum Error {
     BlockLoadReadBlockRequest(blockwheel_fs::Error),
     DeleteBlockRequest(blockwheel_fs::Error),
     WheelIsGoneDuringReadBlock,
+    WheelIsGoneDuringDeleteBlock,
 }
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
@@ -165,12 +158,17 @@ where E: EchoPolicy,
                                         return Err(Error::ReadBlock(error)),
                                     Order::ReadBlockCancel(..) =>
                                         return Err(Error::WheelIsGoneDuringReadBlock),
-                                    Order::DeleteBlock(OrderDeleteBlock { delete_block_result: Ok(blockwheel_fs::Deleted), }) => {
+                                    Order::DeleteBlock(OrderDeleteBlock {
+                                        delete_block_result: Ok(blockwheel_fs::Deleted),
+                                        target: DeleteBlockTarget,
+                                    }) => {
                                         assert!(sklavenwelt.pending_delete_tasks > 0);
                                         sklavenwelt.pending_delete_tasks -= 1;
                                     },
-                                    Order::DeleteBlock(OrderDeleteBlock { delete_block_result: Err(error), }) =>
+                                    Order::DeleteBlock(OrderDeleteBlock { delete_block_result: Err(error), .. }) =>
                                         return Err(Error::DeleteBlock(error)),
+                                    Order::DeleteBlockCancel(..) =>
+                                        return Err(Error::WheelIsGoneDuringDeleteBlock),
                                 }
                             },
                             arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -324,15 +322,14 @@ where E: EchoPolicy,
             blockwheel_filename: block_ref.blockwheel_filename.clone(),
         })?;
     let rueckkopplung = sklavenwelt
-        .parent_sendegeraet
-        .rueckkopplung(
-            performer_sklave::WheelRouteDeleteBlock::DemolishSearchTree {
-                route: performer_sklave::DemolishSearchTreeRoute {
-                    meister_ref: sklavenwelt.meister_ref,
-                },
-            },
-        );
-    wheel_ref.meister.delete_block(block_ref.block_id, rueckkopplung, thread_pool)
+        .sendegeraet
+        .rueckkopplung(DeleteBlockTarget);
+    wheel_ref.meister
+        .delete_block(
+            block_ref.block_id,
+            FsDeleteBlock::DemolishSearchTree { rueckkopplung, },
+            thread_pool,
+        )
         .map_err(Error::DeleteBlockRequest)?;
     sklavenwelt.pending_delete_tasks += 1;
 
@@ -349,6 +346,21 @@ impl From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, Re
     fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>) -> Self {
         Self::ReadBlock(OrderReadBlock {
             read_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
+}
+
+impl From<komm::UmschlagAbbrechen<DeleteBlockTarget>> for Order {
+    fn from(v: komm::UmschlagAbbrechen<DeleteBlockTarget>) -> Self {
+        Self::DeleteBlockCancel(v)
+    }
+}
+
+impl From<komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, DeleteBlockTarget>> for Order {
+    fn from(v: komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, DeleteBlockTarget>) -> Self {
+        Self::DeleteBlock(OrderDeleteBlock {
+            delete_block_result: v.inhalt,
             target: v.stamp,
         })
     }

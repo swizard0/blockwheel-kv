@@ -72,8 +72,6 @@ pub enum OrderWheel {
     Info(komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>),
     FlushCancel(komm::UmschlagAbbrechen<WheelRouteFlush>),
     Flush(komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>),
-    DeleteBlockCancel(komm::UmschlagAbbrechen<WheelRouteDeleteBlock>),
-    DeleteBlock(komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>),
     IterBlocksInitCancel(komm::UmschlagAbbrechen<WheelRouteIterBlocksInit>),
     IterBlocksInit(komm::Umschlag<blockwheel_fs::IterBlocks, WheelRouteIterBlocksInit>),
     IterBlocksNextCancel(komm::UmschlagAbbrechen<WheelRouteIterBlocksNext>),
@@ -110,7 +108,6 @@ pub struct Env<E> where E: EchoPolicy {
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
     lookup_range_merge_sklaven: HashMap<komm::StreamId, running::lookup_range_merge::Meister<E>>,
-    demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
 }
 
 impl<E> Env<E> where E: EchoPolicy {
@@ -133,7 +130,6 @@ impl<E> Env<E> where E: EchoPolicy {
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
             lookup_range_merge_sklaven: HashMap::new(),
-            demolish_search_tree_sklaven: Set::new(),
         }
     }
 }
@@ -172,14 +168,8 @@ pub struct MergeSearchTreesDone {
     merged_search_tree_items_count: usize,
 }
 
-#[derive(Debug)]
-pub struct DemolishSearchTreeRoute {
-    meister_ref: Ref,
-}
-
 pub struct DemolishSearchTreeDrop {
     demolish_group_ref: Ref,
-    route: DemolishSearchTreeRoute,
 }
 
 #[derive(Debug)]
@@ -224,13 +214,6 @@ pub struct WheelRouteInfo {
 }
 
 pub struct WheelRouteFlush;
-
-#[derive(Debug)]
-pub enum WheelRouteDeleteBlock {
-    DemolishSearchTree {
-        route: DemolishSearchTreeRoute,
-    },
-}
 
 pub struct WheelRouteIterBlocksInit {
     blockwheel_filename: wheels::WheelFilename,
@@ -461,20 +444,6 @@ impl<E> From<komm::UmschlagAbbrechen<WheelRouteFlush>> for Order<E> where E: Ech
 impl<E> From<komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>> for Order<E> where E: EchoPolicy {
     fn from(v: komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>) -> Order<E> {
         Order::Wheel(OrderWheel::Flush(v))
-    }
-}
-
-impl<E> From<komm::UmschlagAbbrechen<WheelRouteDeleteBlock>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteDeleteBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::DeleteBlockCancel(v))
-    }
-}
-
-impl<E> From<komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>> for Order<E>
-where E: EchoPolicy
-{
-    fn from(v: komm::Umschlag<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>, WheelRouteDeleteBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::DeleteBlock(v))
     }
 }
 

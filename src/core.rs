@@ -105,6 +105,21 @@ impl<E> Echo<Result<Bytes, blockwheel_fs::RequestReadBlockError>> for FsReadBloc
     }
 }
 
+pub enum FsDeleteBlock {
+    DemolishSearchTree {
+        rueckkopplung: komm::Rueckkopplung<demolish_search_tree::Order, demolish_search_tree::DeleteBlockTarget>,
+    },
+}
+
+impl Echo<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>> for FsDeleteBlock {
+    fn commit_echo(self, inhalt: Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>) -> Result<(), komm::EchoError> {
+        match self {
+            FsDeleteBlock::DemolishSearchTree { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+        }
+    }
+}
+
 // types
 
 pub type SearchTreeBuilderCps =

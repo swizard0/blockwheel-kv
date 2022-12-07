@@ -32,10 +32,8 @@ use crate::{
             MergeSearchTreesDrop,
             DemolishSearchTreeDone,
             DemolishSearchTreeDrop,
-            DemolishSearchTreeRoute,
             WheelRouteInfo,
             WheelRouteFlush,
-            WheelRouteDeleteBlock,
         },
     },
     Info,
@@ -109,9 +107,6 @@ pub enum Error {
     FlushButcherSklaveCrashed,
     MergeSearchTreesSklaveCrashed,
     DemolishSearchTreeSklaveCrashed,
-    WheelIsGoneDuringDeleteBlock {
-        route: WheelRouteDeleteBlock,
-    },
     WheelIsGoneDuringFlush,
     WheelIsGoneDuringInfo {
         route: WheelRouteInfo,
@@ -250,19 +245,9 @@ where E: EchoPolicy,
                         })) =>
                             return Err(Error::MergeSearchTreesSklaveCrashed),
                         Some(Order::UnregisterDemolishSearchTree(komm::UmschlagAbbrechen {
-                            stamp: DemolishSearchTreeDrop {
-                                route: DemolishSearchTreeRoute { meister_ref, },
-                                ..
-                            },
-                        })) => {
-                            let maybe_removed = sklavenwelt.env
-                                .demolish_search_tree_sklaven
-                                .remove(meister_ref);
-                            if maybe_removed.is_none() {
-                                log::debug!("demolish search tree sklave entry has already unregistered");
-                            }
-                            return Err(Error::DemolishSearchTreeSklaveCrashed);
-                        },
+                            stamp: DemolishSearchTreeDrop { .. },
+                        })) =>
+                            return Err(Error::DemolishSearchTreeSklaveCrashed),
                         Some(Order::FlushButcherDone(komm::Umschlag {
                             inhalt: FlushButcherDone { root_block, },
                             stamp: FlushButcherDrop { search_tree_id, },
@@ -286,17 +271,9 @@ where E: EchoPolicy,
                             inhalt: DemolishSearchTreeDone,
                             stamp: DemolishSearchTreeDrop {
                                 demolish_group_ref,
-                                route: DemolishSearchTreeRoute { meister_ref, },
                             },
-                        })) => {
-                            let maybe_removed = sklavenwelt.env
-                                .demolish_search_tree_sklaven
-                                .remove(meister_ref);
-                            if maybe_removed.is_none() {
-                                log::warn!("demolish search trees sklave entry has already unregistered");
-                            }
-                            break next.demolished(demolish_group_ref);
-                        },
+                        })) =>
+                            break next.demolished(demolish_group_ref),
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
                             return Err(Error::WheelIsGoneDuringInfo { route, }),
                         Some(Order::Wheel(OrderWheel::Info(komm::Umschlag {
@@ -351,41 +328,10 @@ where E: EchoPolicy,
                                         "expected zero `lookup_range_merge_sklaven` on flush but got #{}",
                                         sklavenwelt.env.lookup_range_merge_sklaven.len(),
                                     );
-                                    assert!(sklavenwelt.env.demolish_search_tree_sklaven.is_empty());
                                 },
                                 None | Some(ActiveFlush::Kv) =>
                                     unreachable!(),
                             },
-                        Some(Order::Wheel(OrderWheel::DeleteBlockCancel(komm::UmschlagAbbrechen { stamp, }))) =>
-                            return Err(Error::WheelIsGoneDuringDeleteBlock { route: stamp, }),
-                        Some(Order::Wheel(OrderWheel::DeleteBlock(komm::Umschlag {
-                            inhalt: delete_block_result,
-                            stamp: WheelRouteDeleteBlock::DemolishSearchTree {
-                                route: DemolishSearchTreeRoute { meister_ref, },
-                            },
-                        }))) => {
-                            let maybe_meister = sklavenwelt.env
-                                .demolish_search_tree_sklaven
-                                .get(meister_ref);
-                            match maybe_meister {
-                                Some(meister) => {
-                                    let send_result = meister.befehl(
-                                        demolish_search_tree::Order::DeleteBlock(
-                                            demolish_search_tree::OrderDeleteBlock {
-                                                delete_block_result,
-                                            },
-                                        ),
-                                        thread_pool,
-                                    );
-                                    if let Err(error) = send_result {
-                                        log::warn!("demolish search tree sklave delete block order failed: {error:?}, unregistering");
-                                        sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref);
-                                    }
-                                },
-                                None =>
-                                    log::warn!("demolish search tree sklave entry has already unregistered before delete block order"),
-                            }
-                        },
                         Some(Order::Wheel(OrderWheel::IterBlocksInitCancel(komm::UmschlagAbbrechen { .. }))) |
                         Some(Order::Wheel(OrderWheel::IterBlocksInit(komm::Umschlag { .. }))) |
                         Some(Order::Wheel(OrderWheel::IterBlocksNextCancel(komm::UmschlagAbbrechen { .. }))) |
@@ -573,33 +519,25 @@ where E: EchoPolicy,
                     order,
                     next,
                 }) => {
-                    let insert_entry = sklavenwelt.env
-                        .demolish_search_tree_sklaven
-                        .insert_entry();
-                    let meister_ref = *insert_entry.set_ref();
                     let demolish_freie = arbeitssklave::Freie::new();
                     let demolish_sendegeraet = komm::Sendegeraet::starten(
                         demolish_freie.meister(),
                         thread_pool.clone(),
                     );
-                    let demolish_meister = demolish_freie
+                    let _demolish_meister = demolish_freie
                         .versklaven(
                             demolish_search_tree::Welt::new(
                                 order.source,
-                                meister_ref,
-                                sklavenwelt.env.sendegeraet.clone(),
                                 demolish_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.sendegeraet
                                      .rueckkopplung(DemolishSearchTreeDrop {
                                         demolish_group_ref: order.demolish_group_ref,
-                                        route: DemolishSearchTreeRoute { meister_ref, },
                                     }),
                             ),
                             thread_pool,
                         )
                         .map_err(Error::DemolishSearchTreeVersklaven)?;
-                    insert_entry.commit(demolish_meister);
                     next.roger_that()
                 },
             };

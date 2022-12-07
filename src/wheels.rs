@@ -46,6 +46,7 @@ use crate::{
         FsFlush,
         FsReadBlock,
         FsWriteBlock,
+        FsDeleteBlock,
     },
     EchoPolicy,
 };
@@ -194,7 +195,7 @@ impl<E> blockwheel_fs::EchoPolicy for WheelEchoPolicy<E> where E: EchoPolicy {
     type Flush = FsFlush<E>;
     type WriteBlock = FsWriteBlock;
     type ReadBlock = FsReadBlock<E>;
-    type DeleteBlock = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteDeleteBlock>;
+    type DeleteBlock = FsDeleteBlock;
     type IterBlocksInit = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksInit>;
     type IterBlocksNext = komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::WheelRouteIterBlocksNext>;
 }
