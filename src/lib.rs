@@ -111,7 +111,7 @@ impl<E> Meister<E> where E: EchoPolicy {
                         params,
                         blocks_pool,
                         version_provider,
-                        performer_sklave_sendegeraet,
+                        performer_sklave_sendegeraet.clone(),
                         wheels,
                     ),
                 ),

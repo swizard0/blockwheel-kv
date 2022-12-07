@@ -26,6 +26,7 @@ use crate::{
         search_tree_builder,
         search_ranges_merge,
         BlockRef,
+        FsWriteBlock,
         SearchTreeBuilderCps,
         SearchTreeBuilderKont,
         SearchTreeBuilderBlockNext,
@@ -82,7 +83,8 @@ pub struct WriteBlockTargetStoreBlock {
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
     meister_ref: Ref,
-    sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+    sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
     block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -98,7 +100,8 @@ impl<E> Welt<E> where E: EchoPolicy {
         source_count_items: SearchRangesMergeCps,
         source_build: SearchRangesMergeCps,
         meister_ref: Ref,
-        sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
+        sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
         block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
@@ -118,6 +121,7 @@ impl<E> Welt<E> where E: EchoPolicy {
                 },
             }),
             meister_ref,
+            parent_sendegeraet,
             sendegeraet,
             wheels,
             blocks_pool,
@@ -513,14 +517,18 @@ where E: EchoPolicy,
     loop {
         match merger_kont {
             search_ranges_merge::Kont::RequireBlockAsync(
-                search_ranges_merge::KontRequireBlockAsync { block_ref, async_token, next, },
+                search_ranges_merge::KontRequireBlockAsync {
+                    block_ref,
+                    async_token,
+                    next,
+                },
             ) => {
                 let wheel_ref = sklavenwelt.wheels.get(&block_ref.blockwheel_filename)
                     .ok_or_else(|| Error::WheelNotFound {
                         blockwheel_filename: block_ref.blockwheel_filename.clone(),
                     })?;
                 let rueckkopplung = sklavenwelt
-                    .sendegeraet
+                    .parent_sendegeraet
                     .rueckkopplung(
                         performer_sklave::WheelRouteReadBlock::MergeSearchTrees {
                             route: performer_sklave::MergeSearchTreesRoute {
@@ -623,17 +631,17 @@ where E: EchoPolicy,
                 let rueckkopplung = sklavenwelt
                     .sendegeraet
                     .rueckkopplung(
-                        performer_sklave::WheelRouteWriteBlock::MergeSearchTrees {
-                            route: performer_sklave::MergeSearchTreesRoute {
-                                meister_ref: sklavenwelt.meister_ref,
-                            },
-                            target: WriteBlockTarget::StoreBlock(WriteBlockTargetStoreBlock {
-                                async_ref,
-                                blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
-                            }),
-                        },
+                        WriteBlockTarget::StoreBlock(WriteBlockTargetStoreBlock {
+                            async_ref,
+                            blockwheel_filename: wheel_ref.blockwheel_filename.clone(),
+                        }),
                     );
-                wheel_ref.meister.write_block(block_bytes, rueckkopplung, thread_pool)
+                wheel_ref.meister
+                    .write_block(
+                        block_bytes,
+                        FsWriteBlock::MergeSearchTrees { rueckkopplung, },
+                        thread_pool,
+                    )
                     .map_err(Error::BlockStoreWriteBlockRequest)?;
                 builder_kont = next.process_scheduled()
                     .map_err(Error::SearchTreeBuilder)?;

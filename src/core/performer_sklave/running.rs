@@ -147,7 +147,7 @@ where E: EchoPolicy,
       J: From<lookup_range_merge::SklaveJob<E>>,
       J: From<merge_search_trees::SklaveJob<E>>,
       J: From<demolish_search_tree::SklaveJob<E>>,
-      J: Send,
+      J: Send + 'static,
 {
     loop {
         let mut performer_kont = match welt_state.kont {
@@ -638,7 +638,7 @@ where E: EchoPolicy,
                         flush_butcher_freie.meister(),
                         thread_pool.clone(),
                     );
-                    let flush_butcher_meister = flush_butcher_freie
+                    let _flush_butcher_meister = flush_butcher_freie
                         .versklaven(
                             flush_butcher::Welt::new(
                                 frozen_memcache,
@@ -665,13 +665,19 @@ where E: EchoPolicy,
                         .stream_token
                         .stream_id()
                         .clone();
-                    let merger_meister = arbeitssklave::Freie::new()
+                    let merger_freie = arbeitssklave::Freie::new();
+                    let merger_sendegeraet = komm::Sendegeraet::starten(
+                        merger_freie.meister(),
+                        thread_pool.clone(),
+                    );
+                    let merger_meister = merger_freie
                         .versklaven(
                             lookup_range_merge::Welt::new(
                                 ranges_merger.source,
                                 lookup_context,
                                 stream_id.clone(),
                                 sklavenwelt.env.sendegeraet.clone(),
+                                merger_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
@@ -695,13 +701,19 @@ where E: EchoPolicy,
                         .merge_search_trees_sklaven
                         .insert_entry();
                     let meister_ref = *insert_entry.set_ref();
-                    let merge_meister = arbeitssklave::Freie::new()
+                    let merge_freie = arbeitssklave::Freie::new();
+                    let merge_sendegeraet = komm::Sendegeraet::starten(
+                        merge_freie.meister(),
+                        thread_pool.clone(),
+                    );
+                    let merge_meister = merge_freie
                         .versklaven(
                             merge_search_trees::Welt::new(
                                 ranges_merger.source_count_items,
                                 ranges_merger.source_build,
                                 meister_ref,
                                 sklavenwelt.env.sendegeraet.clone(),
+                                merge_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),

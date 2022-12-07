@@ -85,7 +85,7 @@ where E: EchoPolicy,
       J: From<performer_sklave::running::lookup_range_merge::SklaveJob<E>>,
       J: From<performer_sklave::running::merge_search_trees::SklaveJob<E>>,
       J: From<performer_sklave::running::demolish_search_tree::SklaveJob<E>>,
-      J: Send,
+      J: Send + 'static,
 {
     fn run(self) {
         match self.0.job {

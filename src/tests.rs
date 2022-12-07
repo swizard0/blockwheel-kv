@@ -35,6 +35,9 @@ use crate::{
     job,
     wheels,
     version,
+    core::{
+        performer_sklave,
+    },
 };
 
 use crate as blockwheel_kv;
@@ -192,13 +195,14 @@ pub enum Error {
     InsertJobCanceled,
 }
 
-fn make_wheel_ref<P>(
+fn make_wheel_ref<J>(
     params: blockwheel_fs::Params,
     blocks_pool: &BytesPool,
-    thread_pool: &P,
+    thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<wheels::WheelRef<EchoPolicy>, Error>
-where P: edeltraud::ThreadPool<Job> + Clone + Send + Sync + 'static,
+where J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<EchoPolicy>>>,
+      J: Send + 'static,
 {
     let blockwheel_filename = match &params.interpreter {
         blockwheel_fs::InterpreterParams::FixedFile(interpreter_params) =>
@@ -215,7 +219,7 @@ where P: edeltraud::ThreadPool<Job> + Clone + Send + Sync + 'static,
         blockwheel_fs::Meister::versklaven(
             params,
             blocks_pool.clone(),
-            &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
+            thread_pool,
         )
         .map_err(Error::WheelRefMeister)?;
 
@@ -245,8 +249,8 @@ enum ReplyOrder {
     FlushCancel(komm::UmschlagAbbrechen<ReplyFlush>),
     Flush(komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>),
 
-    InsertJobCancel(komm::UmschlagAbbrechen<InsertJob>),
-    InsertJob(komm::Umschlag<Result<(), Error>, InsertJob>),
+    InsertJobCancel(komm::UmschlagAbbrechen<InsertJobStamp>),
+    InsertJob(komm::Umschlag<Result<(), Error>, InsertJobStamp>),
 }
 
 impl fmt::Debug for ReplyOrder {
@@ -346,14 +350,14 @@ impl From<komm::Umschlag<blockwheel_kv::Flushed, ReplyFlush>> for ReplyOrder {
     }
 }
 
-impl From<komm::UmschlagAbbrechen<InsertJob>> for ReplyOrder {
-    fn from(v: komm::UmschlagAbbrechen<InsertJob>) -> ReplyOrder {
+impl From<komm::UmschlagAbbrechen<InsertJobStamp>> for ReplyOrder {
+    fn from(v: komm::UmschlagAbbrechen<InsertJobStamp>) -> ReplyOrder {
         ReplyOrder::InsertJobCancel(v)
     }
 }
 
-impl From<komm::Umschlag<Result<(), Error>, InsertJob>> for ReplyOrder {
-    fn from(v: komm::Umschlag<Result<(), Error>, InsertJob>) -> ReplyOrder {
+impl From<komm::Umschlag<Result<(), Error>, InsertJobStamp>> for ReplyOrder {
+    fn from(v: komm::Umschlag<Result<(), Error>, InsertJobStamp>) -> ReplyOrder {
         ReplyOrder::InsertJob(v)
     }
 }
@@ -365,41 +369,125 @@ struct Welt {
 enum Job {
     BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>),
     BlockwheelKv(blockwheel_kv::job::Job<EchoPolicy>),
-    FtdSklave(arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>),
-    Insert(JobInsertArgs),
+    FtdSklave(arbeitssklave::SklaveJob<Welt, ReplyOrder>),
+    Insert(InsertJob),
 }
 
 impl From<blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
-    fn from(job: blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>) -> Job {
-        Job::BlockwheelFs(job)
+    fn from(job: blockwheel_fs::job::Job<wheels::WheelEchoPolicy<EchoPolicy>>) -> Self {
+        Self::BlockwheelFs(job)
+    }
+}
+
+impl From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<EchoPolicy>>) -> Self {
+        Self::BlockwheelFs(job.into())
+    }
+}
+
+impl From<blockwheel_fs::job::BlockPrepareWriteJob<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::BlockPrepareWriteJob<wheels::WheelEchoPolicy<EchoPolicy>>) -> Self {
+        Self::BlockwheelFs(job.into())
+    }
+}
+
+impl From<blockwheel_fs::job::BlockPrepareDeleteJob<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::BlockPrepareDeleteJob<wheels::WheelEchoPolicy<EchoPolicy>>) -> Self {
+        Self::BlockwheelFs(job.into())
+    }
+}
+
+impl From<blockwheel_fs::job::BlockProcessReadJob<wheels::WheelEchoPolicy<EchoPolicy>>> for Job {
+    fn from(job: blockwheel_fs::job::BlockProcessReadJob<wheels::WheelEchoPolicy<EchoPolicy>>) -> Self {
+        Self::BlockwheelFs(job.into())
     }
 }
 
 impl From<blockwheel_kv::job::Job<EchoPolicy>> for Job {
-    fn from(job: blockwheel_kv::job::Job<EchoPolicy>) -> Job {
-        Job::BlockwheelKv(job)
+    fn from(job: blockwheel_kv::job::Job<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job)
     }
 }
 
-impl From<arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>> for Job {
-    fn from(job: arbeitssklave::komm::SklaveJob<Welt, ReplyOrder>) -> Job {
-        Job::FtdSklave(job)
+impl From<performer_sklave::running::flush_butcher::SklaveJob<EchoPolicy>> for Job {
+    fn from(job: performer_sklave::running::flush_butcher::SklaveJob<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job.into())
     }
 }
 
-impl From<JobInsertArgs> for Job {
-    fn from(args: JobInsertArgs) -> Job {
+impl From<performer_sklave::running::lookup_range_merge::SklaveJob<EchoPolicy>> for Job {
+    fn from(job: performer_sklave::running::lookup_range_merge::SklaveJob<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job.into())
+    }
+}
+
+impl From<performer_sklave::running::merge_search_trees::SklaveJob<EchoPolicy>> for Job {
+    fn from(job: performer_sklave::running::merge_search_trees::SklaveJob<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job.into())
+    }
+}
+
+impl From<performer_sklave::running::demolish_search_tree::SklaveJob<EchoPolicy>> for Job {
+    fn from(job: performer_sklave::running::demolish_search_tree::SklaveJob<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job.into())
+    }
+}
+
+impl From<performer_sklave::SklaveJob<EchoPolicy>> for Job {
+    fn from(job: performer_sklave::SklaveJob<EchoPolicy>) -> Self {
+        Self::BlockwheelKv(job.into())
+    }
+}
+
+impl From<arbeitssklave::SklaveJob<Welt, ReplyOrder>> for Job {
+    fn from(job: arbeitssklave::SklaveJob<Welt, ReplyOrder>) -> Self {
+        Self::FtdSklave(job)
+    }
+}
+
+impl From<InsertJob> for Job {
+    fn from(args: InsertJob) -> Job {
         Job::Insert(args)
     }
 }
 
-impl edeltraud::Job for Job {
-    fn run<P>(self, thread_pool: &P) where P: edeltraud::ThreadPool<Self> {
-        match self {
-            Job::BlockwheelFs(job) =>
-                job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
-            Job::BlockwheelKv(job) =>
-                job.run(&edeltraud::ThreadPoolMap::new(thread_pool)),
+pub struct JobUnit<J>(edeltraud::JobUnit<J, Job>);
+
+impl<J> From<edeltraud::JobUnit<J, Job>> for JobUnit<J> {
+    fn from(job_unit: edeltraud::JobUnit<J, Job>) -> Self {
+        Self(job_unit)
+    }
+}
+
+impl<J> edeltraud::Job for JobUnit<J>
+where J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<EchoPolicy>>>,
+      J: From<blockwheel_fs::job::BlockPrepareWriteJob<wheels::WheelEchoPolicy<EchoPolicy>>>,
+      J: From<blockwheel_fs::job::BlockPrepareDeleteJob<wheels::WheelEchoPolicy<EchoPolicy>>>,
+      J: From<blockwheel_fs::job::BlockProcessReadJob<wheels::WheelEchoPolicy<EchoPolicy>>>,
+      J: From<performer_sklave::running::flush_butcher::SklaveJob<EchoPolicy>>,
+      J: From<performer_sklave::running::lookup_range_merge::SklaveJob<EchoPolicy>>,
+      J: From<performer_sklave::running::merge_search_trees::SklaveJob<EchoPolicy>>,
+      J: From<performer_sklave::running::demolish_search_tree::SklaveJob<EchoPolicy>>,
+      J: From<performer_sklave::SklaveJob<EchoPolicy>>,
+      J: From<arbeitssklave::SklaveJob<Welt, ReplyOrder>>,
+      J: Send + 'static,
+{
+    fn run(self) {
+        match self.0.job {
+            Job::BlockwheelFs(job) => {
+                let job_unit = blockwheel_fs::job::JobUnit::from(edeltraud::JobUnit {
+                    handle: self.0.handle,
+                    job,
+                });
+                job_unit.run();
+            },
+            Job::BlockwheelKv(job) => {
+                let job_unit = job::JobUnit::from(edeltraud::JobUnit {
+                    handle: self.0.handle,
+                    job,
+                });
+                job_unit.run();
+            },
             Job::FtdSklave(mut sklave_job) => {
                 #[allow(clippy::while_let_loop)]
                 loop {
@@ -437,20 +525,20 @@ impl edeltraud::Job for Job {
                 }
             },
             Job::Insert(args) =>
-                job_insert(args, thread_pool),
+                job_insert(args, &self.0.handle),
         }
     }
 }
 
 #[derive(Debug)]
-struct InsertJob;
+struct InsertJobStamp;
 
-struct JobInsertArgs {
-    main: JobInsertArgsMain,
-    job_complete: komm::Rueckkopplung<ReplyOrder, InsertJob>,
+struct InsertJob {
+    main: InsertJobMain,
+    job_complete: komm::Rueckkopplung<ReplyOrder, InsertJobStamp>,
 }
 
-struct JobInsertArgsMain {
+struct InsertJobMain {
     blocks_pool: BytesPool,
     key_amount: usize,
     value_amount: usize,
@@ -458,21 +546,25 @@ struct JobInsertArgsMain {
     ftd_sendegeraet: komm::Sendegeraet<ReplyOrder>,
 }
 
-fn job_insert<P>(args: JobInsertArgs, thread_pool: &P) where P: edeltraud::ThreadPool<Job> {
-    let output = run_job_insert(args.main, thread_pool);
-    args.job_complete.commit(output).ok();
+fn job_insert<J>(job: InsertJob, thread_pool: &edeltraud::Handle<J>)
+where J: From<performer_sklave::SklaveJob<EchoPolicy>>,
+{
+    let output = run_job_insert(job.main, thread_pool);
+    job.job_complete.commit(output).ok();
 }
 
-fn run_job_insert<P>(args: JobInsertArgsMain, thread_pool: &P) -> Result<(), Error> where P: edeltraud::ThreadPool<Job> {
-    let mut key_block = args.blocks_pool.lend();
-    let mut value_block = args.blocks_pool.lend();
+fn run_job_insert<J>(job: InsertJobMain, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
+where J: From<performer_sklave::SklaveJob<EchoPolicy>>,
+{
+    let mut key_block = job.blocks_pool.lend();
+    let mut value_block = job.blocks_pool.lend();
     let mut rng = SmallRng::from_entropy();
-    key_block.reserve(args.key_amount);
-    for _ in 0 .. args.key_amount {
+    key_block.reserve(job.key_amount);
+    for _ in 0 .. job.key_amount {
         key_block.push(rng.gen());
     }
-    value_block.reserve(args.value_amount);
-    for _ in 0 .. args.value_amount {
+    value_block.reserve(job.value_amount);
+    for _ in 0 .. job.value_amount {
         value_block.push(rng.gen());
     }
     let key_bytes = key_block.freeze();
@@ -486,9 +578,8 @@ fn run_job_insert<P>(args: JobInsertArgsMain, thread_pool: &P) -> Result<(), Err
         key: key.clone(),
         value_crc,
     };
-    let rueckkopplung = args.ftd_sendegeraet.rueckkopplung(stamp);
-    args.blockwheel_kv_meister
-        .insert(key, value, rueckkopplung, &edeltraud::ThreadPoolMap::new(thread_pool))
+    let rueckkopplung = job.ftd_sendegeraet.rueckkopplung(stamp);
+    job.blockwheel_kv_meister.insert(key, value, rueckkopplung, thread_pool)
         .map_err(Error::RequestInsert)
 }
 
@@ -503,8 +594,8 @@ fn stress_loop(
     -> Result<(), Error>
 {
     let blocks_pool = BytesPool::new();
-    let edeltraud: edeltraud::Edeltraud<Job> = edeltraud::Builder::new()
-        .build()
+    let edeltraud = edeltraud::Builder::new()
+        .build::<_, JobUnit<_>>()
         .map_err(Error::ThreadPool)?;
     let thread_pool = edeltraud.handle();
 
@@ -523,18 +614,16 @@ fn stress_loop(
             blocks_pool.clone(),
             version_provider.clone(),
             wheels,
-            &edeltraud::ThreadPoolMap::new(thread_pool.clone()),
+            &thread_pool,
         )
         .map_err(Error::BlockwheelKvMeister)?;
 
     let (ftd_tx, ftd_rx) = mpsc::channel();
-    let ftd_sklave_meister =
-        arbeitssklave::Freie::new(
-            Welt { ftd_tx: Mutex::new(ftd_tx), },
-        )
-        .versklaven_komm(&thread_pool)
+    let ftd_sklave_meister = arbeitssklave::Freie::new()
+        .versklaven(Welt { ftd_tx: Mutex::new(ftd_tx), }, &thread_pool)
         .unwrap();
-    let ftd_sendegeraet = ftd_sklave_meister.sendegeraet().clone();
+    let ftd_sendegeraet =
+        komm::Sendegeraet::starten(ftd_sklave_meister, thread_pool.clone());
 
     let mut rng = SmallRng::from_entropy();
     let p_distribution = Uniform::new(0.0, 1.0);
@@ -548,7 +637,7 @@ fn stress_loop(
         if actions_counter >= limits.actions {
             while active_tasks_counter.sum_total() > 0 {
                 log::debug!("terminating, waiting for {} tasks to finish | active = {:?}", active_tasks_counter.sum(), active_tasks_counter);
-                process(ftd_rx.recv(), data, counter, &mut active_tasks_counter, &thread_pool)?;
+                process(ftd_rx.recv(), data, counter, &mut active_tasks_counter)?;
             }
             break;
         }
@@ -572,7 +661,7 @@ fn stress_loop(
             None =>
                 (),
             Some(task_result) => {
-                process(task_result, data, counter, &mut active_tasks_counter, &thread_pool)?;
+                process(task_result, data, counter, &mut active_tasks_counter)?;
                 continue;
             }
         }
@@ -599,15 +688,15 @@ fn stress_loop(
                     active_tasks_counter,
                 );
 
-                let job = JobInsertArgs {
-                    main: JobInsertArgsMain {
+                let job = InsertJob {
+                    main: InsertJobMain {
                         blocks_pool: blocks_pool.clone(),
                         key_amount,
                         value_amount,
                         blockwheel_kv_meister: meister.clone(),
                         ftd_sendegeraet: ftd_sendegeraet.clone(),
                     },
-                    job_complete: ftd_sendegeraet.rueckkopplung(InsertJob),
+                    job_complete: ftd_sendegeraet.rueckkopplung(InsertJobStamp),
                 };
                 edeltraud::job(&thread_pool, job)
                     .map_err(Error::Edeltraud)?;
@@ -640,9 +729,9 @@ fn stress_loop(
                     active_tasks_counter,
                 );
 
-                let rueckkopplung = ftd_sendegeraet.rueckkopplung(ReplyRemove { key: key.clone(), });
-                meister
-                    .remove(key.clone(), rueckkopplung, &edeltraud::ThreadPoolMap::new(&thread_pool))
+                let rueckkopplung =
+                    ftd_sendegeraet.rueckkopplung(ReplyRemove { key: key.clone(), });
+                meister.remove(key.clone(), rueckkopplung, &thread_pool)
                     .map_err(Error::RequestRemove)?;
                 active_tasks_counter.removes += 1;
             }
@@ -671,7 +760,7 @@ fn stress_loop(
             let rueckkopplung =
                 ftd_sendegeraet.rueckkopplung(ReplyLookupRange { key: key.clone(), value_cell: value_cell.clone(), });
             let stream = meister
-                .lookup_range(key.clone() ..= key.clone(), rueckkopplung, &edeltraud::ThreadPoolMap::new(&thread_pool))
+                .lookup_range(key.clone() ..= key.clone(), rueckkopplung, &thread_pool)
                 .map_err(Error::RequestLookupRange)?;
             data.streams.insert(stream.stream_id().clone(), stream);
             active_tasks_counter.lookups_range += 1;
@@ -681,7 +770,7 @@ fn stress_loop(
 
     log::info!("DONE, performing flush");
 
-    meister.flush(ftd_sendegeraet.rueckkopplung(ReplyFlush), &edeltraud::ThreadPoolMap::new(&thread_pool))
+    meister.flush(ftd_sendegeraet.rueckkopplung(ReplyFlush), &thread_pool)
         .map_err(Error::RequestFlush)?;
     match ftd_rx.recv() {
         Ok(ReplyOrder::Flush(komm::Umschlag { inhalt: blockwheel_kv::Flushed, stamp: ReplyFlush, })) =>
@@ -690,7 +779,7 @@ fn stress_loop(
             return Err(Error::UnexpectedFtdOrder(format!("expecting flush, but got {other_order:?}"))),
     }
 
-    meister.info(ftd_sendegeraet.rueckkopplung(ReplyInfo), &edeltraud::ThreadPoolMap::new(&thread_pool))
+    meister.info(ftd_sendegeraet.rueckkopplung(ReplyInfo), &thread_pool)
         .map_err(Error::RequestInfo)?;
     let info = match ftd_rx.recv() {
         Ok(ReplyOrder::Info(komm::Umschlag { inhalt: info, stamp: ReplyInfo, })) =>
@@ -713,15 +802,13 @@ fn stress_loop(
     Ok::<_, Error>(())
 }
 
-fn process<P>(
+fn process(
     maybe_recv_order: Result<ReplyOrder, mpsc::RecvError>,
     data: &mut DataIndex,
     counter: &mut Counter,
     active_tasks_counter: &mut Counter,
-    _thread_pool: &P,
 )
     -> Result<(), Error>
-where P: edeltraud::ThreadPool<Job>,
 {
     let recv_order = maybe_recv_order
         .map_err(|mpsc::RecvError| Error::FtdProcessIsLost)?;
@@ -757,7 +844,7 @@ where P: edeltraud::ThreadPool<Job>,
             active_tasks_counter.inserts -= 1;
             Ok(())
         },
-        ReplyOrder::InsertJob(komm::Umschlag { inhalt: output, stamp: InsertJob, }) => {
+        ReplyOrder::InsertJob(komm::Umschlag { inhalt: output, stamp: InsertJobStamp, }) => {
             counter.insert_jobs += 1;
             active_tasks_counter.insert_jobs -= 1;
             output
@@ -866,7 +953,7 @@ where P: edeltraud::ThreadPool<Job>,
             Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
         order @ ReplyOrder::FlushCancel(komm::UmschlagAbbrechen { .. }) =>
             Err(Error::UnexpectedFtdOrder(format!("{order:?}"))),
-        ReplyOrder::InsertJobCancel(komm::UmschlagAbbrechen { stamp: InsertJob, }) =>
+        ReplyOrder::InsertJobCancel(komm::UmschlagAbbrechen { stamp: InsertJobStamp, }) =>
             Err(Error::InsertJobCanceled),
     }
 }

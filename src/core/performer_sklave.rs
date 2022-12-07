@@ -320,7 +320,7 @@ where E: EchoPolicy,
       J: From<running::lookup_range_merge::SklaveJob<E>>,
       J: From<running::merge_search_trees::SklaveJob<E>>,
       J: From<running::demolish_search_tree::SklaveJob<E>>,
-      J: Send,
+      J: Send + 'static,
 {
     let now = Instant::now();
     if let Some(started_at) = sklave_job.idle_started_at {
@@ -346,7 +346,7 @@ where E: EchoPolicy,
       J: From<running::lookup_range_merge::SklaveJob<E>>,
       J: From<running::merge_search_trees::SklaveJob<E>>,
       J: From<running::demolish_search_tree::SklaveJob<E>>,
-      J: Send,
+      J: Send + 'static,
 {
     PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
 
@@ -405,7 +405,8 @@ where E: EchoPolicy,
                         loading::Outcome::Done { performer, pools, } => {
                             sklave_job.state =
                                 WeltState::Running(running::WeltState::new(performer, pools));
-                            sklave_job.env.incoming_orders.append(&mut sklave_job.env.delayed_orders);
+                            let sklavenwelt = &mut *sklave_job;
+                            sklavenwelt.env.incoming_orders.append(&mut sklavenwelt.env.delayed_orders);
                         },
                     },
                 WeltState::Running(running) =>
