@@ -75,14 +75,12 @@ pub enum Error {
 
 pub struct Meister<E> where E: EchoPolicy {
     performer_sklave_meister: arbeitssklave::Meister<core::performer_sklave::Welt<E>, core::performer_sklave::Order<E>>,
-    performer_sklave_sendegeraet: komm::Sendegeraet<core::performer_sklave::Order<E>>,
 }
 
 impl<E> Clone for Meister<E> where E: EchoPolicy {
     fn clone(&self) -> Self {
         Meister {
             performer_sklave_meister: self.performer_sklave_meister.clone(),
-            performer_sklave_sendegeraet: self.performer_sklave_sendegeraet.clone(),
         }
     }
 }
@@ -111,7 +109,7 @@ impl<E> Meister<E> where E: EchoPolicy {
                         params,
                         blocks_pool,
                         version_provider,
-                        performer_sklave_sendegeraet.clone(),
+                        performer_sklave_sendegeraet,
                         wheels,
                     ),
                 ),
@@ -120,7 +118,6 @@ impl<E> Meister<E> where E: EchoPolicy {
             .map_err(Error::PerformerVersklaven)?;
         Ok(Meister {
             performer_sklave_meister,
-            performer_sklave_sendegeraet,
         })
     }
 }
@@ -153,7 +150,7 @@ pub struct WheelInfo {
 
 #[must_use = "stream is automatically cancelled after drop"]
 pub struct LookupRangeStream<E> where E: EchoPolicy {
-    stream: komm::Stream<core::performer_sklave::Order<E>>,
+    stream: komm::Stream<core::performer_sklave::running::lookup_range_merge::Order<E>>,
 }
 
 impl<E> LookupRangeStream<E> where E: EchoPolicy {
@@ -164,7 +161,7 @@ impl<E> LookupRangeStream<E> where E: EchoPolicy {
     pub fn next(&self, stream_echo: E::LookupRange, stream_token: komm::StreamToken) -> Result<(), Error> {
         self.stream
             .mehr(
-                core::performer_sklave::OrderRequestLookupRangeNext { stream_echo, },
+                core::performer_sklave::running::lookup_range_merge::OrderItemNext { stream_echo, },
                 stream_token,
             )
             .map_err(Error::RequestLookupRangeNext)
@@ -222,18 +219,41 @@ impl<E> Meister<E> where E: EchoPolicy {
         &self,
         range: R,
         stream_echo: E::LookupRange,
-        _thread_pool: &edeltraud::Handle<J>,
+        thread_pool: &edeltraud::Handle<J>,
     )
         -> Result<LookupRangeStream<E>, Error>
     where R: RangeBounds<kv::Key>,
-          J: From<core::performer_sklave::SklaveJob<E>>,
+          J: From<job::PerformerSklaveJob<E>>,
+          J: From<job::LookupRangeMergeSklaveJob<E>>,
+          J: Send + 'static,
     {
-        let stream = self.performer_sklave_sendegeraet
+        use crate::core::performer_sklave::running::lookup_range_merge;
+
+        let lookup_ranges_merge_freie: arbeitssklave::Freie<lookup_range_merge::Welt<E>, lookup_range_merge::Order<E>> =
+            arbeitssklave::Freie::new();
+        let lookup_ranges_merge_sendegeraet = komm::Sendegeraet::starten(
+            lookup_ranges_merge_freie.meister(),
+            thread_pool.clone(),
+        );
+        let stream = lookup_ranges_merge_sendegeraet
             .stream_starten(
-                core::performer_sklave::OrderRequestLookupRange{
-                    search_range: range.into(),
+                core::performer_sklave::running::lookup_range_merge::OrderItemFirst {
                     stream_echo,
                 },
+            )
+            .map_err(Error::RequestLookupRange)?;
+        self.performer_sklave_meister
+            .befehl(
+                core::performer_sklave::Order::Request(
+                    core::performer_sklave::OrderRequest::LookupRange(
+                        core::performer_sklave::OrderRequestLookupRange {
+                            search_range: range.into(),
+                            lookup_ranges_merge_freie,
+                            lookup_ranges_merge_sendegeraet,
+                        },
+                    ),
+                ),
+                thread_pool,
             )
             .map_err(Error::RequestLookupRange)?;
         Ok(LookupRangeStream { stream, })

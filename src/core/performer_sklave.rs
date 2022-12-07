@@ -3,9 +3,6 @@ use std::{
     marker::{
         PhantomData,
     },
-    collections::{
-        HashMap,
-    },
 };
 
 use o1::{
@@ -28,6 +25,7 @@ use arbeitssklave::{
 
 use crate::{
     kv,
+    job,
     wheels,
     version,
     core::{
@@ -47,8 +45,6 @@ pub mod running;
 
 pub enum Order<E> where E: EchoPolicy {
     Request(OrderRequest<E>),
-    LookupRangeNext(komm::StreamMehr<OrderRequestLookupRangeNext<E>>),
-    LookupRangeCancel(komm::StreamAbbrechen),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
     MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
     DemolishSearchTreeDone(komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>),
@@ -62,7 +58,7 @@ pub enum Order<E> where E: EchoPolicy {
 pub enum OrderRequest<E> where E: EchoPolicy {
     Info(OrderRequestInfo<E>),
     Insert(OrderRequestInsert<E>),
-    LookupRange(komm::StreamStarten<OrderRequestLookupRange<E>>),
+    LookupRange(OrderRequestLookupRange<E>),
     Remove(OrderRequestRemove<E>),
     Flush(OrderRequestFlush<E>),
 }
@@ -107,7 +103,6 @@ pub struct Env<E> where E: EchoPolicy {
     incoming_orders: Vec<Order<E>>,
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
-    lookup_range_merge_sklaven: HashMap<komm::StreamId, running::lookup_range_merge::Meister<E>>,
 }
 
 impl<E> Env<E> where E: EchoPolicy {
@@ -129,7 +124,6 @@ impl<E> Env<E> where E: EchoPolicy {
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
-            lookup_range_merge_sklaven: HashMap::new(),
         }
     }
 }
@@ -141,14 +135,8 @@ enum WeltState<E> where E: EchoPolicy {
     Running(running::WeltState<E>),
 }
 
-#[derive(Debug)]
-pub struct LookupRangeRoute {
-    stream_id: komm::StreamId,
-}
-
 pub struct LookupRangeMergeDrop {
     access_token: performer::AccessToken,
-    route: LookupRangeRoute,
 }
 
 pub struct FlushButcherDrop {
@@ -191,11 +179,8 @@ pub struct OrderRequestInsert<E> where E: EchoPolicy {
 
 pub struct OrderRequestLookupRange<E> where E: EchoPolicy {
     pub search_range: SearchRangeBounds,
-    pub stream_echo: E::LookupRange,
-}
-
-pub struct OrderRequestLookupRangeNext<E> where E: EchoPolicy {
-    pub stream_echo: E::LookupRange,
+    pub lookup_ranges_merge_freie: arbeitssklave::Freie<running::lookup_range_merge::Welt<E>, running::lookup_range_merge::Order<E>>,
+    pub lookup_ranges_merge_sendegeraet: komm::Sendegeraet<running::lookup_range_merge::Order<E>>,
 }
 
 pub struct OrderRequestRemove<E> where E: EchoPolicy {
@@ -258,10 +243,10 @@ impl<E> Drop for Welt<E> where E: EchoPolicy {
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
       J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
-      J: From<running::flush_butcher::SklaveJob<E>>,
-      J: From<running::lookup_range_merge::SklaveJob<E>>,
-      J: From<running::merge_search_trees::SklaveJob<E>>,
-      J: From<running::demolish_search_tree::SklaveJob<E>>,
+      J: From<job::FlushButcherSklaveJob<E>>,
+      J: From<job::LookupRangeMergeSklaveJob<E>>,
+      J: From<job::MergeSearchTreesSklaveJob<E>>,
+      J: From<job::DemolishSearchTreeSklaveJob<E>>,
       J: Send + 'static,
 {
     let now = Instant::now();
@@ -284,10 +269,10 @@ where E: EchoPolicy,
 fn job<E, J>(mut sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>) -> Result<(), Error>
 where E: EchoPolicy,
       J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
-      J: From<running::flush_butcher::SklaveJob<E>>,
-      J: From<running::lookup_range_merge::SklaveJob<E>>,
-      J: From<running::merge_search_trees::SklaveJob<E>>,
-      J: From<running::demolish_search_tree::SklaveJob<E>>,
+      J: From<job::FlushButcherSklaveJob<E>>,
+      J: From<job::LookupRangeMergeSklaveJob<E>>,
+      J: From<job::MergeSearchTreesSklaveJob<E>>,
+      J: From<job::DemolishSearchTreeSklaveJob<E>>,
       J: Send + 'static,
 {
     PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -381,21 +366,9 @@ impl Pools {
     }
 }
 
-impl<E> From<komm::StreamStarten<OrderRequestLookupRange<E>>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::StreamStarten<OrderRequestLookupRange<E>>) -> Order<E> {
+impl<E> From<OrderRequestLookupRange<E>> for Order<E> where E: EchoPolicy {
+    fn from(v: OrderRequestLookupRange<E>) -> Order<E> {
         Order::Request(OrderRequest::LookupRange(v))
-    }
-}
-
-impl<E> From<komm::StreamMehr<OrderRequestLookupRangeNext<E>>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::StreamMehr<OrderRequestLookupRangeNext<E>>) -> Order<E> {
-        Order::LookupRangeNext(v)
-    }
-}
-
-impl<E> From<komm::StreamAbbrechen> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::StreamAbbrechen) -> Order<E> {
-        Order::LookupRangeCancel(v)
     }
 }
 
@@ -491,15 +464,15 @@ impl<E> From<komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>> for
 
 pub struct Context<E>(PhantomData<E>);
 
-pub struct LookupRangeStream<E> {
-    pub stream_echo: E,
-    pub stream_token: komm::StreamToken,
+pub struct LookupRangeStream<E> where E: EchoPolicy {
+    pub lookup_ranges_merge_freie: arbeitssklave::Freie<running::lookup_range_merge::Welt<E>, running::lookup_range_merge::Order<E>>,
+    pub lookup_ranges_merge_sendegeraet: komm::Sendegeraet<running::lookup_range_merge::Order<E>>,
 }
 
 impl<E> context::Context for Context<E> where E: EchoPolicy {
     type Info = E::Info;
     type Insert = E::Insert;
-    type Lookup = LookupRangeStream<E::LookupRange>;
+    type Lookup = LookupRangeStream<E>;
     type Remove = E::Remove;
     type Flush = E::Flush;
 }

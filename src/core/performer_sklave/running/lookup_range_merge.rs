@@ -34,10 +34,11 @@ use crate::{
 };
 
 pub enum Order<E> where E: EchoPolicy {
-    Terminate,
     ReadBlock(OrderReadBlock),
     ReadBlockCancel(komm::UmschlagAbbrechen<ReadBlockTarget>),
-    ItemNext(OrderItemNext<E>),
+    LookupRangeFirst(komm::StreamStarten<OrderItemFirst<E>>),
+    LookupRangeNext(komm::StreamMehr<OrderItemNext<E>>),
+    LookupRangeCancel(komm::StreamAbbrechen),
 }
 
 pub struct OrderReadBlock {
@@ -45,8 +46,12 @@ pub struct OrderReadBlock {
     pub target: ReadBlockTarget,
 }
 
+pub struct OrderItemFirst<E> where E: EchoPolicy {
+    pub stream_echo: E::LookupRange,
+}
+
 pub struct OrderItemNext<E> where E: EchoPolicy {
-    pub lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
+    pub stream_echo: E::LookupRange,
 }
 
 #[derive(Debug)]
@@ -64,20 +69,18 @@ pub struct ReadBlockTargetLoadBlock {
 #[allow(dead_code)]
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont<E>>,
-    stream_id: komm::StreamId,
     sendegeraet: komm::Sendegeraet<Order<E>>,
     wheels: wheels::Wheels<E>,
     _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
+    received_stream_start: Option<komm::StreamStarten<OrderItemFirst<E>>>,
+    received_stream_next: Option<komm::StreamMehr<OrderItemNext<E>>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
-    received_order_item_next: Option<OrderItemNext<E>>,
     received_value_bytes: Option<Bytes>,
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         merger: SearchRangesMergeCps,
-        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
-        stream_id: komm::StreamId,
         sendegeraet: komm::Sendegeraet<Order<E>>,
         wheels: wheels::Wheels<E>,
         drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
@@ -85,33 +88,33 @@ impl<E> Welt<E> where E: EchoPolicy {
         -> Self
     {
         Welt {
-            kont: Some(Kont::Start { merger, lookup_context, }),
-            stream_id,
+            kont: Some(Kont::WaitStart { merger, }),
             sendegeraet,
             wheels,
             _drop_bomb: drop_bomb,
+            received_stream_start: None,
+            received_stream_next: None,
             received_block_tasks: Vec::new(),
-            received_order_item_next: None,
             received_value_bytes: None,
         }
     }
 }
 
-pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order<E>>;
 pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
 
 enum Kont<E> where E: EchoPolicy {
-    Start {
+    WaitStart {
         merger: SearchRangesMergeCps,
-        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
     },
     AwaitBlocks {
-        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
+        stream_echo: E::LookupRange,
+        stream_token: komm::StreamToken,
         next: SearchRangesMergeBlockNext,
     },
     ReadyItem {
         key_value_pair: kv::KeyValuePair<kv::Value>,
-        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
+        stream_echo: E::LookupRange,
+        stream_token: komm::StreamToken,
         next: SearchRangesMergeItemNext,
     },
     AwaitItemNext {
@@ -120,7 +123,8 @@ enum Kont<E> where E: EchoPolicy {
     AwaitItemValue {
         key: kv::Key,
         version: u64,
-        lookup_context: performer_sklave::LookupRangeStream<E::LookupRange>,
+        stream_echo: E::LookupRange,
+        stream_token: komm::StreamToken,
         next: SearchRangesMergeItemNext,
     },
 }
@@ -156,72 +160,73 @@ where E: EchoPolicy,
 {
     'outer: loop {
         // first retrieve all orders available
-        if let Some(Kont::Start { .. }) = sklave_job.kont {
-            // skip it on initialize
-        } else {
-            let gehorsam = sklave_job.zu_ihren_diensten()
-                .map_err(Error::OrphanSklave)?;
-            match gehorsam {
-                arbeitssklave::Gehorsam::Rasten =>
-                    return Ok(()),
-                arbeitssklave::Gehorsam::Machen { mut befehle, } =>
-                    loop {
-                        match befehle.befehl() {
-                            arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
-                                befehle = mehr_befehle;
-                                let sklavenwelt = &mut *befehle;
+        let gehorsam = sklave_job.zu_ihren_diensten()
+            .map_err(Error::OrphanSklave)?;
+        match gehorsam {
+            arbeitssklave::Gehorsam::Rasten =>
+                return Ok(()),
+            arbeitssklave::Gehorsam::Machen { mut befehle, } =>
+                loop {
+                    match befehle.befehl() {
+                        arbeitssklave::SklavenBefehl::Mehr { befehl, mehr_befehle, } => {
+                            befehle = mehr_befehle;
+                            let sklavenwelt = &mut *befehle;
 
-                                match befehl {
-                                    Order::Terminate =>
-                                        return Ok(()),
-                                    Order::ItemNext(order_item_next) => {
-                                        assert!(sklavenwelt.received_order_item_next.is_none());
-                                        sklavenwelt.received_order_item_next =
-                                            Some(order_item_next);
-                                    },
-                                    Order::ReadBlock(OrderReadBlock {
-                                        read_block_result: Ok(block_bytes),
-                                        target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
-                                            async_token: HideDebug(async_token),
-                                        }),
-                                    }) =>
-                                        sklavenwelt.received_block_tasks
-                                            .push(ReceivedBlockTask { async_token, block_bytes, }),
-                                    Order::ReadBlock(OrderReadBlock {
-                                        read_block_result: Ok(block_bytes),
-                                        target: ReadBlockTarget::LoadValue,
-                                    }) => {
-                                        let value_bytes =
-                                            storage::ValueBlock::read_from_source(
-                                                &mut SourceBytesRef::from(&block_bytes),
-                                            )
-                                            .map_err(Error::ValueDeserialize)?
-                                            .into();
-                                        assert!(sklavenwelt.received_value_bytes.is_none());
-                                        sklavenwelt.received_value_bytes =
-                                            Some(value_bytes);
-                                    },
-                                    Order::ReadBlock(OrderReadBlock {
-                                        read_block_result: Err(error),
-                                        target: ReadBlockTarget::LoadBlock { .. },
-                                    }) =>
-                                        return Err(Error::LoadBlock(error)),
-                                    Order::ReadBlock(OrderReadBlock {
-                                        read_block_result: Err(error),
-                                        target: ReadBlockTarget::LoadValue,
-                                    }) =>
-                                        return Err(Error::LoadValue(error)),
-                                    Order::ReadBlockCancel(..) =>
-                                        return Err(Error::WheelIsGoneDuringReadBlock),
-                                }
-                            },
-                            arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
-                                sklave_job = next_sklave_job;
-                                break;
-                            },
-                        }
-                    },
-            }
+                            match befehl {
+                                Order::LookupRangeFirst(order) => {
+                                    assert!(sklavenwelt.received_stream_start.is_none());
+                                    sklavenwelt.received_stream_start = Some(order);
+                                },
+                                Order::LookupRangeNext(order) => {
+                                    assert!(sklavenwelt.received_stream_next.is_none());
+                                    sklavenwelt.received_stream_next = Some(order);
+                                },
+                                Order::LookupRangeCancel(komm::StreamAbbrechen { stream_id, }) => {
+                                    log::debug!("stream id = {stream_id:?} cancelled, terminating");
+                                    return Ok(());
+                                },
+                                Order::ReadBlock(OrderReadBlock {
+                                    read_block_result: Ok(block_bytes),
+                                    target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock {
+                                        async_token: HideDebug(async_token),
+                                    }),
+                                }) =>
+                                    sklavenwelt.received_block_tasks
+                                    .push(ReceivedBlockTask { async_token, block_bytes, }),
+                                Order::ReadBlock(OrderReadBlock {
+                                    read_block_result: Ok(block_bytes),
+                                    target: ReadBlockTarget::LoadValue,
+                                }) => {
+                                    let value_bytes =
+                                        storage::ValueBlock::read_from_source(
+                                            &mut SourceBytesRef::from(&block_bytes),
+                                        )
+                                        .map_err(Error::ValueDeserialize)?
+                                        .into();
+                                    assert!(sklavenwelt.received_value_bytes.is_none());
+                                    sklavenwelt.received_value_bytes =
+                                        Some(value_bytes);
+                                },
+                                Order::ReadBlock(OrderReadBlock {
+                                    read_block_result: Err(error),
+                                    target: ReadBlockTarget::LoadBlock { .. },
+                                }) =>
+                                    return Err(Error::LoadBlock(error)),
+                                Order::ReadBlock(OrderReadBlock {
+                                    read_block_result: Err(error),
+                                    target: ReadBlockTarget::LoadValue,
+                                }) =>
+                                    return Err(Error::LoadValue(error)),
+                                Order::ReadBlockCancel(..) =>
+                                    return Err(Error::WheelIsGoneDuringReadBlock),
+                            }
+                        },
+                        arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
+                            sklave_job = next_sklave_job;
+                            break;
+                        },
+                    }
+                },
         }
 
         let sklavenwelt = &mut *sklave_job;
@@ -229,40 +234,51 @@ where E: EchoPolicy,
         'kont: loop {
             let (
                 mut merger_kont,
-                lookup_context,
+                stream_echo,
+                stream_token,
             ) = match sklavenwelt.kont.take().unwrap() {
-                Kont::Start {
-                    merger,
-                    lookup_context,
-                } => (
-                    merger.step()
-                        .map_err(Error::SearchRangesMerge)?,
-                    lookup_context,
-                ),
+                Kont::WaitStart { merger, } =>
+                    match sklavenwelt.received_stream_start.take() {
+                        Some(komm::StreamStarten {
+                            inhalt: OrderItemFirst {
+                                stream_echo,
+                            },
+                            stream_token,
+                        }) => (
+                            merger.step()
+                                .map_err(Error::SearchRangesMerge)?,
+                            stream_echo,
+                            stream_token,
+                        ),
+                        None => {
+                            sklavenwelt.kont = Some(Kont::WaitStart { merger, });
+                            continue 'outer;
+                        },
+                    },
                 Kont::AwaitBlocks {
-                    lookup_context,
+                    stream_echo,
+                    stream_token,
                     next,
                 } =>
-                    if let Some(ReceivedBlockTask {
-                        async_token,
-                        block_bytes,
-                    }) = sklavenwelt.received_block_tasks.pop() {
-                        (
+                    match sklavenwelt.received_block_tasks.pop() {
+                        Some(ReceivedBlockTask {
+                            async_token,
+                            block_bytes,
+                        }) => (
                             next.block_arrived(async_token, block_bytes)
                                 .map_err(Error::SearchRangesMerge)?,
-                            lookup_context,
-                        )
-                    } else {
-                        sklavenwelt.kont =
-                            Some(Kont::AwaitBlocks { lookup_context, next, });
-                        continue 'outer;
+                            stream_echo,
+                            stream_token,
+                        ),
+                        None => {
+                            sklavenwelt.kont = Some(Kont::AwaitBlocks { stream_echo, stream_token, next, });
+                            continue 'outer;
+                        },
                     },
                 Kont::ReadyItem {
                     key_value_pair,
-                    lookup_context: performer_sklave::LookupRangeStream {
-                        stream_echo,
-                        stream_token,
-                    },
+                    stream_echo,
+                    stream_token,
                     next,
                 } => {
                     let streamzeug = stream_token.streamzeug_zeug(key_value_pair);
@@ -273,39 +289,50 @@ where E: EchoPolicy,
                     continue 'kont;
                 },
                 Kont::AwaitItemNext { next, } =>
-                    if let Some(OrderItemNext {
-                        lookup_context,
-                    }) = sklavenwelt.received_order_item_next.take() {
-                        let merger_kont = next.proceed()
-                            .map_err(Error::SearchRangesMerge)?;
-                        (merger_kont, lookup_context)
-                    } else {
-                        sklavenwelt.kont = Some(Kont::AwaitItemNext { next, });
-                        continue 'outer;
+                    match sklavenwelt.received_stream_next.take() {
+                        Some(komm::StreamMehr {
+                            inhalt: OrderItemNext {
+                                stream_echo,
+                            },
+                            stream_token,
+                        }) => {
+                            let merger_kont = next.proceed()
+                                .map_err(Error::SearchRangesMerge)?;
+                            (merger_kont, stream_echo, stream_token)
+                        },
+                        None => {
+                            sklavenwelt.kont = Some(Kont::AwaitItemNext { next, });
+                            continue 'outer;
+                        },
                     },
                 Kont::AwaitItemValue {
                     key,
                     version,
-                    lookup_context,
+                    stream_echo,
+                    stream_token,
                     next,
                 } =>
-                    if let Some(value_bytes) = sklavenwelt.received_value_bytes.take() {
-                        sklavenwelt.kont =
-                            Some(Kont::ReadyItem {
-                                key_value_pair: kv::KeyValuePair {
-                                    key,
-                                    value_cell: kv::ValueCell {
-                                        version,
-                                        cell: kv::Cell::Value(kv::Value { value_bytes, }),
+                    match sklavenwelt.received_value_bytes.take() {
+                        Some(value_bytes) => {
+                            sklavenwelt.kont =
+                                Some(Kont::ReadyItem {
+                                    key_value_pair: kv::KeyValuePair {
+                                        key,
+                                        value_cell: kv::ValueCell {
+                                            version,
+                                            cell: kv::Cell::Value(kv::Value { value_bytes, }),
+                                        },
                                     },
-                                },
-                                lookup_context,
-                                next,
-                            });
-                        continue 'kont;
-                    } else {
-                        sklavenwelt.kont = Some(Kont::AwaitItemValue { key, version, lookup_context, next, });
-                        continue 'outer;
+                                    stream_echo,
+                                    stream_token,
+                                    next,
+                                });
+                            continue 'kont;
+                        },
+                        None => {
+                            sklavenwelt.kont = Some(Kont::AwaitItemValue { key, version, stream_echo, stream_token, next, });
+                            continue 'outer;
+                        },
                     },
             };
 
@@ -341,7 +368,7 @@ where E: EchoPolicy,
                         next,
                     }) => {
                         sklavenwelt.kont =
-                            Some(Kont::AwaitBlocks { lookup_context, next, });
+                            Some(Kont::AwaitBlocks { stream_echo, stream_token, next, });
                         break;
                     },
                     search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished {
@@ -380,7 +407,8 @@ where E: EchoPolicy,
                                             cell: kv::Cell::Value(kv::Value { value_bytes, }),
                                         },
                                     },
-                                    lookup_context,
+                                    stream_echo,
+                                    stream_token,
                                     next,
                                 });
                             },
@@ -393,7 +421,8 @@ where E: EchoPolicy,
                                             cell: kv::Cell::Tombstone,
                                         },
                                     },
-                                    lookup_context,
+                                    stream_echo,
+                                    stream_token,
                                     next,
                                 });
                             },
@@ -419,7 +448,7 @@ where E: EchoPolicy,
                                     )
                                     .map_err(Error::ValueLoadReadBlockRequest)?;
                                 sklavenwelt.kont =
-                                    Some(Kont::AwaitItemValue { key, version, lookup_context, next, });
+                                    Some(Kont::AwaitItemValue { key, version, stream_echo, stream_token, next, });
                             },
                             kv::KeyValuePair { value_cell: kv::ValueCell { cell: kv::Cell::Value(storage::ValueRef::Local(..)), .. }, .. } =>
                                 unreachable!("totally unexpected ValueRef::Local value from `search_range_merge`"),
@@ -427,10 +456,9 @@ where E: EchoPolicy,
                         break;
                     },
                     search_ranges_merge::Kont::Finished => {
-                        let streamzeug = lookup_context
-                            .stream_token
+                        let streamzeug = stream_token
                             .streamzeug_nicht_mehr();
-                        lookup_context.stream_echo.commit_echo(streamzeug)
+                        stream_echo.commit_echo(streamzeug)
                             .map_err(Error::SendegeraetGone)?;
                         return Ok(());
                     },
@@ -457,5 +485,23 @@ impl<E> From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>,
             read_block_result: v.inhalt,
             target: v.stamp,
         })
+    }
+}
+
+impl<E> From<komm::StreamStarten<OrderItemFirst<E>>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamStarten<OrderItemFirst<E>>) -> Self {
+        Self::LookupRangeFirst(v)
+    }
+}
+
+impl<E> From<komm::StreamMehr<OrderItemNext<E>>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamMehr<OrderItemNext<E>>) -> Order<E> {
+        Order::LookupRangeNext(v)
+    }
+}
+
+impl<E> From<komm::StreamAbbrechen> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::StreamAbbrechen) -> Order<E> {
+        Order::LookupRangeCancel(v)
     }
 }
