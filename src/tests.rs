@@ -409,32 +409,32 @@ impl From<blockwheel_kv::job::Job<EchoPolicy>> for Job {
     }
 }
 
-impl From<performer_sklave::running::flush_butcher::SklaveJob<EchoPolicy>> for Job {
-    fn from(job: performer_sklave::running::flush_butcher::SklaveJob<EchoPolicy>) -> Self {
+impl From<job::FlushButcherSklaveJob<EchoPolicy>> for Job {
+    fn from(job: job::FlushButcherSklaveJob<EchoPolicy>) -> Self {
         Self::BlockwheelKv(job.into())
     }
 }
 
-impl From<performer_sklave::running::lookup_range_merge::SklaveJob<EchoPolicy>> for Job {
-    fn from(job: performer_sklave::running::lookup_range_merge::SklaveJob<EchoPolicy>) -> Self {
+impl From<job::LookupRangeMergeSklaveJob<EchoPolicy>> for Job {
+    fn from(job: job::LookupRangeMergeSklaveJob<EchoPolicy>) -> Self {
         Self::BlockwheelKv(job.into())
     }
 }
 
-impl From<performer_sklave::running::merge_search_trees::SklaveJob<EchoPolicy>> for Job {
-    fn from(job: performer_sklave::running::merge_search_trees::SklaveJob<EchoPolicy>) -> Self {
+impl From<job::MergeSearchTreesSklaveJob<EchoPolicy>> for Job {
+    fn from(job: job::MergeSearchTreesSklaveJob<EchoPolicy>) -> Self {
         Self::BlockwheelKv(job.into())
     }
 }
 
-impl From<performer_sklave::running::demolish_search_tree::SklaveJob<EchoPolicy>> for Job {
-    fn from(job: performer_sklave::running::demolish_search_tree::SklaveJob<EchoPolicy>) -> Self {
+impl From<job::DemolishSearchTreeSklaveJob<EchoPolicy>> for Job {
+    fn from(job: job::DemolishSearchTreeSklaveJob<EchoPolicy>) -> Self {
         Self::BlockwheelKv(job.into())
     }
 }
 
-impl From<performer_sklave::SklaveJob<EchoPolicy>> for Job {
-    fn from(job: performer_sklave::SklaveJob<EchoPolicy>) -> Self {
+impl From<job::PerformerSklaveJob<EchoPolicy>> for Job {
+    fn from(job: job::PerformerSklaveJob<EchoPolicy>) -> Self {
         Self::BlockwheelKv(job.into())
     }
 }
