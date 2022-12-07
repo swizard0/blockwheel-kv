@@ -11,6 +11,9 @@ use std::{
 };
 
 use alloc_pool::{
+    bytes::{
+        Bytes,
+    },
     Unique,
 };
 
@@ -27,6 +30,7 @@ use crate::{
     wheels::{
         BlockRef,
     },
+    EchoPolicy,
 };
 
 pub mod performer_sklave;
@@ -34,6 +38,7 @@ pub mod performer_sklave;
 use performer_sklave::{
     running::{
         flush_butcher,
+        lookup_range_merge,
         merge_search_trees,
     },
 };
@@ -69,6 +74,26 @@ impl Echo<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError
             FsWriteBlock::FlushButcher { rueckkopplung, } =>
                 rueckkopplung.commit_echo(inhalt),
             FsWriteBlock::MergeSearchTrees { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+        }
+    }
+}
+
+pub enum FsReadBlock<E> where E: EchoPolicy {
+    LookupRangeMerge {
+        rueckkopplung: komm::Rueckkopplung<lookup_range_merge::Order<E>, lookup_range_merge::ReadBlockTarget>,
+    },
+    MergeSearchTrees {
+        rueckkopplung: komm::Rueckkopplung<merge_search_trees::Order, merge_search_trees::ReadBlockTarget>,
+    },
+}
+
+impl<E> Echo<Result<Bytes, blockwheel_fs::RequestReadBlockError>> for FsReadBlock<E> where E: EchoPolicy {
+    fn commit_echo(self, inhalt: Result<Bytes, blockwheel_fs::RequestReadBlockError>) -> Result<(), komm::EchoError> {
+        match self {
+            FsReadBlock::LookupRangeMerge { rueckkopplung, } =>
+                rueckkopplung.commit_echo(inhalt),
+            FsReadBlock::MergeSearchTrees { rueckkopplung, } =>
                 rueckkopplung.commit_echo(inhalt),
         }
     }

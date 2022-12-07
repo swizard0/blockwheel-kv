@@ -35,6 +35,7 @@ use crate::{
 pub enum Order<E> where E: EchoPolicy {
     Terminate,
     ReadBlock(OrderReadBlock),
+    ReadBlockCancel(komm::UmschlagAbbrechen<ReadBlockTarget>),
     ItemNext(OrderItemNext<E>),
 }
 
@@ -455,4 +456,19 @@ where E: EchoPolicy,
 struct ReceivedBlockTask {
     block_bytes: Bytes,
     async_token: search_ranges_merge::AsyncToken<performer::LookupRangeSource>,
+}
+
+impl<E> From<komm::UmschlagAbbrechen<ReadBlockTarget>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::UmschlagAbbrechen<ReadBlockTarget>) -> Self {
+        Self::ReadBlockCancel(v)
+    }
+}
+
+impl<E> From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>) -> Self {
+        Self::ReadBlock(OrderReadBlock {
+            read_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
 }

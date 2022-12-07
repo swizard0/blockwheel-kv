@@ -26,6 +26,7 @@ use crate::{
         search_tree_builder,
         search_ranges_merge,
         BlockRef,
+        FsReadBlock,
         FsWriteBlock,
         SearchTreeBuilderCps,
         SearchTreeBuilderKont,
@@ -82,8 +83,6 @@ pub struct WriteBlockTargetStoreBlock {
 
 pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont>,
-    meister_ref: Ref,
-    parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
     sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
@@ -99,8 +98,6 @@ impl<E> Welt<E> where E: EchoPolicy {
     pub fn new(
         source_count_items: SearchRangesMergeCps,
         source_build: SearchRangesMergeCps,
-        meister_ref: Ref,
-        parent_sendegeraet: komm::Sendegeraet<performer_sklave::Order<E>>,
         sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
@@ -120,8 +117,6 @@ impl<E> Welt<E> where E: EchoPolicy {
                     merger_source_build: source_build,
                 },
             }),
-            meister_ref,
-            parent_sendegeraet,
             sendegeraet,
             wheels,
             blocks_pool,
@@ -134,7 +129,6 @@ impl<E> Welt<E> where E: EchoPolicy {
     }
 }
 
-pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
 pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]
@@ -528,37 +522,43 @@ where E: EchoPolicy,
                         blockwheel_filename: block_ref.blockwheel_filename.clone(),
                     })?;
                 let rueckkopplung = sklavenwelt
-                    .parent_sendegeraet
+                    .sendegeraet
                     .rueckkopplung(
-                        performer_sklave::WheelRouteReadBlock::MergeSearchTrees {
-                            route: performer_sklave::MergeSearchTreesRoute {
-                                meister_ref: sklavenwelt.meister_ref,
-                            },
-                            target: ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
-                        },
+                        ReadBlockTarget::LoadBlock(ReadBlockTargetLoadBlock { async_token: HideDebug(async_token), }),
                     );
                 wheel_ref.meister
                     .read_block(
                         block_ref.block_id,
-                        rueckkopplung,
+                        FsReadBlock::MergeSearchTrees { rueckkopplung, },
                         thread_pool,
                     )
                     .map_err(Error::BlockLoadReadBlockRequest)?;
                 merger_kont = next.scheduled()
                     .map_err(Error::SearchRangesMerge)?;
             },
-            search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks { next, }) =>
+            search_ranges_merge::Kont::AwaitBlocks(search_ranges_merge::KontAwaitBlocks {
+                next,
+            }) =>
                 return Ok(MergeKont::ProceedAwaitBlocks { next, }),
-            search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished { next, .. }) => {
+            search_ranges_merge::Kont::BlockFinished(search_ranges_merge::KontBlockFinished {
+                next,
+                ..
+            }) => {
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },
-            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated { next, .. }) => {
+            search_ranges_merge::Kont::EmitDeprecated(search_ranges_merge::KontEmitDeprecated {
+                next,
+                ..
+            }) => {
                 merger_kont = next.proceed()
                     .map_err(Error::SearchRangesMerge)?;
             },
             search_ranges_merge::Kont::EmitItem(
-                search_ranges_merge::KontEmitItem { item, next, },
+                search_ranges_merge::KontEmitItem {
+                    item,
+                    next,
+                },
             ) =>
                 return Ok(MergeKont::ProceedItem { item, next, }),
             search_ranges_merge::Kont::Finished =>
@@ -705,21 +705,30 @@ enum BuildKontActive {
 }
 
 impl From<komm::UmschlagAbbrechen<ReadBlockTarget>> for Order {
-    fn from(v: komm::UmschlagAbbrechen<ReadBlockTarget>) -> Order {
-        Order::ReadBlockCancel(v)
+    fn from(v: komm::UmschlagAbbrechen<ReadBlockTarget>) -> Self {
+        Self::ReadBlockCancel(v)
     }
 }
 
 impl From<komm::UmschlagAbbrechen<WriteBlockTarget>> for Order {
-    fn from(v: komm::UmschlagAbbrechen<WriteBlockTarget>) -> Order {
-        Order::WriteBlockCancel(v)
+    fn from(v: komm::UmschlagAbbrechen<WriteBlockTarget>) -> Self {
+        Self::WriteBlockCancel(v)
     }
 }
 
 impl From<komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>> for Order {
-    fn from(v: komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>) -> Order {
-        Order::WriteBlock(OrderWriteBlock {
+    fn from(v: komm::Umschlag<Result<blockwheel_fs::block::Id, blockwheel_fs::RequestWriteBlockError>, WriteBlockTarget>) -> Self {
+        Self::WriteBlock(OrderWriteBlock {
             write_block_result: v.inhalt,
+            target: v.stamp,
+        })
+    }
+}
+
+impl From<komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>> for Order {
+    fn from(v: komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, ReadBlockTarget>) -> Self {
+        Self::ReadBlock(OrderReadBlock {
+            read_block_result: v.inhalt,
             target: v.stamp,
         })
     }

@@ -27,10 +27,6 @@ use arbeitssklave::{
     komm,
 };
 
-use blockwheel_fs::{
-    block,
-};
-
 use crate::{
     kv,
     wheels,
@@ -77,8 +73,6 @@ pub enum OrderWheel {
     Info(komm::Umschlag<blockwheel_fs::Info, WheelRouteInfo>),
     FlushCancel(komm::UmschlagAbbrechen<WheelRouteFlush>),
     Flush(komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>),
-    WriteBlockCancel(komm::UmschlagAbbrechen<WheelRouteWriteBlock>),
-    WriteBlock(komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>),
     ReadBlockCancel(komm::UmschlagAbbrechen<WheelRouteReadBlock>),
     ReadBlock(komm::Umschlag<Result<Bytes, blockwheel_fs::RequestReadBlockError>, WheelRouteReadBlock>),
     DeleteBlockCancel(komm::UmschlagAbbrechen<WheelRouteDeleteBlock>),
@@ -119,7 +113,6 @@ pub struct Env<E> where E: EchoPolicy {
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
     lookup_range_merge_sklaven: HashMap<komm::StreamId, running::lookup_range_merge::Meister<E>>,
-    merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<E>>,
     demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
 }
 
@@ -143,7 +136,6 @@ impl<E> Env<E> where E: EchoPolicy {
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
             lookup_range_merge_sklaven: HashMap::new(),
-            merge_search_trees_sklaven: Set::new(),
             demolish_search_tree_sklaven: Set::new(),
         }
     }
@@ -174,14 +166,8 @@ pub struct FlushButcherDone {
     root_block: BlockRef,
 }
 
-#[derive(Debug)]
-pub struct MergeSearchTreesRoute {
-    meister_ref: Ref,
-}
-
 pub struct MergeSearchTreesDrop {
     access_token: performer::AccessToken,
-    route: MergeSearchTreesRoute,
 }
 
 pub struct MergeSearchTreesDone {
@@ -243,22 +229,10 @@ pub struct WheelRouteInfo {
 pub struct WheelRouteFlush;
 
 #[derive(Debug)]
-pub enum WheelRouteWriteBlock {
-    MergeSearchTrees {
-        route: MergeSearchTreesRoute,
-        target: running::merge_search_trees::WriteBlockTarget,
-    },
-}
-
-#[derive(Debug)]
 pub enum WheelRouteReadBlock {
     LookupRangeMerge {
         route: LookupRangeRoute,
         target: running::lookup_range_merge::ReadBlockTarget,
-    },
-    MergeSearchTrees {
-        route: MergeSearchTreesRoute,
-        target: running::merge_search_trees::ReadBlockTarget,
     },
     DemolishSearchTree {
         route: DemolishSearchTreeRoute,
@@ -502,18 +476,6 @@ impl<E> From<komm::UmschlagAbbrechen<WheelRouteFlush>> for Order<E> where E: Ech
 impl<E> From<komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>> for Order<E> where E: EchoPolicy {
     fn from(v: komm::Umschlag<blockwheel_fs::Flushed, WheelRouteFlush>) -> Order<E> {
         Order::Wheel(OrderWheel::Flush(v))
-    }
-}
-
-impl<E> From<komm::UmschlagAbbrechen<WheelRouteWriteBlock>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::UmschlagAbbrechen<WheelRouteWriteBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::WriteBlockCancel(v))
-    }
-}
-
-impl<E> From<komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>> for Order<E> where E: EchoPolicy {
-    fn from(v: komm::Umschlag<Result<block::Id, blockwheel_fs::RequestWriteBlockError>, WheelRouteWriteBlock>) -> Order<E> {
-        Order::Wheel(OrderWheel::WriteBlock(v))
     }
 }
 
