@@ -84,6 +84,7 @@ pub struct Welt<E> where E: EchoPolicy {
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
