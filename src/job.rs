@@ -21,8 +21,10 @@ pub use performer_sklave::running::lookup_range_merge::SklaveJob as LookupRangeM
 pub use performer_sklave::running::merge_search_trees::SklaveJob as MergeSearchTreesSklaveJob;
 pub use performer_sklave::running::demolish_search_tree::SklaveJob as DemolishSearchTreeSklaveJob;
 
+pub type BlockwheelFsJob<E> = blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>;
+
 pub enum Job<E> where E: EchoPolicy {
-    BlockwheelFs(blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>),
+    BlockwheelFs(BlockwheelFsJob<E>),
     PerformerSklave(PerformerSklaveJob<E>),
     FlushButcherSklave(FlushButcherSklaveJob<E>),
     LookupRangeMergeSklave(LookupRangeMergeSklaveJob<E>),
@@ -30,8 +32,8 @@ pub enum Job<E> where E: EchoPolicy {
     DemolishSearchTreeSklave(DemolishSearchTreeSklaveJob<E>),
 }
 
-impl<E> From<blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>> for Job<E> where E: EchoPolicy {
-    fn from(job: blockwheel_fs::job::Job<wheels::WheelEchoPolicy<E>>) -> Job<E> {
+impl<E> From<BlockwheelFsJob<E>> for Job<E> where E: EchoPolicy {
+    fn from(job: BlockwheelFsJob<E>) -> Job<E> {
         Job::BlockwheelFs(job)
     }
 }
