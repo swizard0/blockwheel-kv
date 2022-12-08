@@ -77,8 +77,6 @@ pub enum OrderWheel {
 pub struct Welt<E> where E: EchoPolicy {
     env: Env<E>,
     state: WeltState<E>,
-    created_at: Instant,
-    idle_started_at: Option<Instant>,
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
@@ -86,8 +84,6 @@ impl<E> Welt<E> where E: EchoPolicy {
         Welt {
             env,
             state: WeltState::Init,
-            created_at: Instant::now(),
-            idle_started_at: None,
         }
     }
 }
@@ -228,30 +224,6 @@ pub enum Error {
     OrphanSklave(arbeitssklave::Error),
 }
 
-use std::{sync::atomic::{AtomicUsize, Ordering}, time::{Instant, Duration}};
-pub static PERFORMER_INVOKED_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_GOT_RASTEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_GOT_MACHEN_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_GOT_MACHEN_BEFEHL_TOTAL: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_RUN_MS: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_RUN_MAX_MS: AtomicUsize = AtomicUsize::new(0);
-pub static PERFORMER_IDLE_MS: AtomicUsize = AtomicUsize::new(0);
-
-impl<E> Drop for Welt<E> where E: EchoPolicy {
-    fn drop(&mut self) {
-
-        println!(" ;; PERFORMER_INVOKED_TOTAL: {:?}", PERFORMER_INVOKED_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; PERFORMER_GOT_RASTEN_TOTAL: {:?}", PERFORMER_GOT_RASTEN_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; PERFORMER_GOT_MACHEN_TOTAL: {:?}", PERFORMER_GOT_MACHEN_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; PERFORMER_GOT_MACHEN_BEFEHL_TOTAL: {:?}", PERFORMER_GOT_MACHEN_BEFEHL_TOTAL.load(Ordering::Relaxed));
-        println!(" ;; PERFORMER_RUN_MS: {:?}", Duration::from_micros(PERFORMER_RUN_MS.load(Ordering::Relaxed) as u64));
-        println!(" ;; PERFORMER_RUN_MAX_MS: {:?}", Duration::from_micros(PERFORMER_RUN_MAX_MS.load(Ordering::Relaxed) as u64));
-        println!(" ;; PERFORMER_IDLE_MS: {:?}", Duration::from_micros(PERFORMER_IDLE_MS.load(Ordering::Relaxed) as u64));
-        println!(" ;; PERFORMER_WELT_ALIVE_MS: {:?}", self.created_at.elapsed());
-
-    }
-}
-
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
 where E: EchoPolicy,
       J: From<blockwheel_fs::job::SklaveJob<wheels::WheelEchoPolicy<E>>>,
@@ -261,20 +233,8 @@ where E: EchoPolicy,
       J: From<job::DemolishSearchTreeSklaveJob<E>>,
       J: Send + 'static,
 {
-    let now = Instant::now();
-    if let Some(started_at) = sklave_job.idle_started_at {
-        PERFORMER_IDLE_MS.fetch_add(started_at.elapsed().as_micros() as usize, Ordering::Relaxed);
-    }
-
     if let Err(error) = job(sklave_job, thread_pool) {
         log::error!("terminated with an error: {error:?}");
-    }
-
-    let elapsed_ms = now.elapsed().as_micros() as usize;
-    PERFORMER_RUN_MS.fetch_add(elapsed_ms, Ordering::Relaxed);
-    let current_max = PERFORMER_RUN_MAX_MS.load(Ordering::Relaxed);
-    if current_max < elapsed_ms {
-        PERFORMER_RUN_MAX_MS.store(elapsed_ms, Ordering::Relaxed);
     }
 }
 
@@ -287,33 +247,24 @@ where E: EchoPolicy,
       J: From<job::DemolishSearchTreeSklaveJob<E>>,
       J: Send + 'static,
 {
-    PERFORMER_INVOKED_TOTAL.fetch_add(1, Ordering::Relaxed);
-
     loop {
         // first retrieve all orders available
         if let WeltState::Init = sklave_job.state {
             // skip it on initialize
         } else {
-            sklave_job.idle_started_at = Some(Instant::now());
             let gehorsam = sklave_job.zu_ihren_diensten()
                 .map_err(Error::OrphanSklave)?;
             match gehorsam {
-                arbeitssklave::Gehorsam::Rasten => {
-                    PERFORMER_GOT_RASTEN_TOTAL.fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
-                },
-                arbeitssklave::Gehorsam::Machen { mut befehle, } => {
-                    PERFORMER_GOT_MACHEN_TOTAL.fetch_add(1, Ordering::Relaxed);
+                arbeitssklave::Gehorsam::Rasten =>
+                    return Ok(()),
+                arbeitssklave::Gehorsam::Machen { mut befehle, } =>
                     loop {
                         match befehle.befehl() {
                             arbeitssklave::SklavenBefehl::Mehr {
                                 befehl,
                                 mut mehr_befehle,
                             } => {
-                                PERFORMER_GOT_MACHEN_BEFEHL_TOTAL.fetch_add(1, Ordering::Relaxed);
-                                mehr_befehle
-                                    .env
-                                    .incoming_orders.push(befehl);
+                                mehr_befehle.env.incoming_orders.push(befehl);
                                 befehle = mehr_befehle;
                             },
                             arbeitssklave::SklavenBefehl::Ende { sklave_job: next_sklave_job, } => {
@@ -321,7 +272,6 @@ where E: EchoPolicy,
                                 break;
                             },
                         }
-                    }
                 },
             }
         }
