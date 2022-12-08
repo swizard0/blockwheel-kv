@@ -120,6 +120,7 @@ struct ValueWritePending {
     pending_count: usize,
 }
 
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order>;
 pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order>;
 
 #[allow(clippy::large_enum_variant)]

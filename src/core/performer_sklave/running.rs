@@ -178,26 +178,50 @@ where E: EchoPolicy,
                         Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
                             stamp: LookupRangeMergeDrop {
                                 access_token,
+                                meister_ref,
                             },
-                        })) =>
-                            break next.commit_lookup_range(access_token),
+                        })) => {
+                            if sklavenwelt.env.lookup_ranges_merge_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in lookup_ranges_merge_sklaven during UnregisterLookupRangeMerge");
+                            }
+                            break next.commit_lookup_range(access_token)
+                        },
                         Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
-                            stamp: FlushButcherDrop { .. },
-                        })) =>
-                            return Err(Error::FlushButcherSklaveCrashed),
+                            stamp: FlushButcherDrop { meister_ref, .. },
+                        })) => {
+                            if sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in flush_butcher_sklaven during UnregisterFlushButcher");
+                            }
+                            return Err(Error::FlushButcherSklaveCrashed);
+                        },
                         Some(Order::UnregisterMergeSearchTrees(komm::UmschlagAbbrechen {
-                            stamp: MergeSearchTreesDrop { .. },
-                        })) =>
-                            return Err(Error::MergeSearchTreesSklaveCrashed),
+                            stamp: MergeSearchTreesDrop { meister_ref, .. },
+                        })) => {
+                            if sklavenwelt.env.merge_search_trees_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in merge_search_trees_sklaven during UnregisterMergeSearchTrees");
+                            }
+                            return Err(Error::MergeSearchTreesSklaveCrashed);
+                        },
                         Some(Order::UnregisterDemolishSearchTree(komm::UmschlagAbbrechen {
-                            stamp: DemolishSearchTreeDrop { .. },
-                        })) =>
-                            return Err(Error::DemolishSearchTreeSklaveCrashed),
+                            stamp: DemolishSearchTreeDrop { meister_ref, .. },
+                        })) => {
+                            if sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in demolish_search_tree_sklaven during UnregisterDemolishSearchTree");
+                            }
+                            return Err(Error::DemolishSearchTreeSklaveCrashed);
+                        },
                         Some(Order::FlushButcherDone(komm::Umschlag {
                             inhalt: FlushButcherDone { root_block, },
-                            stamp: FlushButcherDrop { search_tree_id, },
-                        })) =>
-                            break next.butcher_flushed(search_tree_id, root_block),
+                            stamp: FlushButcherDrop {
+                                search_tree_id,
+                                meister_ref,
+                            },
+                        })) => {
+                            if sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in flush_butcher_sklaven during FlushButcherDone");
+                            }
+                            break next.butcher_flushed(search_tree_id, root_block)
+                        },
                         Some(Order::MergeSearchTreesDone(komm::Umschlag {
                             inhalt: MergeSearchTreesDone {
                                 merged_search_tree_ref,
@@ -205,20 +229,30 @@ where E: EchoPolicy,
                             },
                             stamp: MergeSearchTreesDrop {
                                 access_token,
+                                meister_ref,
                             },
-                        })) =>
+                        })) => {
+                            if sklavenwelt.env.merge_search_trees_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in merge_search_trees_sklaven during MergeSearchTreesDone");
+                            }
                             break next.search_trees_merged(
                                 merged_search_tree_ref,
                                 merged_search_tree_items_count,
                                 access_token,
-                            ),
+                            )
+                        },
                         Some(Order::DemolishSearchTreeDone(komm::Umschlag {
                             inhalt: DemolishSearchTreeDone,
                             stamp: DemolishSearchTreeDrop {
                                 demolish_group_ref,
+                                meister_ref,
                             },
-                        })) =>
-                            break next.demolished(demolish_group_ref),
+                        })) => {
+                            if sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in demolish_search_tree_sklaven during DemolishSearchTreeDone");
+                            }
+                            break next.demolished(demolish_group_ref)
+                        },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
                             return Err(Error::WheelIsGoneDuringInfo { route, }),
                         Some(Order::Wheel(OrderWheel::Info(komm::Umschlag {
@@ -261,6 +295,12 @@ where E: EchoPolicy,
                                 },
                                 Some(ActiveFlush::Wheels { echo, .. }) => {
                                     log::debug!("wheels flush is done, reporting");
+
+                                    assert!(sklavenwelt.env.flush_butcher_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.lookup_ranges_merge_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.merge_search_trees_sklaven.is_empty());
+                                    assert!(sklavenwelt.env.demolish_search_tree_sklaven.is_empty());
+
                                     echo.commit_echo(Flushed)
                                         .map_err(Error::CommitFlushed)?;
                                     welt_state.active_flush = None;
@@ -363,8 +403,10 @@ where E: EchoPolicy,
                     next,
                 }) => {
                     let flush_butcher_freie = arbeitssklave::Freie::new();
+                    let meister_ref = sklavenwelt.env
+                        .flush_butcher_sklaven.insert(flush_butcher_freie.meister());
                     let flush_butcher_sendegeraet = komm::Sendegeraet::starten(
-                        flush_butcher_freie.meister(),
+                        &flush_butcher_freie.meister(),
                         thread_pool.clone(),
                     );
                     let _flush_butcher_meister = flush_butcher_freie
@@ -378,7 +420,10 @@ where E: EchoPolicy,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),
-                                sklavenwelt.env.sendegeraet.rueckkopplung(FlushButcherDrop { search_tree_id, }),
+                                sklavenwelt.env.sendegeraet.rueckkopplung(FlushButcherDrop {
+                                    search_tree_id,
+                                    meister_ref,
+                                }),
                             ),
                             thread_pool,
                         )
@@ -393,7 +438,9 @@ where E: EchoPolicy,
                     },
                     next,
                 }) => {
-                    let _merger_meister = lookup_ranges_merge_freie
+                    let meister_ref = sklavenwelt.env
+                        .lookup_ranges_merge_sklaven.insert(lookup_ranges_merge_freie.meister());
+                    let _lookup_ranges_merge_meister = lookup_ranges_merge_freie
                         .versklaven(
                             lookup_range_merge::Welt::new(
                                 ranges_merger.source,
@@ -402,6 +449,7 @@ where E: EchoPolicy,
                                 sklavenwelt.env.sendegeraet
                                     .rueckkopplung(LookupRangeMergeDrop {
                                         access_token: ranges_merger.token,
+                                        meister_ref,
                                     }),
                             ),
                             thread_pool,
@@ -413,17 +461,19 @@ where E: EchoPolicy,
                     ranges_merger,
                     next,
                 }) => {
-                    let merge_freie = arbeitssklave::Freie::new();
-                    let merge_sendegeraet = komm::Sendegeraet::starten(
-                        merge_freie.meister(),
+                    let merge_search_trees_freie = arbeitssklave::Freie::new();
+                    let meister_ref = sklavenwelt.env
+                        .merge_search_trees_sklaven.insert(merge_search_trees_freie.meister());
+                    let merge_search_trees_sendegeraet = komm::Sendegeraet::starten(
+                        &merge_search_trees_freie.meister(),
                         thread_pool.clone(),
                     );
-                    let _merge_meister = merge_freie
+                    let _merge_search_trees_meister = merge_search_trees_freie
                         .versklaven(
                             merge_search_trees::Welt::new(
                                 ranges_merger.source_count_items,
                                 ranges_merger.source_build,
-                                merge_sendegeraet,
+                                merge_search_trees_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
                                 welt_state.pools.block_entries_pool.clone(),
@@ -431,6 +481,7 @@ where E: EchoPolicy,
                                 sklavenwelt.env.sendegeraet
                                     .rueckkopplung(MergeSearchTreesDrop {
                                         access_token: ranges_merger.token,
+                                        meister_ref,
                                     }),
                             ),
                             thread_pool,
@@ -442,20 +493,23 @@ where E: EchoPolicy,
                     order,
                     next,
                 }) => {
-                    let demolish_freie = arbeitssklave::Freie::new();
-                    let demolish_sendegeraet = komm::Sendegeraet::starten(
-                        demolish_freie.meister(),
+                    let demolish_search_tree_freie = arbeitssklave::Freie::new();
+                    let meister_ref = sklavenwelt.env
+                        .demolish_search_tree_sklaven.insert(demolish_search_tree_freie.meister());
+                    let demolish_search_tree_sendegeraet = komm::Sendegeraet::starten(
+                        &demolish_search_tree_freie.meister(),
                         thread_pool.clone(),
                     );
-                    let _demolish_meister = demolish_freie
+                    let _demolish_meister = demolish_search_tree_freie
                         .versklaven(
                             demolish_search_tree::Welt::new(
                                 order.source,
-                                demolish_sendegeraet,
+                                demolish_search_tree_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.sendegeraet
                                      .rueckkopplung(DemolishSearchTreeDrop {
-                                        demolish_group_ref: order.demolish_group_ref,
+                                         demolish_group_ref: order.demolish_group_ref,
+                                         meister_ref,
                                     }),
                             ),
                             thread_pool,

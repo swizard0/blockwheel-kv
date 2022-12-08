@@ -623,7 +623,7 @@ fn stress_loop(
         .versklaven(Welt { ftd_tx: Mutex::new(ftd_tx), }, &thread_pool)
         .unwrap();
     let ftd_sendegeraet =
-        komm::Sendegeraet::starten(ftd_sklave_meister, thread_pool.clone());
+        komm::Sendegeraet::starten(&ftd_sklave_meister, thread_pool.clone());
 
     let mut rng = SmallRng::from_entropy();
     let p_distribution = Uniform::new(0.0, 1.0);

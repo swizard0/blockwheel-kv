@@ -103,6 +103,10 @@ pub struct Env<E> where E: EchoPolicy {
     incoming_orders: Vec<Order<E>>,
     delayed_orders: Vec<Order<E>>,
     pending_info_requests: Set<running::PendingInfo<E>>,
+    flush_butcher_sklaven: Set<running::flush_butcher::Meister<E>>,
+    lookup_ranges_merge_sklaven: Set<running::lookup_range_merge::Meister<E>>,
+    merge_search_trees_sklaven: Set<running::merge_search_trees::Meister<E>>,
+    demolish_search_tree_sklaven: Set<running::demolish_search_tree::Meister<E>>,
 }
 
 impl<E> Env<E> where E: EchoPolicy {
@@ -124,6 +128,10 @@ impl<E> Env<E> where E: EchoPolicy {
             incoming_orders: Vec::new(),
             delayed_orders: Vec::new(),
             pending_info_requests: Set::new(),
+            flush_butcher_sklaven: Set::new(),
+            lookup_ranges_merge_sklaven: Set::new(),
+            merge_search_trees_sklaven: Set::new(),
+            demolish_search_tree_sklaven: Set::new(),
         }
     }
 }
@@ -135,20 +143,23 @@ enum WeltState<E> where E: EchoPolicy {
     Running(running::WeltState<E>),
 }
 
-pub struct LookupRangeMergeDrop {
-    access_token: performer::AccessToken,
-}
-
 pub struct FlushButcherDrop {
     search_tree_id: u64,
+    meister_ref: Ref,
 }
 
 pub struct FlushButcherDone {
     root_block: BlockRef,
 }
 
+pub struct LookupRangeMergeDrop {
+    access_token: performer::AccessToken,
+    meister_ref: Ref,
+}
+
 pub struct MergeSearchTreesDrop {
     access_token: performer::AccessToken,
+    meister_ref: Ref,
 }
 
 pub struct MergeSearchTreesDone {
@@ -158,6 +169,7 @@ pub struct MergeSearchTreesDone {
 
 pub struct DemolishSearchTreeDrop {
     demolish_group_ref: Ref,
+    meister_ref: Ref,
 }
 
 #[derive(Debug)]

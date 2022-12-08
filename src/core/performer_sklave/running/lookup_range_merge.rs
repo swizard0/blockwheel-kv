@@ -100,6 +100,7 @@ impl<E> Welt<E> where E: EchoPolicy {
     }
 }
 
+pub type Meister<E> = arbeitssklave::Meister<Welt<E>, Order<E>>;
 pub type SklaveJob<E> = arbeitssklave::SklaveJob<Welt<E>, Order<E>>;
 
 enum Kont<E> where E: EchoPolicy {

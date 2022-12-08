@@ -101,7 +101,7 @@ impl<E> Meister<E> where E: EchoPolicy {
     {
         let performer_sklave_freie = arbeitssklave::Freie::new();
         let performer_sklave_sendegeraet = komm::Sendegeraet::starten(
-            performer_sklave_freie.meister(),
+            &performer_sklave_freie.meister(),
             thread_pool.clone(),
         );
         let performer_sklave_meister = performer_sklave_freie
@@ -235,7 +235,7 @@ impl<E> Meister<E> where E: EchoPolicy {
         let lookup_ranges_merge_freie: arbeitssklave::Freie<lookup_range_merge::Welt<E>, lookup_range_merge::Order<E>> =
             arbeitssklave::Freie::new();
         let lookup_ranges_merge_sendegeraet = komm::Sendegeraet::starten(
-            lookup_ranges_merge_freie.meister(),
+            &lookup_ranges_merge_freie.meister(),
             thread_pool.clone(),
         );
         let stream = lookup_ranges_merge_sendegeraet
