@@ -22,10 +22,11 @@ use crate::{
             OrderRequestRemove,
             OrderRequestFlush,
             InfoRoute,
-            LookupRangeMergeDrop,
             LookupRangeStream,
             FlushButcherDone,
             FlushButcherDrop,
+            LookupRangeMergeDone,
+            LookupRangeMergeDrop,
             MergeSearchTreesDone,
             MergeSearchTreesDrop,
             DemolishSearchTreeDone,
@@ -98,11 +99,12 @@ pub enum Error {
     CommitInserted(komm::EchoError),
     CommitRemoved(komm::EchoError),
     CommitFlushed(komm::EchoError),
-    LookupRangeMergerVersklaven(arbeitssklave::Error),
+    LookupRangeMergeVersklaven(arbeitssklave::Error),
     FlushButcherVersklaven(arbeitssklave::Error),
     MergeSearchTreesVersklaven(arbeitssklave::Error),
     DemolishSearchTreeVersklaven(arbeitssklave::Error),
     FlushButcherSklaveCrashed,
+    LookupRangeMergeSklaveCrashed,
     MergeSearchTreesSklaveCrashed,
     DemolishSearchTreeSklaveCrashed,
     WheelIsGoneDuringFlush,
@@ -177,14 +179,14 @@ where E: EchoPolicy,
                             },
                         Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
                             stamp: LookupRangeMergeDrop {
-                                access_token,
                                 meister_ref,
+                                ..
                             },
                         })) => {
                             if sklavenwelt.env.lookup_ranges_merge_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in lookup_ranges_merge_sklaven during UnregisterLookupRangeMerge");
                             }
-                            break next.commit_lookup_range(access_token)
+                            return Err(Error::LookupRangeMergeSklaveCrashed);
                         },
                         Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
                             stamp: FlushButcherDrop { meister_ref, .. },
@@ -221,6 +223,18 @@ where E: EchoPolicy,
                                 log::warn!("meister is not found in flush_butcher_sklaven during FlushButcherDone");
                             }
                             break next.butcher_flushed(search_tree_id, root_block)
+                        },
+                        Some(Order::LookupRangeMergeDone(komm::Umschlag {
+                            inhalt: LookupRangeMergeDone,
+                            stamp: LookupRangeMergeDrop {
+                                access_token,
+                                meister_ref,
+                            },
+                        })) => {
+                            if sklavenwelt.env.lookup_ranges_merge_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in lookup_ranges_merge_sklaven during LookupRangeMergeDone");
+                            }
+                            break next.commit_lookup_range(access_token)
                         },
                         Some(Order::MergeSearchTreesDone(komm::Umschlag {
                             inhalt: MergeSearchTreesDone {
@@ -454,7 +468,7 @@ where E: EchoPolicy,
                             ),
                             thread_pool,
                         )
-                        .map_err(Error::LookupRangeMergerVersklaven)?;
+                        .map_err(Error::LookupRangeMergeVersklaven)?;
                     next.got_it()
                 },
                 performer::Kont::MergeSearchTrees(performer::KontMergeSearchTrees {

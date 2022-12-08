@@ -71,11 +71,11 @@ pub struct Welt<E> where E: EchoPolicy {
     kont: Option<Kont<E>>,
     sendegeraet: komm::Sendegeraet<Order<E>>,
     wheels: wheels::Wheels<E>,
-    _drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
     received_stream_start: Option<komm::StreamStarten<OrderItemFirst<E>>>,
     received_stream_next: Option<komm::StreamMehr<OrderItemNext<E>>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
     received_value_bytes: Option<Bytes>,
+    maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>>,
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
@@ -83,7 +83,7 @@ impl<E> Welt<E> where E: EchoPolicy {
         merger: SearchRangesMergeCps,
         sendegeraet: komm::Sendegeraet<Order<E>>,
         wheels: wheels::Wheels<E>,
-        drop_bomb: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
+        feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>,
     )
         -> Self
     {
@@ -91,11 +91,11 @@ impl<E> Welt<E> where E: EchoPolicy {
             kont: Some(Kont::WaitStart { merger, }),
             sendegeraet,
             wheels,
-            _drop_bomb: drop_bomb,
             received_stream_start: None,
             received_stream_next: None,
             received_block_tasks: Vec::new(),
             received_value_bytes: None,
+            maybe_feedback: Some(feedback),
         }
     }
 }
@@ -144,6 +144,7 @@ pub enum Error {
     LoadValue(blockwheel_fs::RequestReadBlockError),
     ValueDeserialize(storage::ReadValueBlockError),
     WheelIsGoneDuringReadBlock,
+    FeedbackCommit(arbeitssklave::Error),
 }
 
 pub fn run_job<E, J>(sklave_job: SklaveJob<E>, thread_pool: &edeltraud::Handle<J>)
@@ -184,6 +185,10 @@ where E: EchoPolicy,
                                 },
                                 Order::LookupRangeCancel(komm::StreamAbbrechen { stream_id, }) => {
                                     log::debug!("stream id = {stream_id:?} cancelled, terminating");
+                                    if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
+                                        feedback.commit(performer_sklave::LookupRangeMergeDone)
+                                            .map_err(Error::FeedbackCommit)?;
+                                    }
                                     return Ok(());
                                 },
                                 Order::ReadBlock(OrderReadBlock {
@@ -461,6 +466,10 @@ where E: EchoPolicy,
                             .streamzeug_nicht_mehr();
                         stream_echo.commit_echo(streamzeug)
                             .map_err(Error::SendegeraetGone)?;
+                        if let Some(feedback) = sklavenwelt.maybe_feedback.take() {
+                            feedback.commit(performer_sklave::LookupRangeMergeDone)
+                                .map_err(Error::FeedbackCommit)?;
+                        }
                         return Ok(());
                     },
                 }

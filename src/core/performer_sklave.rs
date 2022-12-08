@@ -46,10 +46,11 @@ pub mod running;
 pub enum Order<E> where E: EchoPolicy {
     Request(OrderRequest<E>),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
+    LookupRangeMergeDone(komm::Umschlag<LookupRangeMergeDone, LookupRangeMergeDrop>),
     MergeSearchTreesDone(komm::Umschlag<MergeSearchTreesDone, MergeSearchTreesDrop>),
     DemolishSearchTreeDone(komm::Umschlag<DemolishSearchTreeDone, DemolishSearchTreeDrop>),
-    UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     UnregisterFlushButcher(komm::UmschlagAbbrechen<FlushButcherDrop>),
+    UnregisterLookupRangeMerge(komm::UmschlagAbbrechen<LookupRangeMergeDrop>),
     UnregisterMergeSearchTrees(komm::UmschlagAbbrechen<MergeSearchTreesDrop>),
     UnregisterDemolishSearchTree(komm::UmschlagAbbrechen<DemolishSearchTreeDrop>),
     Wheel(OrderWheel),
@@ -153,6 +154,8 @@ pub struct LookupRangeMergeDrop {
     meister_ref: Ref,
 }
 
+pub struct LookupRangeMergeDone;
+
 pub struct MergeSearchTreesDrop {
     access_token: performer::AccessToken,
     meister_ref: Ref,
@@ -168,12 +171,12 @@ pub struct DemolishSearchTreeDrop {
     meister_ref: Ref,
 }
 
+pub struct DemolishSearchTreeDone;
+
 #[derive(Debug)]
 pub struct InfoRoute {
     info_ref: Ref,
 }
-
-pub struct DemolishSearchTreeDone;
 
 pub struct OrderRequestInfo<E> where E: EchoPolicy {
     pub echo: E::Info,
@@ -409,6 +412,12 @@ impl<E> From<komm::Umschlag<blockwheel_fs::IterBlocksItem, WheelRouteIterBlocksN
 impl<E> From<komm::Umschlag<FlushButcherDone, FlushButcherDrop>> for Order<E> where E: EchoPolicy {
     fn from(v: komm::Umschlag<FlushButcherDone, FlushButcherDrop>) -> Order<E> {
         Order::FlushButcherDone(v)
+    }
+}
+
+impl<E> From<komm::Umschlag<LookupRangeMergeDone, LookupRangeMergeDrop>> for Order<E> where E: EchoPolicy {
+    fn from(v: komm::Umschlag<LookupRangeMergeDone, LookupRangeMergeDrop>) -> Order<E> {
+        Order::LookupRangeMergeDone(v)
     }
 }
 
