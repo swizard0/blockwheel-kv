@@ -48,12 +48,12 @@ impl Default for Params {
 }
 
 pub trait EchoPolicy
-where Self: Sized + Send + Sync + 'static,
-      Self::Info: komm::Echo<Info> + Send + Sync + 'static,
-      Self::Insert: komm::Echo<Inserted> + Send + Sync + 'static,
-      Self::LookupRange: komm::Echo<komm::Streamzeug<kv::KeyValuePair<kv::Value>>> + Send + Sync + 'static,
-      Self::Remove: komm::Echo<Removed> + Send + Sync + 'static,
-      Self::Flush: komm::Echo<Flushed> + Send + Sync + 'static,
+where Self: Sized + Send + 'static,
+      Self::Info: komm::Echo<Info> + Send + 'static,
+      Self::Insert: komm::Echo<Inserted> + Send + 'static,
+      Self::LookupRange: komm::Echo<komm::Streamzeug<kv::KeyValuePair<kv::Value>>> + Send + 'static,
+      Self::Remove: komm::Echo<Removed> + Send + 'static,
+      Self::Flush: komm::Echo<Flushed> + Send + 'static,
 {
     type Info;
     type Insert;
