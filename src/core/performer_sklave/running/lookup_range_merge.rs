@@ -57,7 +57,7 @@ pub struct OrderItemNext<E> where E: EchoPolicy {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ReadBlockTarget {
-    LoadValue,
+    LoadValue { block_ref: wheels::BlockRef, },
     LoadBlock(ReadBlockTargetLoadBlock),
 }
 
@@ -74,7 +74,7 @@ pub struct Welt<E> where E: EchoPolicy {
     received_stream_start: Option<komm::StreamStarten<OrderItemFirst<E>>>,
     received_stream_next: Option<komm::StreamMehr<OrderItemNext<E>>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
-    received_value_bytes: Option<Bytes>,
+    received_value_bytes: Option<Option<Bytes>>,
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::LookupRangeMergeDrop>>,
 }
 
@@ -141,7 +141,7 @@ pub enum Error {
     ValueLoadReadBlockRequest(blockwheel_fs::Error),
     BlockLoadReadBlockRequest(blockwheel_fs::Error),
     LoadBlock(blockwheel_fs::RequestReadBlockError),
-    LoadValue(blockwheel_fs::RequestReadBlockError),
+    // LoadValue(blockwheel_fs::RequestReadBlockError),
     ValueDeserialize(storage::ReadValueBlockError),
     WheelIsGoneDuringReadBlock,
     FeedbackCommit(arbeitssklave::Error),
@@ -201,7 +201,7 @@ where E: EchoPolicy,
                                     .push(ReceivedBlockTask { async_token, block_bytes, }),
                                 Order::ReadBlock(OrderReadBlock {
                                     read_block_result: Ok(block_bytes),
-                                    target: ReadBlockTarget::LoadValue,
+                                    target: ReadBlockTarget::LoadValue { .. },
                                 }) => {
                                     let value_bytes =
                                         storage::ValueBlock::read_from_source(
@@ -211,18 +211,27 @@ where E: EchoPolicy,
                                         .into();
                                     assert!(sklavenwelt.received_value_bytes.is_none());
                                     sklavenwelt.received_value_bytes =
-                                        Some(value_bytes);
+                                        Some(Some(value_bytes));
+                                },
+                                Order::ReadBlock(OrderReadBlock {
+                                    read_block_result: Err(blockwheel_fs::RequestReadBlockError::NotFound),
+                                    target: ReadBlockTarget::LoadValue { block_ref, },
+                                }) => {
+                                    log::error!("blockwheel_fs corruption detected: block_ref = {block_ref:?} is not found");
+                                    assert!(sklavenwelt.received_value_bytes.is_none());
+                                    sklavenwelt.received_value_bytes =
+                                        Some(None);
                                 },
                                 Order::ReadBlock(OrderReadBlock {
                                     read_block_result: Err(error),
                                     target: ReadBlockTarget::LoadBlock { .. },
                                 }) =>
                                     return Err(Error::LoadBlock(error)),
-                                Order::ReadBlock(OrderReadBlock {
-                                    read_block_result: Err(error),
-                                    target: ReadBlockTarget::LoadValue,
-                                }) =>
-                                    return Err(Error::LoadValue(error)),
+                                // Order::ReadBlock(OrderReadBlock {
+                                //     read_block_result: Err(error),
+                                //     target: ReadBlockTarget::LoadValue,
+                                // }) =>
+                                //     return Err(Error::LoadValue(error)),
                                 Order::ReadBlockCancel(..) =>
                                     return Err(Error::WheelIsGoneDuringReadBlock),
                             }
@@ -319,7 +328,7 @@ where E: EchoPolicy,
                     next,
                 } =>
                     match sklavenwelt.received_value_bytes.take() {
-                        Some(value_bytes) => {
+                        Some(Some(value_bytes)) => {
                             sklavenwelt.kont =
                                 Some(Kont::ReadyItem {
                                     key_value_pair: kv::KeyValuePair {
@@ -334,6 +343,11 @@ where E: EchoPolicy,
                                     next,
                                 });
                             continue 'kont;
+                        },
+                        Some(None) => {
+                            let merger_kont = next.proceed()
+                                .map_err(Error::SearchRangesMerge)?;
+                            (merger_kont, stream_echo, stream_token)
                         },
                         None => {
                             sklavenwelt.kont = Some(Kont::AwaitItemValue { key, version, stream_echo, stream_token, next, });
@@ -445,7 +459,9 @@ where E: EchoPolicy,
                                     })?;
                                 let rueckkopplung = sklavenwelt
                                     .sendegeraet
-                                    .rueckkopplung(ReadBlockTarget::LoadValue);
+                                    .rueckkopplung(ReadBlockTarget::LoadValue {
+                                        block_ref: block_ref.clone(),
+                                    });
                                 wheel_ref.meister
                                     .read_block(
                                         block_ref.block_id,
