@@ -338,7 +338,12 @@ impl<T, R> BuilderCps<T, R> {
                     self.inner.state =
                         State::Building { fold_ctx, tree_kont, child_block_ref, };
                 },
-                State::AwaitingItem { mut fold_ctx, mut child_block_ref, mut block_in_progress, next, } =>
+                State::AwaitingItem {
+                    mut fold_ctx,
+                    mut child_block_ref,
+                    mut block_in_progress,
+                    next,
+                } =>
                     match self.inner.arrived_item.take() {
                         None =>
                             return Ok(Kont::PollNextItemOrProcessedBlock(KontPollNextItemOrProcessedBlock {
