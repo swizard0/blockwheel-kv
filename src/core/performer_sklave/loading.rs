@@ -10,7 +10,6 @@ use crate::{
         performer_sklave::{
             Welt,
             Order,
-            Pools,
             Context,
             OrderWheel,
             WheelRouteIterBlocksInit,
@@ -47,7 +46,6 @@ pub enum Outcome<E> where E: EchoPolicy {
     },
     Done {
         performer: performer::Performer<Context<E>>,
-        pools: Pools,
     },
 }
 
@@ -125,17 +123,13 @@ where E: EchoPolicy,
                     welt_state.blocks_total,
                 );
 
-                let pools = Pools::new();
                 let performer = performer::Performer::new(
                     sklavenwelt.env.params.clone(),
                     sklavenwelt.env.version_provider.clone(),
-                    pools.kv_pool.clone(),
-                    pools.sources_pool.clone(),
-                    pools.block_entry_steps_pool.clone(),
                     welt_state.forest,
                 );
 
-                return Ok(Outcome::Done { performer, pools, });
+                return Ok(Outcome::Done { performer, });
             },
 
             WeltStateMode::Loading { wheels_left, } =>

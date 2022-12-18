@@ -1,7 +1,3 @@
-use alloc_pool::{
-    pool,
-};
-
 use crate::{
     storage,
     core::{
@@ -19,7 +15,6 @@ use crate::{
 #[test]
 fn basic_full_async() {
     let builder: BuilderCps<&'static str, usize> = BuilderCps::new(
-        pool::Pool::new(),
         Params {
             tree_items_count: 5,
             tree_block_size: 2,
@@ -125,7 +120,6 @@ fn basic_full_async() {
 #[test]
 fn basic_full_seq() {
     let builder: BuilderCps<&'static str, usize> = BuilderCps::new(
-        pool::Pool::new(),
         Params {
             tree_items_count: 7,
             tree_block_size: 2,

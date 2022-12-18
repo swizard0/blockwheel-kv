@@ -13,7 +13,6 @@ use o1::{
 };
 
 use alloc_pool::{
-    pool,
     bytes::{
         BytesPool,
     },
@@ -31,10 +30,8 @@ use crate::{
     core::{
         context,
         performer,
-        search_tree_walker,
         BlockRef,
         SearchRangeBounds,
-        SearchTreeBuilderBlockEntry,
     },
     Params,
     EchoPolicy,
@@ -294,9 +291,9 @@ where E: EchoPolicy,
                             sklave_job.state = WeltState::Loading(loading);
                             break;
                         },
-                        loading::Outcome::Done { performer, pools, } => {
+                        loading::Outcome::Done { performer, } => {
                             sklave_job.state =
-                                WeltState::Running(running::WeltState::new(performer, pools));
+                                WeltState::Running(running::WeltState::new(performer));
                             let sklavenwelt = &mut *sklave_job;
                             sklavenwelt.env.incoming_orders.append(&mut sklavenwelt.env.delayed_orders);
                         },
@@ -309,24 +306,6 @@ where E: EchoPolicy,
                         },
                     },
             }
-        }
-    }
-}
-
-pub struct Pools {
-    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
-    sources_pool: pool::Pool<Vec<performer::LookupRangeSource>>,
-    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
-}
-
-impl Pools {
-    fn new() -> Self {
-        Self {
-            kv_pool: pool::Pool::new(),
-            block_entries_pool: pool::Pool::new(),
-            sources_pool: pool::Pool::new(),
-            block_entry_steps_pool: pool::Pool::new(),
         }
     }
 }

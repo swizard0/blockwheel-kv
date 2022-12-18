@@ -14,7 +14,6 @@ use alloc_pool::{
     bytes::{
         Bytes,
     },
-    Unique,
 };
 
 use arbeitssklave::{
@@ -122,6 +121,28 @@ impl Echo<Result<blockwheel_fs::Deleted, blockwheel_fs::RequestDeleteBlockError>
 
 // types
 
+pub struct VecW<T>(Vec<T>);
+
+impl<T> From<Vec<T>> for VecW<T> {
+    fn from(vec: Vec<T>) -> Self {
+        Self(vec)
+    }
+}
+
+impl<T> Deref for VecW<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for VecW<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 pub type SearchTreeBuilderCps =
     search_tree_builder::BuilderCps<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 pub type SearchTreeBuilderKont =
@@ -134,13 +155,13 @@ pub type SearchTreeBuilderItemOrBlockNext =
     search_tree_builder::KontPollNextItemOrProcessedBlockNext<kv::KeyValuePair<storage::ValueRef>, BlockRef>;
 
 pub type SearchRangesMergeCps =
-    search_ranges_merge::RangesMergeCps<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+    search_ranges_merge::RangesMergeCps<VecW<performer::LookupRangeSource>, performer::LookupRangeSource>;
 pub type SearchRangesMergeKont =
-    search_ranges_merge::Kont<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+    search_ranges_merge::Kont<VecW<performer::LookupRangeSource>, performer::LookupRangeSource>;
 pub type SearchRangesMergeBlockNext =
-    search_ranges_merge::KontAwaitBlocksNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+    search_ranges_merge::KontAwaitBlocksNext<VecW<performer::LookupRangeSource>, performer::LookupRangeSource>;
 pub type SearchRangesMergeItemNext =
-    search_ranges_merge::KontEmitItemNext<Unique<Vec<performer::LookupRangeSource>>, performer::LookupRangeSource>;
+    search_ranges_merge::KontEmitItemNext<VecW<performer::LookupRangeSource>, performer::LookupRangeSource>;
 
 // MemCache
 

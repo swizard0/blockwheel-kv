@@ -10,8 +10,6 @@ use std::{
 };
 
 use alloc_pool::{
-    pool,
-    Unique,
     bytes::{
         Bytes,
     },
@@ -109,8 +107,6 @@ pub enum Error {
 struct Inner<V, S> where V: DerefMut<Target = Vec<S>> {
     state: State<V, S>,
     await_iters: Vec<S>,
-    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -139,7 +135,7 @@ pub struct SourceButcher {
 
 enum SourceButcherState {
     Init { search_range: SearchRangeBounds, memcache: Arc<MemCache>, },
-    Next { kv_pairs_rev: Unique<Vec<kv::KeyValuePair<kv::Value>>>, },
+    Next { kv_pairs_rev: Vec<kv::KeyValuePair<kv::Value>>, },
     Done,
 }
 
@@ -167,8 +163,6 @@ type MergerKontEmitItemNext<V, S> = merger::KontEmitItemNext<V, S>;
 impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<Target = Source> {
     pub fn new(
         sources: V,
-        kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-        block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
     )
         -> Self
     {
@@ -181,8 +175,6 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                     merger_kont: merger.step(),
                 },
                 await_iters: Vec::with_capacity(sources_count),
-                kv_pool,
-                block_entry_steps_pool,
             },
         }
     }
@@ -258,7 +250,6 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                         let source_butcher_next = SourceButcher::from_active_memcache(
                                             search_range,
                                             &memcache,
-                                            &self.inner.kv_pool,
                                         );
                                         *source_state = source_butcher_next.source_state;
                                     },
@@ -295,7 +286,6 @@ impl<V, S> RangesMergeCps<V, S> where V: DerefMut<Target = Vec<S>>, S: DerefMut<
                                         let walker = search_tree_walker::WalkerCps::new(
                                             root_block,
                                             search_range,
-                                            self.inner.block_entry_steps_pool.clone(),
                                         );
                                         *source_state = SourceSearchTreeState::Step {
                                             walker_kont: walker.step()
@@ -395,12 +385,10 @@ impl SourceButcher {
     pub fn from_active_memcache(
         search_range: SearchRangeBounds,
         memcache: &MemCache,
-        kv_pool: &pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
     )
         -> Self
     {
-        let mut kv_pairs = kv_pool.lend(Vec::new);
-        kv_pairs.clear();
+        let mut kv_pairs = Vec::with_capacity(memcache.len());
         kv_pairs.extend(memcache.range(search_range));
         kv_pairs.shrink_to_fit();
         kv_pairs.reverse();

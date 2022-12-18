@@ -12,7 +12,6 @@ use crate::{
         performer_sklave::{
             Welt,
             Order,
-            Pools,
             Context,
             OrderWheel,
             OrderRequest,
@@ -50,15 +49,13 @@ pub mod demolish_search_tree;
 
 pub struct WeltState<E> where E: EchoPolicy {
     kont: Kont<E>,
-    pools: Pools,
     active_flush: Option<ActiveFlush<E>>,
 }
 
 impl<E> WeltState<E> where E: EchoPolicy {
-    pub fn new(performer: performer::Performer<Context<E>>, pools: Pools) -> Self {
+    pub fn new(performer: performer::Performer<Context<E>>) -> Self {
         WeltState {
             kont: Kont::Start { performer, },
-            pools,
             active_flush: None,
         }
     }
@@ -433,7 +430,6 @@ where E: EchoPolicy,
                                 flush_butcher_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
-                                welt_state.pools.block_entries_pool.clone(),
                                 sklavenwelt.env.sendegeraet.rueckkopplung(FlushButcherDrop {
                                     search_tree_id,
                                     meister_ref,
@@ -490,7 +486,6 @@ where E: EchoPolicy,
                                 merge_search_trees_sendegeraet,
                                 sklavenwelt.env.wheels.clone(),
                                 sklavenwelt.env.blocks_pool.clone(),
-                                welt_state.pools.block_entries_pool.clone(),
                                 sklavenwelt.env.params.tree_block_size,
                                 sklavenwelt.env.sendegeraet
                                     .rueckkopplung(MergeSearchTreesDrop {

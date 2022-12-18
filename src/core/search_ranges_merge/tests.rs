@@ -1,7 +1,3 @@
-use alloc_pool::{
-    pool,
-};
-
 use crate::{
     kv,
     core::{
@@ -50,14 +46,10 @@ fn basic() {
         frozen_memcache,
     ));
 
-    let kv_pool = pool::Pool::new();
-    let block_entry_steps_pool = pool::Pool::new();
     let mut sources = vec![source_a, source_b];
     let ranges_merge =
         RangesMergeCps::new(
             &mut sources,
-            kv_pool,
-            block_entry_steps_pool,
         );
 
     let mut found_items = Vec::new();

@@ -629,7 +629,6 @@ pub enum BlockSerializerContinue {
 pub enum Error {
     BlockHeader(ReadBlockHeaderError),
     EntryContainer(ReadEntryContainerError),
-    ValueBlock(ReadValueBlockError),
     EntrySnapshotEntryContainerSizeBytes(integer::ReadIntegerError),
     EntrySnapshotKeyLength(integer::ReadIntegerError),
     EntrySnapshotJumpRef(ReadJumpRefError),

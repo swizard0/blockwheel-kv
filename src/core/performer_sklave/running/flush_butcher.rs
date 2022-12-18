@@ -10,19 +10,20 @@ use std::{
     },
 };
 
-use alloc_pool_pack::WriteToBytesMut;
 use o1::{
     set::{
         Ref,
     },
 };
 
+use alloc_pool_pack::{
+    WriteToBytesMut,
+};
+
 use alloc_pool::{
-    pool,
     bytes::{
         BytesPool,
     },
-    Unique,
 };
 
 use arbeitssklave::{
@@ -36,6 +37,7 @@ use crate::{
     core::{
         performer_sklave,
         search_tree_builder,
+        VecW,
         MemCache,
         BlockRef,
         FsWriteBlock,
@@ -75,7 +77,6 @@ pub struct Welt<E> where E: EchoPolicy {
     sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
-    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     search_tree_builder_params: search_tree_builder::Params,
     values_inline_size_limit: usize,
     incoming_orders: Vec<Order>,
@@ -84,15 +85,13 @@ pub struct Welt<E> where E: EchoPolicy {
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         frozen_memcache: Arc<MemCache>,
         tree_block_size: usize,
         values_inline_size_limit: usize,
         sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
-        block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
         feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::FlushButcherDrop>,
     )
         -> Self
@@ -107,7 +106,6 @@ impl<E> Welt<E> where E: EchoPolicy {
             sendegeraet,
             wheels,
             blocks_pool,
-            block_entries_pool,
             incoming_orders: Vec::new(),
             value_writes_pending: HashMap::new(),
             maybe_feedback: Some(feedback),
@@ -117,7 +115,7 @@ impl<E> Welt<E> where E: EchoPolicy {
 
 struct ValueWritePending {
     node_type: storage::NodeType,
-    block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
+    block_entries: VecW<SearchTreeBuilderBlockEntry>,
     pending_count: usize,
 }
 
@@ -187,7 +185,6 @@ where E: EchoPolicy,
 
                 Kont::Start { frozen_memcache, } => {
                     let builder = search_tree_builder::BuilderCps::new(
-                        sklave_job.block_entries_pool.clone(),
                         sklave_job.search_tree_builder_params,
                     );
                     sklave_job.kont =
@@ -367,7 +364,7 @@ where E: EchoPolicy,
 fn process_ready_block<E, J>(
     sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
-    block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
+    block_entries: VecW<SearchTreeBuilderBlockEntry>,
     async_ref: Ref,
     thread_pool: &edeltraud::Handle<J>,
 )
@@ -430,7 +427,7 @@ fn serialize_block<E, J>(
     sklave_job: &mut SklaveJob<E>,
     node_type: storage::NodeType,
     async_ref: Ref,
-    mut block_entries: Unique<Vec<SearchTreeBuilderBlockEntry>>,
+    mut block_entries: VecW<SearchTreeBuilderBlockEntry>,
     thread_pool: &edeltraud::Handle<J>,
 )
     -> Result<(), Error>

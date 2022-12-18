@@ -68,7 +68,7 @@ pub struct Welt<E> where E: EchoPolicy {
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
-    pub fn new(
+    pub(super) fn new(
         merger: SearchRangesMergeCps,
         sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,

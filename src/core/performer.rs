@@ -20,11 +20,6 @@ use o1::{
     },
 };
 
-use alloc_pool::{
-    pool,
-    Unique,
-};
-
 use crate::{
     kv,
     version,
@@ -35,8 +30,8 @@ use crate::{
         bin_merger::{
             BinMerger,
         },
-        search_tree_walker,
         search_ranges_merge,
+        VecW,
         OrdKey,
         MemCache,
         BlockRef,
@@ -151,13 +146,13 @@ pub struct KontDemolishSearchTreeNext<C> where C: Context {
 }
 
 pub struct LookupRangesMerger {
-    pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub source: search_ranges_merge::RangesMergeCps<VecW<LookupRangeSource>, LookupRangeSource>,
     pub token: AccessToken,
 }
 
 pub struct SearchTreesMerger {
-    pub source_count_items: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
-    pub source_build: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub source_count_items: search_ranges_merge::RangesMergeCps<VecW<LookupRangeSource>, LookupRangeSource>,
+    pub source_build: search_ranges_merge::RangesMergeCps<VecW<LookupRangeSource>, LookupRangeSource>,
     pub token: AccessToken,
 }
 
@@ -171,16 +166,13 @@ pub struct LookupRangeSource {
 }
 
 pub struct DemolishOrder {
-    pub source: search_ranges_merge::RangesMergeCps<Unique<Vec<LookupRangeSource>>, LookupRangeSource>,
+    pub source: search_ranges_merge::RangesMergeCps<VecW<LookupRangeSource>, LookupRangeSource>,
     pub demolish_group_ref: Ref,
 }
 
 struct Inner<C> where C: Context {
     params: Params,
     version_provider: version::Provider,
-    kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-    sources_pool: pool::Pool<Vec<LookupRangeSource>>,
-    block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
     butcher: MemCache,
     forest: SearchForest,
     info: Info,
@@ -266,9 +258,6 @@ impl<C> Performer<C> where C: Context {
     pub fn new(
         params: Params,
         version_provider: version::Provider,
-        kv_pool: pool::Pool<Vec<kv::KeyValuePair<kv::Value>>>,
-        sources_pool: pool::Pool<Vec<LookupRangeSource>>,
-        block_entry_steps_pool: pool::Pool<Vec<search_tree_walker::BlockEntryStep>>,
         forest: SearchForest,
     )
         -> Self
@@ -278,9 +267,6 @@ impl<C> Performer<C> where C: Context {
                 params,
                 butcher: MemCache::new(),
                 version_provider,
-                kv_pool,
-                sources_pool,
-                block_entry_steps_pool,
                 forest,
                 info: Info::default(),
                 pending_events: Vec::new(),
@@ -381,15 +367,12 @@ impl<C> Inner<C> where C: Context {
     }
 
     fn make_lookup_ranges_merger(&mut self, search_range: SearchRangeBounds) -> LookupRangesMerger {
-        let mut sources = self.sources_pool.lend(Vec::new);
-        sources.clear();
-
+        let mut sources = VecW::from(Vec::with_capacity(self.butcher.len()));
         let butcher_source = LookupRangeSource {
             source: search_ranges_merge::Source::Butcher(
                 search_ranges_merge::SourceButcher::from_active_memcache(
                     search_range.clone(),
                     &self.butcher,
-                    &self.kv_pool,
                 ),
             ),
         };
@@ -400,13 +383,9 @@ impl<C> Inner<C> where C: Context {
             sources.push(search_tree.build_source(&search_range));
             register_access_source(search_tree_id, search_tree, &mut search_trees_ids, &mut self.forest.accesses_count);
         }
-        sources.shrink_to_fit();
 
-        let source = search_ranges_merge::RangesMergeCps::new(
-            sources,
-            self.kv_pool.clone(),
-            self.block_entry_steps_pool.clone(),
-        );
+        let source =
+            search_ranges_merge::RangesMergeCps::new(sources);
 
         self.forest.uncommitted_lookups += 1;
         LookupRangesMerger {
@@ -463,10 +442,8 @@ impl<C> Inner<C> where C: Context {
         let search_range = SearchRangeBounds::unbounded();
         let mut search_trees_ids = Vec::new();
 
-        let mut sources_count_items = self.sources_pool.lend(Vec::new);
-        sources_count_items.clear();
-        let mut sources_build = self.sources_pool.lend(Vec::new);
-        sources_build.clear();
+        let mut sources_count_items = VecW::from(Vec::new());
+        let mut sources_build = VecW::from(Vec::new());
 
         let search_tree_a = self.forest.search_trees.get(&search_tree_id_a).unwrap();
         sources_count_items.push(search_tree_a.build_source(&search_range));
@@ -485,13 +462,9 @@ impl<C> Inner<C> where C: Context {
             ranges_merger: SearchTreesMerger {
                 source_count_items: search_ranges_merge::RangesMergeCps::new(
                     sources_count_items,
-                    self.kv_pool.clone(),
-                    self.block_entry_steps_pool.clone(),
                 ),
                 source_build: search_ranges_merge::RangesMergeCps::new(
                     sources_build,
-                    self.kv_pool.clone(),
-                    self.block_entry_steps_pool.clone(),
                 ),
                 token: AccessToken {
                     search_trees_ids,
@@ -554,18 +527,16 @@ impl<C> Inner<C> where C: Context {
         if demolish_group.ready_search_trees.len() == demolish_group.search_trees_count {
             // search tree group is ready to demolish
             let search_range = SearchRangeBounds::unbounded();
-            let mut sources = self.sources_pool.lend(Vec::new);
-            sources.clear();
+            let mut sources = VecW::from(
+                Vec::with_capacity(demolish_group.ready_search_trees.len()),
+            );
             for search_tree in &demolish_group.ready_search_trees {
                 sources.push(search_tree.build_source(&search_range));
             }
-            sources.shrink_to_fit();
             self.pending_events.push(PendingEvent::Demolish {
                 order: DemolishOrder {
                     source: search_ranges_merge::RangesMergeCps::new(
                         sources,
-                        self.kv_pool.clone(),
-                        self.block_entry_steps_pool.clone(),
                     ),
                     demolish_group_ref: search_tree_decay.demolish_group_ref,
                 },

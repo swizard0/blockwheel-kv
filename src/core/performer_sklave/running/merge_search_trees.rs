@@ -1,5 +1,4 @@
 use alloc_pool::{
-    pool,
     bytes::{
         Bytes,
         BytesPool,
@@ -31,7 +30,6 @@ use crate::{
         SearchTreeBuilderCps,
         SearchTreeBuilderKont,
         SearchTreeBuilderBlockNext,
-        SearchTreeBuilderBlockEntry,
         SearchTreeBuilderItemOrBlockNext,
         SearchRangesMergeCps,
         SearchRangesMergeKont,
@@ -86,7 +84,6 @@ pub struct Welt<E> where E: EchoPolicy {
     sendegeraet: komm::Sendegeraet<Order>,
     wheels: wheels::Wheels<E>,
     blocks_pool: BytesPool,
-    block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
     tree_block_size: usize,
     maybe_feedback: Option<komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::MergeSearchTreesDrop>>,
     received_block_tasks: Vec<ReceivedBlockTask>,
@@ -94,14 +91,12 @@ pub struct Welt<E> where E: EchoPolicy {
 }
 
 impl<E> Welt<E> where E: EchoPolicy {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         source_count_items: SearchRangesMergeCps,
         source_build: SearchRangesMergeCps,
         sendegeraet: komm::Sendegeraet<Order>,
         wheels: wheels::Wheels<E>,
         blocks_pool: BytesPool,
-        block_entries_pool: pool::Pool<Vec<SearchTreeBuilderBlockEntry>>,
         tree_block_size: usize,
         feedback: komm::Rueckkopplung<performer_sklave::Order<E>, performer_sklave::MergeSearchTreesDrop>,
     )
@@ -120,7 +115,6 @@ impl<E> Welt<E> where E: EchoPolicy {
             sendegeraet,
             wheels,
             blocks_pool,
-            block_entries_pool,
             tree_block_size,
             maybe_feedback: Some(feedback),
             received_block_tasks: Vec::new(),
@@ -394,7 +388,6 @@ where E: EchoPolicy,
                                 item_arrived: None,
                                 kont: BuildKontActive::Start {
                                     builder: search_tree_builder::BuilderCps::new(
-                                        sklavenwelt.block_entries_pool.clone(),
                                         search_tree_builder::Params {
                                             tree_items_count: items_count,
                                             tree_block_size: sklavenwelt.tree_block_size,

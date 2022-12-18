@@ -17,13 +17,11 @@ use o1::{
     },
 };
 
-use alloc_pool::{
-    pool,
-    Unique,
-};
-
 use crate::{
     storage,
+    core::{
+        VecW,
+    },
 };
 
 #[cfg(test)]
@@ -62,7 +60,6 @@ pub enum Error {
 
 struct Inner<T, R> {
     state: State<T, R>,
-    block_entries_pool: pool::Pool<Vec<BlockEntry<T, R>>>,
     done_blocks: Set<DoneBlock<T, R>>,
     arrived_item: Option<T>,
     ready_head: Option<Ref>,
@@ -105,7 +102,7 @@ pub struct KontPollProcessedBlockNext<T, R> {
 
 pub struct KontProcessBlockAsync<T, R> {
     pub node_type: storage::NodeType,
-    pub block_entries: Unique<Vec<BlockEntry<T, R>>>,
+    pub block_entries: VecW<BlockEntry<T, R>>,
     pub async_ref: Ref,
     pub next: KontProcessBlockAsyncNext<T, R>,
 }
@@ -121,7 +118,7 @@ enum LevelSeed<T, R> {
 
 struct Block<T, R> {
     node_type: storage::NodeType,
-    block_entries: Unique<Vec<BlockEntry<T, R>>>,
+    block_entries: VecW<BlockEntry<T, R>>,
     child_refs_in_progress: usize,
     ready_next: Option<Ref>,
 }
@@ -146,7 +143,6 @@ pub struct BlockEntry<T, R> {
 
 impl<T, R> BuilderCps<T, R> {
     pub fn new(
-        block_entries_pool: pool::Pool<Vec<BlockEntry<T, R>>>,
         params: Params,
     )
         -> Self
@@ -154,7 +150,6 @@ impl<T, R> BuilderCps<T, R> {
         Self {
             inner: Inner {
                 state: State::Init,
-                block_entries_pool,
                 done_blocks: Set::new(),
                 arrived_item: None,
                 ready_head: None,
@@ -243,9 +238,7 @@ impl<T, R> BuilderCps<T, R> {
                             } else {
                                 storage::NodeType::Leaf
                             };
-                            let mut block_entries = self.inner.block_entries_pool.lend(Vec::new);
-                            block_entries.clear();
-                            block_entries.reserve(items_count);
+                            let block_entries = VecW::from(Vec::with_capacity(items_count));
                             let level_seed = LevelSeed::InProgress(Block {
                                 block_entries,
                                 node_type,

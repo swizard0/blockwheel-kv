@@ -4,10 +4,6 @@ use std::{
     },
 };
 
-use alloc_pool::{
-    pool,
-};
-
 use crate::{
     kv,
     core::{
@@ -89,8 +85,7 @@ fn search_all() {
 
 fn walk<R>(range: R, sample: &[(&str, &str)]) where R: RangeBounds<kv::Key> {
     let (root_block, kinda_tree) = make_kinda_tree();
-    let block_entry_steps_pool = pool::Pool::new();
-    let walker = WalkerCps::new(root_block, range.into(), block_entry_steps_pool);
+    let walker = WalkerCps::new(root_block, range.into());
     let mut kont = walker.step().unwrap();
     let mut found_items = vec![];
     loop {

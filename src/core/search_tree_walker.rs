@@ -9,11 +9,9 @@ use std::{
 };
 
 use alloc_pool::{
-    pool,
     bytes::{
         Bytes,
     },
-    Unique,
 };
 
 use crate::{
@@ -23,6 +21,7 @@ use crate::{
         BlockRef,
     },
     core::{
+        VecW,
         SearchRangeBounds,
     },
 };
@@ -48,7 +47,6 @@ pub enum Error {
 
 struct Inner {
     state: State,
-    block_entry_steps_pool: pool::Pool<Vec<BlockEntryStep>>,
     levels: Vec<WalkerLevel>,
 }
 
@@ -98,7 +96,7 @@ pub struct KontBlockFinishedNext {
 struct WalkerLevel {
     search_range: SearchRangeBounds,
     block_ref: BlockRef,
-    block_entry_steps: Unique<Vec<BlockEntryStep>>,
+    block_entry_steps: VecW<BlockEntryStep>,
     block_entry_steps_index: usize,
 }
 
@@ -125,7 +123,6 @@ impl WalkerCps {
     pub fn new(
         root_block: BlockRef,
         search_range: SearchRangeBounds,
-        block_entry_steps_pool: pool::Pool<Vec<BlockEntryStep>>,
     ) -> Self {
         WalkerCps {
             inner: Inner {
@@ -133,7 +130,6 @@ impl WalkerCps {
                     search_range,
                     block_ref: root_block,
                 },
-                block_entry_steps_pool,
                 levels: Vec::new(),
             },
         }
@@ -159,7 +155,7 @@ impl WalkerCps {
                 },
 
                 State::BlockReceived { search_range, block_ref, block_bytes, } => {
-                    let mut block_entry_steps = self.inner.block_entry_steps_pool.lend(Vec::new);
+                    let mut block_entry_steps = VecW::from(Vec::new());
                     block_entry_steps.clear();
 
                     let mut entries_iter = storage::block_deserialize_iter(&block_bytes)
