@@ -40,6 +40,20 @@ use crate::{
 pub mod loading;
 pub mod running;
 
+use std::{
+    sync::{
+        atomic::{
+            AtomicIsize,
+            Ordering,
+        },
+    },
+};
+
+pub static SKLAVEN_FLUSH_BUTCHER: AtomicIsize = AtomicIsize::new(0);
+pub static SKLAVEN_LOOKUP_RANGES_MERGE: AtomicIsize = AtomicIsize::new(0);
+pub static SKLAVEN_MERGE_SEARCH_TREES: AtomicIsize = AtomicIsize::new(0);
+pub static SKLAVEN_DEMOLISH_SEARCH_TREE: AtomicIsize = AtomicIsize::new(0);
+
 pub enum Order<E> where E: EchoPolicy {
     Request(OrderRequest<E>),
     FlushButcherDone(komm::Umschlag<FlushButcherDone, FlushButcherDrop>),
@@ -83,6 +97,15 @@ impl<E> Welt<E> where E: EchoPolicy {
             env,
             state: WeltState::Init,
         }
+    }
+}
+
+impl<E> Drop for Welt<E> where E: EchoPolicy {
+    fn drop(&mut self) {
+        println!(" ;; SKLAVEN_FLUSH_BUTCHER: {}", SKLAVEN_FLUSH_BUTCHER.load(Ordering::Relaxed));
+        println!(" ;; SKLAVEN_LOOKUP_RANGES_MERGE: {}", SKLAVEN_LOOKUP_RANGES_MERGE.load(Ordering::Relaxed));
+        println!(" ;; SKLAVEN_MERGE_SEARCH_TREES: {}", SKLAVEN_MERGE_SEARCH_TREES.load(Ordering::Relaxed));
+        println!(" ;; SKLAVEN_DEMOLISH_SEARCH_TREE: {}", SKLAVEN_DEMOLISH_SEARCH_TREE.load(Ordering::Relaxed));
     }
 }
 

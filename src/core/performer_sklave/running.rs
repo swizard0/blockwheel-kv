@@ -174,6 +174,15 @@ where E: EchoPolicy,
                                 Some(ActiveFlush::Kv | ActiveFlush::Wheels { .. }) =>
                                     sklavenwelt.env.delayed_orders.push(Order::Request(request)),
                             },
+                        Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
+                            stamp: FlushButcherDrop { meister_ref, .. },
+                        })) => {
+                            if sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref).is_none() {
+                                log::warn!("meister is not found in flush_butcher_sklaven during UnregisterFlushButcher");
+                            }
+                            super::SKLAVEN_FLUSH_BUTCHER.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            return Err(Error::FlushButcherSklaveCrashed);
+                        },
                         Some(Order::UnregisterLookupRangeMerge(komm::UmschlagAbbrechen {
                             stamp: LookupRangeMergeDrop {
                                 meister_ref,
@@ -183,15 +192,8 @@ where E: EchoPolicy,
                             if sklavenwelt.env.lookup_ranges_merge_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in lookup_ranges_merge_sklaven during UnregisterLookupRangeMerge");
                             }
+                            super::SKLAVEN_LOOKUP_RANGES_MERGE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             return Err(Error::LookupRangeMergeSklaveCrashed);
-                        },
-                        Some(Order::UnregisterFlushButcher(komm::UmschlagAbbrechen {
-                            stamp: FlushButcherDrop { meister_ref, .. },
-                        })) => {
-                            if sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref).is_none() {
-                                log::warn!("meister is not found in flush_butcher_sklaven during UnregisterFlushButcher");
-                            }
-                            return Err(Error::FlushButcherSklaveCrashed);
                         },
                         Some(Order::UnregisterMergeSearchTrees(komm::UmschlagAbbrechen {
                             stamp: MergeSearchTreesDrop { meister_ref, .. },
@@ -199,6 +201,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.merge_search_trees_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in merge_search_trees_sklaven during UnregisterMergeSearchTrees");
                             }
+                            super::SKLAVEN_MERGE_SEARCH_TREES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             return Err(Error::MergeSearchTreesSklaveCrashed);
                         },
                         Some(Order::UnregisterDemolishSearchTree(komm::UmschlagAbbrechen {
@@ -207,6 +210,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in demolish_search_tree_sklaven during UnregisterDemolishSearchTree");
                             }
+                            super::SKLAVEN_DEMOLISH_SEARCH_TREE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             return Err(Error::DemolishSearchTreeSklaveCrashed);
                         },
                         Some(Order::FlushButcherDone(komm::Umschlag {
@@ -219,6 +223,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.flush_butcher_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in flush_butcher_sklaven during FlushButcherDone");
                             }
+                            super::SKLAVEN_FLUSH_BUTCHER.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break next.butcher_flushed(search_tree_id, root_block)
                         },
                         Some(Order::LookupRangeMergeDone(komm::Umschlag {
@@ -231,6 +236,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.lookup_ranges_merge_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in lookup_ranges_merge_sklaven during LookupRangeMergeDone");
                             }
+                            super::SKLAVEN_LOOKUP_RANGES_MERGE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break next.commit_lookup_range(access_token)
                         },
                         Some(Order::MergeSearchTreesDone(komm::Umschlag {
@@ -246,6 +252,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.merge_search_trees_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in merge_search_trees_sklaven during MergeSearchTreesDone");
                             }
+                            super::SKLAVEN_MERGE_SEARCH_TREES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break next.search_trees_merged(
                                 merged_search_tree_ref,
                                 merged_search_tree_items_count,
@@ -262,6 +269,7 @@ where E: EchoPolicy,
                             if sklavenwelt.env.demolish_search_tree_sklaven.remove(meister_ref).is_none() {
                                 log::warn!("meister is not found in demolish_search_tree_sklaven during DemolishSearchTreeDone");
                             }
+                            super::SKLAVEN_DEMOLISH_SEARCH_TREE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break next.demolished(demolish_group_ref)
                         },
                         Some(Order::Wheel(OrderWheel::InfoCancel(komm::UmschlagAbbrechen { stamp: route, }))) =>
@@ -416,6 +424,7 @@ where E: EchoPolicy,
                     let flush_butcher_freie = arbeitssklave::Freie::new();
                     let meister_ref = sklavenwelt.env
                         .flush_butcher_sklaven.insert(flush_butcher_freie.meister());
+                    super::SKLAVEN_FLUSH_BUTCHER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let flush_butcher_sendegeraet = komm::Sendegeraet::starten(
                         &flush_butcher_freie.meister(),
                         thread_pool.clone(),
@@ -450,6 +459,7 @@ where E: EchoPolicy,
                 }) => {
                     let meister_ref = sklavenwelt.env
                         .lookup_ranges_merge_sklaven.insert(lookup_ranges_merge_freie.meister());
+                    super::SKLAVEN_LOOKUP_RANGES_MERGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _lookup_ranges_merge_meister = lookup_ranges_merge_freie
                         .versklaven(
                             lookup_range_merge::Welt::new(
@@ -474,6 +484,7 @@ where E: EchoPolicy,
                     let merge_search_trees_freie = arbeitssklave::Freie::new();
                     let meister_ref = sklavenwelt.env
                         .merge_search_trees_sklaven.insert(merge_search_trees_freie.meister());
+                    super::SKLAVEN_MERGE_SEARCH_TREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let merge_search_trees_sendegeraet = komm::Sendegeraet::starten(
                         &merge_search_trees_freie.meister(),
                         thread_pool.clone(),
@@ -505,6 +516,7 @@ where E: EchoPolicy,
                     let demolish_search_tree_freie = arbeitssklave::Freie::new();
                     let meister_ref = sklavenwelt.env
                         .demolish_search_tree_sklaven.insert(demolish_search_tree_freie.meister());
+                    super::SKLAVEN_DEMOLISH_SEARCH_TREE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let demolish_search_tree_sendegeraet = komm::Sendegeraet::starten(
                         &demolish_search_tree_freie.meister(),
                         thread_pool.clone(),
