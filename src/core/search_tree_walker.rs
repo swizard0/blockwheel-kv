@@ -265,7 +265,6 @@ impl WalkerCps {
                             },
                         }
                     }
-                    block_entry_steps.shrink_to_fit();
 
                     self.inner.levels.push(WalkerLevel {
                         search_range,

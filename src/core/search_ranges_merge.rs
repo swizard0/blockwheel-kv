@@ -390,7 +390,6 @@ impl SourceButcher {
     {
         let mut kv_pairs = Vec::with_capacity(memcache.len());
         kv_pairs.extend(memcache.range(search_range));
-        kv_pairs.shrink_to_fit();
         kv_pairs.reverse();
         Self {
             source_state: SourceButcherState::Next {

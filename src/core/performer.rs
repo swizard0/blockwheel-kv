@@ -455,9 +455,6 @@ impl<C> Inner<C> where C: Context {
         sources_build.push(search_tree_b.build_source(&search_range));
         self.register_access(search_tree_id_b, &mut search_trees_ids);
 
-        sources_count_items.shrink_to_fit();
-        sources_build.shrink_to_fit();
-
         Some(PendingEventMergeSearchTrees {
             ranges_merger: SearchTreesMerger {
                 source_count_items: search_ranges_merge::RangesMergeCps::new(
